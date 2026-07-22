@@ -19,7 +19,7 @@ use storage::{
 };
 
 pub use network::fetch_models;
-pub use opencode::{import_opencode, list_opencode_providers};
+pub use opencode::{apply_opencode_import, list_opencode_providers, prepare_opencode_import};
 pub use storage::{list_backups, restore_backup};
 
 const API_TYPES: [&str; 4] = [
@@ -177,14 +177,46 @@ impl ModelCatalog {
             .then_some(first)
     }
 
+    pub fn ambiguous_candidates(&self, provider_id: &str, model_id: &str) -> Vec<CatalogCandidate> {
+        if self.resolve(provider_id, model_id).is_some() {
+            return Vec::new();
+        }
+        self.providers
+            .iter()
+            .flat_map(|(source_provider_id, models)| {
+                models
+                    .iter()
+                    .filter(move |model| model.id == model_id)
+                    .map(|model| CatalogCandidate {
+                        provider_id: source_provider_id.clone(),
+                        model: model.clone(),
+                    })
+            })
+            .collect()
+    }
+
     fn insert(&mut self, provider_id: String, models: Vec<CatalogModel>) {
         self.providers.insert(provider_id, models);
     }
 }
 
 #[derive(Clone, Debug)]
+pub struct CatalogCandidate {
+    pub provider_id: String,
+    pub model: CatalogModel,
+}
+
+#[derive(Clone, Debug)]
+pub struct CatalogAmbiguity {
+    pub provider_id: String,
+    pub model_id: String,
+    pub candidates: Vec<CatalogCandidate>,
+}
+
+#[derive(Clone, Debug)]
 pub struct CatalogFetch {
     pub models: Vec<CatalogModel>,
+    pub ambiguous: Vec<CatalogAmbiguity>,
     pub unavailable: usize,
 }
 
@@ -238,6 +270,15 @@ pub struct ImportSummary {
     pub defaults: usize,
     pub unresolved: usize,
     pub changed: bool,
+}
+
+#[derive(Debug)]
+pub struct OpenCodeImportPlan {
+    source: Value,
+    provider_ids: Vec<String>,
+    options: ImportOptions,
+    catalog: Option<ModelCatalog>,
+    pub ambiguous: Vec<CatalogAmbiguity>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -727,9 +768,11 @@ fn check(ok: bool, label: impl Into<String>, detail: impl Into<String>) -> Docto
 }
 
 #[cfg(test)]
-use network::{fetch_models_for_test, parse_pi_catalog, parse_provider_catalog, resolve_secret};
+use network::{
+    fetch_models_for_test, parse_models_dev_catalog, parse_provider_catalog, resolve_secret,
+};
 #[cfg(test)]
-use opencode::import_opencode_with_catalog;
+use opencode::{import_opencode_with_catalog, prepare_opencode_with_catalog};
 #[cfg(test)]
 use storage::now_millis;
 

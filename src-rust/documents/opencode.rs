@@ -1,4 +1,4 @@
-use std::fs;
+use std::{collections::BTreeMap, fs};
 
 use serde_json::{json, Map, Value};
 
@@ -6,7 +6,8 @@ use super::{
     network::fetch_catalog,
     schema::{minimal_model, provider_view, validate_draft, validate_model_id},
     storage::{io_error, providers_object_mut, read_document, write_document, WriteLock},
-    AppError, ImportOptions, ImportSummary, ModelCatalog, Paths, ProviderDraft, Result,
+    AppError, CatalogAmbiguity, CatalogModel, ImportOptions, ImportSummary, ModelCatalog,
+    OpenCodeImportPlan, Paths, ProviderDraft, Result,
 };
 
 pub fn list_opencode_providers(paths: &Paths) -> Result<Vec<String>> {
@@ -19,18 +20,63 @@ pub fn list_opencode_providers(paths: &Paths) -> Result<Vec<String>> {
     Ok(providers)
 }
 
-pub async fn import_opencode(
+pub async fn prepare_opencode_import(
     paths: &Paths,
     provider_ids: &[String],
     options: ImportOptions,
-) -> Result<ImportSummary> {
+) -> Result<OpenCodeImportPlan> {
     let source = read_source(paths)?;
+    validate_provider_ids(&source, provider_ids)?;
     let catalog = if options.fetch_metadata {
         Some(fetch_catalog().await?)
     } else {
         None
     };
-    import_source(paths, &source, catalog.as_ref(), provider_ids, &options)
+    let ambiguous = catalog
+        .as_ref()
+        .map(|catalog| catalog_ambiguities(&source, provider_ids, catalog))
+        .transpose()?
+        .unwrap_or_default();
+    Ok(OpenCodeImportPlan {
+        source,
+        provider_ids: provider_ids.to_vec(),
+        options,
+        catalog,
+        ambiguous,
+    })
+}
+
+pub fn apply_opencode_import(
+    paths: &Paths,
+    plan: OpenCodeImportPlan,
+    candidate_indices: &[usize],
+) -> Result<ImportSummary> {
+    if candidate_indices.len() != plan.ambiguous.len() {
+        return Err(AppError::Invalid(
+            "every ambiguous OpenCode model requires a catalog selection".into(),
+        ));
+    }
+    let mut selections = CatalogSelections::new();
+    for (ambiguity, index) in plan.ambiguous.iter().zip(candidate_indices) {
+        let candidate = ambiguity.candidates.get(*index).ok_or_else(|| {
+            AppError::Invalid(format!(
+                "catalog selection for '{}/{}' is out of range",
+                ambiguity.provider_id, ambiguity.model_id
+            ))
+        })?;
+        selections
+            .entry(ambiguity.provider_id.clone())
+            .or_default()
+            .insert(ambiguity.model_id.clone(), candidate.model.clone());
+    }
+    import_source(
+        paths,
+        &plan.source,
+        plan.catalog.as_ref(),
+        &plan.provider_ids,
+        &plan.options,
+        &selections,
+    )
 }
 
 #[cfg(test)]
@@ -52,8 +98,32 @@ pub(super) fn import_opencode_with_catalog(
             fetch_metadata: true,
             defaults: Default::default(),
         },
+        &CatalogSelections::new(),
     )
 }
+
+#[cfg(test)]
+pub(super) fn prepare_opencode_with_catalog(
+    paths: &Paths,
+    catalog: ModelCatalog,
+    provider_ids: &[String],
+) -> Result<OpenCodeImportPlan> {
+    let source = read_source(paths)?;
+    validate_provider_ids(&source, provider_ids)?;
+    let ambiguous = catalog_ambiguities(&source, provider_ids, &catalog)?;
+    Ok(OpenCodeImportPlan {
+        source,
+        provider_ids: provider_ids.to_vec(),
+        options: ImportOptions {
+            fetch_metadata: true,
+            defaults: Default::default(),
+        },
+        catalog: Some(catalog),
+        ambiguous,
+    })
+}
+
+type CatalogSelections = BTreeMap<String, BTreeMap<String, CatalogModel>>;
 
 fn read_source(paths: &Paths) -> Result<Value> {
     let bytes = fs::read(&paths.opencode).map_err(|source| io_error(&paths.opencode, source))?;
@@ -77,26 +147,65 @@ fn source_providers(source: &Value) -> Result<&Map<String, Value>> {
     Ok(providers)
 }
 
-fn import_source(
-    paths: &Paths,
-    source: &Value,
-    catalog: Option<&ModelCatalog>,
-    provider_ids: &[String],
-    options: &ImportOptions,
-) -> Result<ImportSummary> {
-    let source_providers = source_providers(source)?;
+fn validate_provider_ids(source: &Value, provider_ids: &[String]) -> Result<()> {
+    let providers = source_providers(source)?;
     if provider_ids.is_empty() {
         return Err(AppError::Invalid(
             "select at least one OpenCode provider".into(),
         ));
     }
     for id in provider_ids {
-        if !source_providers.contains_key(id) {
+        if !providers.contains_key(id) {
             return Err(AppError::Invalid(format!(
                 "OpenCode provider '{id}' no longer exists"
             )));
         }
     }
+    Ok(())
+}
+
+fn catalog_ambiguities(
+    source: &Value,
+    provider_ids: &[String],
+    catalog: &ModelCatalog,
+) -> Result<Vec<CatalogAmbiguity>> {
+    let providers = source_providers(source)?;
+    let empty = Map::new();
+    let mut ambiguous = Vec::new();
+    for provider_id in provider_ids {
+        let provider = providers[provider_id].as_object().ok_or_else(|| {
+            AppError::Invalid(format!(
+                "OpenCode provider '{provider_id}' must be an object"
+            ))
+        })?;
+        let models = optional_object(provider, "models", provider_id)?.unwrap_or(&empty);
+        for model_id in models.keys() {
+            if catalog.resolve(provider_id, model_id).is_some() {
+                continue;
+            }
+            let candidates = catalog.ambiguous_candidates(provider_id, model_id);
+            if !candidates.is_empty() {
+                ambiguous.push(CatalogAmbiguity {
+                    provider_id: provider_id.clone(),
+                    model_id: model_id.clone(),
+                    candidates,
+                });
+            }
+        }
+    }
+    Ok(ambiguous)
+}
+
+fn import_source(
+    paths: &Paths,
+    source: &Value,
+    catalog: Option<&ModelCatalog>,
+    provider_ids: &[String],
+    options: &ImportOptions,
+    selections: &CatalogSelections,
+) -> Result<ImportSummary> {
+    let source_providers = source_providers(source)?;
+    validate_provider_ids(source, provider_ids)?;
 
     let _lock = WriteLock::acquire(paths)?;
     let mut root = read_document(&paths.models, json!({ "providers": {} }))?;
@@ -114,7 +223,7 @@ fn import_source(
     for id in provider_ids {
         let source = &source_providers[id];
         let (models, metadata, defaults, unresolved) =
-            merge_provider(id, source, providers, catalog, options)?;
+            merge_provider(id, source, providers, catalog, options, selections)?;
         summary.models += models;
         summary.metadata += metadata;
         summary.defaults += defaults;
@@ -135,6 +244,7 @@ fn merge_provider(
     providers: &mut Map<String, Value>,
     catalog: Option<&ModelCatalog>,
     import_options: &ImportOptions,
+    selections: &CatalogSelections,
 ) -> Result<(usize, usize, usize, usize)> {
     let source = source
         .as_object()
@@ -188,8 +298,15 @@ fn merge_provider(
     let mut defaults = 0;
     let mut unresolved = 0;
     for (model_id, model) in source_models {
-        let (from_metadata, from_defaults, is_unresolved) =
-            merge_model(id, model_id, model, target_models, catalog, import_options)?;
+        let (from_metadata, from_defaults, is_unresolved) = merge_model(
+            id,
+            model_id,
+            model,
+            target_models,
+            catalog,
+            import_options,
+            selections,
+        )?;
         metadata += usize::from(from_metadata);
         defaults += usize::from(from_defaults);
         unresolved += usize::from(is_unresolved);
@@ -205,6 +322,7 @@ fn merge_model(
     models: &mut Vec<Value>,
     catalog: Option<&ModelCatalog>,
     options: &ImportOptions,
+    selections: &CatalogSelections,
 ) -> Result<(bool, bool, bool)> {
     validate_model_id(id)?;
     let source = source.as_object().ok_or_else(|| {
@@ -227,7 +345,11 @@ fn merge_model(
         .ok_or_else(|| AppError::Invalid("Pi model entry must be an object".into()))?;
 
     let catalog_model = if options.fetch_metadata {
-        catalog.and_then(|catalog| catalog.resolve(provider_id, id).cloned())
+        selections
+            .get(provider_id)
+            .and_then(|models| models.get(id))
+            .cloned()
+            .or_else(|| catalog.and_then(|catalog| catalog.resolve(provider_id, id).cloned()))
     } else {
         Some(options.defaults.model(id))
     };

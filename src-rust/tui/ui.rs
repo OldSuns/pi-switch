@@ -9,7 +9,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::documents::{PI_DEFAULT_CONTEXT_WINDOW, PI_DEFAULT_MAX_TOKENS};
+use crate::documents::{CatalogModel, PI_DEFAULT_CONTEXT_WINDOW, PI_DEFAULT_MAX_TOKENS};
 
 use super::{
     app::{App, Focus, Notice, NoticeKind, Overlay, Page},
@@ -427,11 +427,11 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
                 && app.snapshot.default_model.as_deref() == Some(&model.id);
             let context = model
                 .context_window
-                .map(|value| value.to_string())
+                .map(format_token_count)
                 .unwrap_or_else(|| app.language.pick("unset", "未设置").into());
             let max_tokens = model
                 .max_tokens
-                .map(|value| value.to_string())
+                .map(format_token_count)
                 .unwrap_or_else(|| app.language.pick("unset", "未设置").into());
             let details = format!(
                 "    {}  {}{}  ctx {}  max {}",
@@ -987,18 +987,6 @@ fn render_overlay(
                 .iter()
                 .enumerate()
                 .map(|(index, model)| {
-                    let context = model.config["contextWindow"]
-                        .as_u64()
-                        .expect("validated catalog context window");
-                    let max_tokens = model.config["maxTokens"]
-                        .as_u64()
-                        .expect("validated catalog max tokens");
-                    let input = model.config["cost"]["input"]
-                        .as_f64()
-                        .expect("validated catalog input cost");
-                    let output = model.config["cost"]["output"]
-                        .as_f64()
-                        .expect("validated catalog output cost");
                     ListItem::new(Text::from(vec![
                         Line::from(format!(
                             "{} {}",
@@ -1010,11 +998,7 @@ fn render_overlay(
                             model.id
                         )),
                         Line::from(Span::styled(
-                            format!(
-                                "    ctx {context}  max {max_tokens}  $/M {} {input} {} {output}",
-                                language.pick("in", "输入"),
-                                language.pick("out", "输出"),
-                            ),
+                            format!("    {}", catalog_summary(model, language)),
                             Style::default().fg(theme.muted),
                         )),
                     ]))
@@ -1029,6 +1013,91 @@ fn render_overlay(
                 ),
                 inner,
                 &mut state,
+            );
+        }
+        Overlay::CatalogMatches {
+            ambiguities,
+            index,
+            cursor,
+            ..
+        } => {
+            let rect = modal_rect(area, 78, 22);
+            clear_area(frame, rect, theme);
+            let block = Block::default()
+                .title(format!(
+                    " {}  {}/{} ",
+                    language.pick("Choose metadata source", "选择元数据来源"),
+                    index + 1,
+                    ambiguities.len()
+                ))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.accent));
+            let inner = block.inner(rect);
+            frame.render_widget(block, rect);
+            let [heading, list, hint] = Layout::vertical([
+                Constraint::Length(3),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .areas(inner);
+            if let Some(ambiguity) = ambiguities.get(*index) {
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from(format!(
+                            "{}: {}",
+                            language.pick("Target provider", "目标提供商"),
+                            ambiguity.provider_id
+                        )),
+                        Line::from(format!(
+                            "{}: {}",
+                            language.pick("Model", "模型"),
+                            ambiguity.model_id
+                        )),
+                    ])
+                    .wrap(Wrap { trim: false }),
+                    heading,
+                );
+                let rows = ambiguity
+                    .candidates
+                    .iter()
+                    .map(|candidate| {
+                        ListItem::new(Text::from(vec![
+                            Line::from(Span::styled(
+                                candidate.provider_id.clone(),
+                                Style::default().add_modifier(Modifier::BOLD),
+                            )),
+                            Line::from(Span::styled(
+                                format!("    {}", catalog_summary(&candidate.model, language)),
+                                Style::default().fg(theme.muted),
+                            )),
+                        ]))
+                    })
+                    .collect::<Vec<_>>();
+                let mut state = ListState::default().with_selected(Some(*cursor));
+                frame.render_stateful_widget(
+                    List::new(rows).highlight_symbol(" > ").highlight_style(
+                        Style::default()
+                            .fg(theme.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    list,
+                    &mut state,
+                );
+            }
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(" Enter/Space ", Style::default().fg(theme.accent)),
+                    Span::styled(
+                        language.pick("select  ", "选择  "),
+                        Style::default().fg(theme.muted),
+                    ),
+                    Span::styled(" Esc ", Style::default().fg(theme.accent)),
+                    Span::styled(
+                        language.pick("cancel", "取消"),
+                        Style::default().fg(theme.muted),
+                    ),
+                ])),
+                hint,
             );
         }
         Overlay::OpenCodeProviders {
@@ -1587,6 +1656,38 @@ fn clear_area(frame: &mut Frame<'_>, area: Rect, theme: Theme) {
     let clear = Rect::new(x, area.y, right.saturating_sub(x), area.height);
     frame.render_widget(Clear, clear);
     frame.render_widget(Block::default().style(theme.base()), clear);
+}
+
+fn catalog_summary(model: &CatalogModel, language: Language) -> String {
+    let context = model.config["contextWindow"]
+        .as_u64()
+        .expect("validated catalog context window");
+    let max_tokens = model.config["maxTokens"]
+        .as_u64()
+        .expect("validated catalog max tokens");
+    let input = model.config["cost"]["input"]
+        .as_f64()
+        .expect("validated catalog input cost");
+    let output = model.config["cost"]["output"]
+        .as_f64()
+        .expect("validated catalog output cost");
+    format!(
+        "ctx {}  max {}  $/M {} {input} {} {output}",
+        format_token_count(context),
+        format_token_count(max_tokens),
+        language.pick("in", "输入"),
+        language.pick("out", "输出"),
+    )
+}
+
+fn format_token_count(value: u64) -> String {
+    if value >= 1_000_000 {
+        "1M".into()
+    } else if value >= 100_000 {
+        format!("{}k", value / 1_000)
+    } else {
+        value.to_string()
+    }
 }
 
 fn modal_rect(area: Rect, desired_width: u16, desired_height: u16) -> Rect {

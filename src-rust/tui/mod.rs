@@ -17,7 +17,9 @@ use terminal::{terminal_error, PanicRestoreHookGuard, TuiTerminal};
 use ui::draw;
 
 #[cfg(test)]
-use crate::documents::{Backup, ModelView, ProviderView, Snapshot};
+use crate::documents::{
+    Backup, CatalogAmbiguity, CatalogCandidate, CatalogModel, ModelView, ProviderView, Snapshot,
+};
 #[cfg(test)]
 use app::{Focus, Overlay, Page};
 #[cfg(test)]
@@ -110,6 +112,31 @@ mod tests {
         (root, App::from_snapshot(paths, snapshot))
     }
 
+    fn catalog_model(
+        id: &str,
+        context_window: u64,
+        max_tokens: u64,
+        input_cost: f64,
+    ) -> CatalogModel {
+        CatalogModel {
+            id: id.into(),
+            config: json!({
+                "id": id,
+                "name": id,
+                "reasoning": false,
+                "input": ["text"],
+                "cost": {
+                    "input": input_cost,
+                    "output": input_cost * 2.0,
+                    "cacheRead": 0.0,
+                    "cacheWrite": 0.0
+                },
+                "contextWindow": context_window,
+                "maxTokens": max_tokens
+            }),
+        }
+    }
+
     #[test]
     fn responsive_layout_renders_wide_and_narrow_with_cjk() {
         let (root, mut app) = app();
@@ -164,7 +191,7 @@ mod tests {
             assert!(settings.contains("Actions"));
             assert!(settings.contains("Enter/Space run"));
             if height >= 24 {
-                assert!(settings.contains("Fetch model metadata from pi.dev"));
+                assert!(settings.contains("Fetch model metadata from models.dev"));
                 assert!(!settings.contains("Default model parameters"));
                 assert!(settings.contains("Import from OpenCode"));
             }
@@ -199,7 +226,7 @@ mod tests {
         let chinese = chinese.replace(' ', "");
         assert!(chinese.contains("设置"));
         assert!(chinese.contains("语言:中文"));
-        assert!(chinese.contains("从pi.dev获取模型信息"));
+        assert!(chinese.contains("从models.dev获取模型信息"));
         assert!(!chinese.contains("默认模型参数"));
         assert!(chinese.contains("从OpenCode导入"));
         let _ = fs::remove_dir_all(root);
@@ -221,7 +248,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(!enabled.contains("Default model parameters"));
-        assert!(enabled.contains("●  Fetch model metadata from pi.dev"));
+        assert!(enabled.contains("●  Fetch model metadata from models.dev"));
 
         app.snapshot.fetch_model_metadata = false;
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -233,7 +260,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(disabled.contains("Default model parameters"));
-        assert!(disabled.contains("○  Fetch model metadata from pi.dev"));
+        assert!(disabled.contains("○  Fetch model metadata from models.dev"));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -468,6 +495,93 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(model_content.contains("Context window"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn model_limits_are_compact_in_lists_but_raw_in_the_editor() {
+        let (root, mut app) = app();
+        app.snapshot.providers[0].models[0].context_window = Some(128_000);
+        app.snapshot.providers[0].models[0].max_tokens = Some(1_048_576);
+        app.page = Page::Profiles;
+        app.focus = Focus::Providers;
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let profiles = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(profiles.contains("ctx 128k  max 1M"));
+
+        let model = app.snapshot.providers[0].models[0].clone();
+        app.overlay = Some(Overlay::ModelForm(ModelFormState::edit(
+            "示例-provider",
+            &model,
+        )));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let editor = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(editor.contains("128000"));
+        assert!(editor.contains("1048576"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ambiguous_catalog_prices_are_listed_and_selectable() {
+        let (root, mut app) = app();
+        app.overlay = Some(Overlay::CatalogMatches {
+            ambiguities: vec![CatalogAmbiguity {
+                provider_id: "custom".into(),
+                model_id: "shared".into(),
+                candidates: vec![
+                    CatalogCandidate {
+                        provider_id: "one".into(),
+                        model: catalog_model("shared", 128_000, 16_384, 1.0),
+                    },
+                    CatalogCandidate {
+                        provider_id: "two".into(),
+                        model: catalog_model("shared", 1_048_576, 128_000, 2.0),
+                    },
+                ],
+            }],
+            index: 0,
+            cursor: 0,
+            continuation: Some(app::CatalogContinuation::Fetched {
+                provider_id: "custom".into(),
+                models: Vec::new(),
+                unavailable: 0,
+            }),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 28)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let content = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(content.contains("Choose metadata source"));
+        assert!(content.contains("one"));
+        assert!(content.contains("two"));
+        assert!(content.contains("ctx 128k"));
+        assert!(content.contains("ctx 1M"));
+
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Fetched { ref models, .. })
+                if models.len() == 1 && models[0].config["cost"]["input"] == 2.0
+        ));
         let _ = fs::remove_dir_all(root);
     }
 

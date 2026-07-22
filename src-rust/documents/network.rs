@@ -1,28 +1,29 @@
 use std::{collections::BTreeSet, env, time::Duration};
 
 use reqwest::{Client, Url};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::{
     schema::{model_view, validate_model_id, validate_provider_view, validate_url},
-    AppError, CatalogFetch, CatalogModel, ImportOptions, ModelCatalog, ProviderView, Result,
+    AppError, CatalogAmbiguity, CatalogFetch, CatalogModel, ImportOptions, ModelCatalog,
+    ProviderView, Result,
 };
 
-const PI_CATALOG_URL: &str = "https://pi.dev/api/models";
+const MODELS_DEV_CATALOG_URL: &str = "https://models.dev/api.json";
 
 pub async fn fetch_catalog() -> Result<ModelCatalog> {
     let client = http_client()?;
-    fetch_catalog_from(&client, PI_CATALOG_URL).await
+    fetch_catalog_from(&client, MODELS_DEV_CATALOG_URL).await
 }
 
 pub async fn fetch_models(provider: ProviderView, options: ImportOptions) -> Result<CatalogFetch> {
-    fetch_models_from(provider, options, PI_CATALOG_URL).await
+    fetch_models_from(provider, options, MODELS_DEV_CATALOG_URL).await
 }
 
 async fn fetch_models_from(
     provider: ProviderView,
     options: ImportOptions,
-    pi_catalog_url: &str,
+    metadata_catalog_url: &str,
 ) -> Result<CatalogFetch> {
     validate_provider_view(&provider)?;
     if provider.base_url.is_empty() || provider.api.is_empty() {
@@ -72,30 +73,46 @@ async fn fetch_models_from(
     if !options.fetch_metadata {
         return Ok(CatalogFetch {
             models: ids.iter().map(|id| options.defaults.model(id)).collect(),
+            ambiguous: Vec::new(),
             unavailable: 0,
         });
     }
-    let catalog = fetch_catalog_from(&client, pi_catalog_url).await?;
-    let models = ids
-        .iter()
-        .filter_map(|id| catalog.resolve(&provider.id, id).cloned())
-        .collect::<Vec<_>>();
-    let unavailable = ids.len() - models.len();
-    if models.is_empty() {
+    let catalog = fetch_catalog_from(&client, metadata_catalog_url).await?;
+    let mut models = Vec::new();
+    let mut ambiguous = Vec::new();
+    let mut unavailable = 0;
+    for id in ids {
+        if let Some(model) = catalog.resolve(&provider.id, &id) {
+            models.push(model.clone());
+            continue;
+        }
+        let candidates = catalog.ambiguous_candidates(&provider.id, &id);
+        if candidates.is_empty() {
+            unavailable += 1;
+        } else {
+            ambiguous.push(CatalogAmbiguity {
+                provider_id: provider.id.clone(),
+                model_id: id,
+                candidates,
+            });
+        }
+    }
+    if models.is_empty() && ambiguous.is_empty() {
         return Err(AppError::Http(format!(
-            "pi.dev has no unambiguous metadata for provider '{}' model IDs",
+            "models.dev has no usable metadata for provider '{}' model IDs",
             provider.id
         )));
     }
     Ok(CatalogFetch {
         models,
+        ambiguous,
         unavailable,
     })
 }
 
 fn http_client() -> Result<Client> {
     Client::builder()
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(30))
         .user_agent(concat!("pi-switch/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| AppError::Http(error.to_string()))
@@ -107,18 +124,18 @@ async fn fetch_catalog_from(client: &Client, url: &str) -> Result<ModelCatalog> 
         .header("accept", "application/json")
         .send()
         .await
-        .map_err(|error| AppError::Http(format!("pi.dev catalog: {error}")))?;
+        .map_err(|error| AppError::Http(format!("models.dev catalog: {error}")))?;
     let status = response.status();
     if !status.is_success() {
         return Err(AppError::Http(format!(
-            "pi.dev catalog returned HTTP {status}"
+            "models.dev catalog returned HTTP {status}"
         )));
     }
     let body: Value = response
         .json()
         .await
-        .map_err(|error| AppError::Http(format!("invalid pi.dev catalog JSON: {error}")))?;
-    parse_pi_catalog(&body)
+        .map_err(|error| AppError::Http(format!("invalid models.dev catalog JSON: {error}")))?;
+    parse_models_dev_catalog(&body)
 }
 
 pub(super) fn catalog_url(provider: &ProviderView) -> Result<Url> {
@@ -242,97 +259,186 @@ pub(super) fn parse_provider_catalog(api: &str, body: &Value) -> Result<Vec<Stri
     Ok(models)
 }
 
-pub(super) fn parse_pi_catalog(body: &Value) -> Result<ModelCatalog> {
+pub(super) fn parse_models_dev_catalog(body: &Value) -> Result<ModelCatalog> {
     let providers = body
         .as_object()
-        .ok_or_else(|| AppError::Http("pi.dev catalog must be an object".into()))?;
+        .ok_or_else(|| AppError::Http("models.dev catalog must be an object".into()))?;
     let mut catalog = ModelCatalog::default();
     for (provider_id, value) in providers {
-        let entries = value.as_object().ok_or_else(|| {
+        let provider = value.as_object().ok_or_else(|| {
             AppError::Http(format!(
-                "pi.dev provider '{provider_id}' catalog must be an object"
+                "models.dev provider '{provider_id}' must be an object"
             ))
         })?;
+        if provider.get("id").and_then(Value::as_str) != Some(provider_id) {
+            return Err(AppError::Http(format!(
+                "models.dev provider key '{provider_id}' does not match its ID"
+            )));
+        }
+        let entries = provider
+            .get("models")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                AppError::Http(format!(
+                    "models.dev provider '{provider_id}' models must be an object"
+                ))
+            })?;
         let models = entries
             .iter()
             .map(|(key, value)| {
-                let model = catalog_model(value)?;
-                if model.id != *key {
+                let source_id = value.get("id").and_then(Value::as_str).ok_or_else(|| {
+                    AppError::Http("models.dev model entry must have a string ID".into())
+                })?;
+                if source_id != key {
                     return Err(AppError::Http(format!(
-                        "pi.dev provider '{provider_id}' model key '{key}' does not match ID '{}'",
-                        model.id
+                        "models.dev provider '{provider_id}' model key '{key}' does not match ID '{source_id}'"
                     )));
                 }
+                let model = catalog_model(value)?;
                 Ok(model)
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect();
         catalog.insert(provider_id.clone(), models);
     }
     if providers.is_empty() {
         return Err(AppError::Http(
-            "pi.dev catalog contains no providers".into(),
+            "models.dev catalog contains no providers".into(),
         ));
     }
     Ok(catalog)
 }
 
-fn catalog_model(value: &Value) -> Result<CatalogModel> {
+fn catalog_model(value: &Value) -> Result<Option<CatalogModel>> {
     let source = value
         .as_object()
-        .ok_or_else(|| AppError::Http("pi.dev model entry must be an object".into()))?;
+        .ok_or_else(|| AppError::Http("models.dev model entry must be an object".into()))?;
     let id = source
         .get("id")
         .and_then(Value::as_str)
-        .ok_or_else(|| AppError::Http("pi.dev model entry must have a string ID".into()))?;
+        .ok_or_else(|| AppError::Http("models.dev model entry must have a string ID".into()))?;
     validate_model_id(id)?;
-    for field in ["contextWindow", "maxTokens"] {
-        if source
-            .get(field)
-            .and_then(Value::as_u64)
-            .filter(|value| *value > 0)
-            .is_none()
-        {
-            return Err(AppError::Http(format!(
-                "pi.dev model '{id}' {field} must be a positive integer"
-            )));
-        }
-    }
-    let cost = source
-        .get("cost")
-        .and_then(Value::as_object)
-        .ok_or_else(|| AppError::Http(format!("pi.dev model '{id}' cost must be an object")))?;
-    for field in ["input", "output", "cacheRead", "cacheWrite"] {
-        if !cost
-            .get(field)
-            .and_then(Value::as_f64)
-            .is_some_and(|value| value >= 0.0)
-        {
-            return Err(AppError::Http(format!(
-                "pi.dev model '{id}' cost.{field} must be a non-negative number"
-            )));
-        }
-    }
+    let name = source
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::Http(format!("models.dev model '{id}' name must be a string")))?;
+    let reasoning = source
+        .get("reasoning")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            AppError::Http(format!(
+                "models.dev model '{id}' reasoning must be a boolean"
+            ))
+        })?;
 
-    let mut config = serde_json::Map::new();
-    for field in [
-        "id",
-        "name",
-        "reasoning",
-        "input",
-        "cost",
-        "contextWindow",
-        "maxTokens",
-    ] {
-        if let Some(value) = source.get(field) {
-            config.insert(field.into(), value.clone());
+    let limit = match source.get("limit") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Object(value)) => value,
+        Some(_) => {
+            return Err(AppError::Http(format!(
+                "models.dev model '{id}' limit must be an object"
+            )))
         }
+    };
+    let Some(context_window) = positive_u64(limit.get("context"), id, "limit.context")? else {
+        return Ok(None);
+    };
+    let Some(max_tokens) = positive_u64(limit.get("output"), id, "limit.output")? else {
+        return Ok(None);
+    };
+
+    let modalities = match source.get("modalities") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Object(value)) => value,
+        Some(_) => {
+            return Err(AppError::Http(format!(
+                "models.dev model '{id}' modalities must be an object"
+            )))
+        }
+    };
+    let inputs = modalities
+        .get("input")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            AppError::Http(format!(
+                "models.dev model '{id}' modalities.input must be an array"
+            ))
+        })?;
+    let inputs = inputs
+        .iter()
+        .map(|value| {
+            value.as_str().ok_or_else(|| {
+                AppError::Http(format!(
+                    "models.dev model '{id}' modalities.input must contain strings"
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if !inputs.contains(&"text") {
+        return Ok(None);
     }
-    let config = Value::Object(config);
-    model_view("pi.dev", 0, &config)?;
-    Ok(CatalogModel {
+    let input = if inputs.contains(&"image") {
+        json!(["text", "image"])
+    } else {
+        json!(["text"])
+    };
+
+    let cost = match source.get("cost") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(value)) => Some(value),
+        Some(_) => {
+            return Err(AppError::Http(format!(
+                "models.dev model '{id}' cost must be an object"
+            )))
+        }
+    };
+    let cost_value = |field| nonnegative_f64(cost.and_then(|value| value.get(field)), id, field);
+    let config = json!({
+        "id": id,
+        "name": name,
+        "reasoning": reasoning,
+        "input": input,
+        "cost": {
+            "input": cost_value("input")?,
+            "output": cost_value("output")?,
+            "cacheRead": cost_value("cache_read")?,
+            "cacheWrite": cost_value("cache_write")?
+        },
+        "contextWindow": context_window,
+        "maxTokens": max_tokens
+    });
+    model_view("models.dev", 0, &config)?;
+    Ok(Some(CatalogModel {
         id: id.into(),
         config,
-    })
+    }))
+}
+
+fn positive_u64(value: Option<&Value>, id: &str, field: &str) -> Result<Option<u64>> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .map(|value| (value > 0).then_some(value))
+            .ok_or_else(|| {
+                AppError::Http(format!(
+                    "models.dev model '{id}' {field} must be an integer"
+                ))
+            }),
+    }
+}
+
+fn nonnegative_f64(value: Option<&Value>, id: &str, field: &str) -> Result<f64> {
+    match value {
+        None | Some(Value::Null) => Ok(0.0),
+        Some(value) => value.as_f64().filter(|value| *value >= 0.0).ok_or_else(|| {
+            AppError::Http(format!(
+                "models.dev model '{id}' cost.{field} must be a non-negative number"
+            ))
+        }),
+    }
 }
 
 #[cfg(test)]

@@ -3,8 +3,8 @@ use std::{collections::BTreeSet, sync::mpsc, thread};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::documents::{
-    self, Backup, CatalogFetch, CatalogModel, DoctorCheck, ImportSummary, Paths, ProviderView,
-    Snapshot,
+    self, Backup, CatalogAmbiguity, CatalogFetch, CatalogModel, DoctorCheck, ImportSummary,
+    OpenCodeImportPlan, Paths, ProviderView, Snapshot,
 };
 
 use super::{
@@ -62,7 +62,10 @@ impl SettingsAction {
         match self {
             Self::Language => format!("{}: {}", language.pick("Language", "语言"), language.name()),
             Self::FetchMetadata => language
-                .pick("Fetch model metadata from pi.dev", "从 pi.dev 获取模型信息")
+                .pick(
+                    "Fetch model metadata from models.dev",
+                    "从 models.dev 获取模型信息",
+                )
                 .into(),
             Self::ModelDefaults => language
                 .pick("Default model parameters", "默认模型参数")
@@ -136,10 +139,28 @@ pub(super) enum Overlay {
         selected: BTreeSet<usize>,
         cursor: usize,
     },
+    CatalogMatches {
+        ambiguities: Vec<CatalogAmbiguity>,
+        index: usize,
+        cursor: usize,
+        continuation: Option<CatalogContinuation>,
+    },
     OpenCodeProviders {
         providers: Vec<String>,
         selected: BTreeSet<usize>,
         cursor: usize,
+    },
+}
+
+pub(super) enum CatalogContinuation {
+    Fetched {
+        provider_id: String,
+        models: Vec<CatalogModel>,
+        unavailable: usize,
+    },
+    OpenCode {
+        plan: OpenCodeImportPlan,
+        candidate_indices: Vec<usize>,
     },
 }
 
@@ -148,6 +169,7 @@ enum BackgroundResult {
         provider_id: String,
         fetched: CatalogFetch,
     },
+    OpenCodePrepared(OpenCodeImportPlan),
     OpenCode(ImportSummary),
 }
 
@@ -292,28 +314,55 @@ impl App {
                 provider_id,
                 fetched,
             })) => {
-                let selected = (0..fetched.models.len()).collect();
-                if fetched.unavailable > 0 {
+                let CatalogFetch {
+                    models,
+                    ambiguous,
+                    unavailable,
+                } = fetched;
+                if unavailable > 0 {
                     self.notice(
                         NoticeKind::Warning,
                         format!(
                             "{} {}",
-                            fetched.unavailable,
+                            unavailable,
                             self.language.pick(
-                                "model(s) skipped without unambiguous pi.dev metadata",
-                                "个模型因 pi.dev 元数据缺失或有歧义而跳过"
+                                "model(s) skipped without models.dev metadata",
+                                "个模型因 models.dev 元数据缺失而跳过"
                             )
                         ),
                     );
                 }
-                self.overlay = Some(Overlay::Fetched {
-                    provider_id,
-                    models: fetched.models,
-                    unavailable: fetched.unavailable,
-                    selected,
-                    cursor: 0,
-                });
                 self.task = None;
+                if ambiguous.is_empty() {
+                    self.show_fetched(provider_id, models, unavailable);
+                } else {
+                    self.overlay = Some(Overlay::CatalogMatches {
+                        ambiguities: ambiguous,
+                        index: 0,
+                        cursor: 0,
+                        continuation: Some(CatalogContinuation::Fetched {
+                            provider_id,
+                            models,
+                            unavailable,
+                        }),
+                    });
+                }
+            }
+            Ok(Ok(BackgroundResult::OpenCodePrepared(plan))) => {
+                self.task = None;
+                if plan.ambiguous.is_empty() {
+                    self.start_opencode_apply(plan, Vec::new());
+                } else {
+                    self.overlay = Some(Overlay::CatalogMatches {
+                        ambiguities: plan.ambiguous.clone(),
+                        index: 0,
+                        cursor: 0,
+                        continuation: Some(CatalogContinuation::OpenCode {
+                            plan,
+                            candidate_indices: Vec::new(),
+                        }),
+                    });
+                }
             }
             Ok(Ok(BackgroundResult::OpenCode(summary))) => {
                 self.overlay = None;
@@ -596,6 +645,55 @@ impl App {
                         .collect::<Vec<_>>();
                     self.import_fetched(&id, chosen);
                     return;
+                }
+                _ => {}
+            },
+            Overlay::CatalogMatches {
+                ambiguities,
+                index,
+                cursor,
+                continuation,
+            } => match key.code {
+                KeyCode::Esc => return,
+                KeyCode::Up | KeyCode::Char('k') => *cursor = cursor.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let candidate_count = ambiguities
+                        .get(*index)
+                        .map(|ambiguity| ambiguity.candidates.len())
+                        .unwrap_or(0);
+                    *cursor = (*cursor + 1).min(candidate_count.saturating_sub(1));
+                }
+                KeyCode::Enter | KeyCode::Char(' ') => {
+                    let Some(ambiguity) = ambiguities.get(*index) else {
+                        return;
+                    };
+                    let Some(candidate) = ambiguity.candidates.get(*cursor) else {
+                        return;
+                    };
+                    match continuation.as_mut().expect("catalog match continuation") {
+                        CatalogContinuation::Fetched { models, .. } => {
+                            models.push(candidate.model.clone());
+                        }
+                        CatalogContinuation::OpenCode {
+                            candidate_indices, ..
+                        } => candidate_indices.push(*cursor),
+                    }
+                    *index += 1;
+                    *cursor = 0;
+                    if *index == ambiguities.len() {
+                        match continuation.take().expect("catalog match continuation") {
+                            CatalogContinuation::Fetched {
+                                provider_id,
+                                models,
+                                unavailable,
+                            } => self.show_fetched(provider_id, models, unavailable),
+                            CatalogContinuation::OpenCode {
+                                plan,
+                                candidate_indices,
+                            } => self.start_opencode_apply(plan, candidate_indices),
+                        }
+                        return;
+                    }
                 }
                 _ => {}
             },
@@ -914,14 +1012,14 @@ impl App {
                     NoticeKind::Success,
                     self.language.pick(
                         if enabled {
-                            "pi.dev model metadata enabled"
+                            "models.dev model metadata enabled"
                         } else {
-                            "pi.dev model metadata disabled"
+                            "models.dev model metadata disabled"
                         },
                         if enabled {
-                            "已启用 pi.dev 模型信息"
+                            "已启用 models.dev 模型信息"
                         } else {
-                            "已关闭 pi.dev 模型信息"
+                            "已关闭 models.dev 模型信息"
                         },
                     ),
                 );
@@ -1101,6 +1199,17 @@ impl App {
         }
     }
 
+    fn show_fetched(&mut self, provider_id: String, models: Vec<CatalogModel>, unavailable: usize) {
+        let selected = (0..models.len()).collect();
+        self.overlay = Some(Overlay::Fetched {
+            provider_id,
+            models,
+            unavailable,
+            selected,
+            cursor: 0,
+        });
+    }
+
     fn open_opencode_providers(&mut self) {
         match documents::list_opencode_providers(&self.paths) {
             Ok(providers) => {
@@ -1125,8 +1234,27 @@ impl App {
                 .build()
                 .map_err(|error| documents::AppError::Http(error.to_string()))
                 .and_then(|runtime| {
-                    runtime.block_on(documents::import_opencode(&paths, &providers, options))
+                    runtime.block_on(documents::prepare_opencode_import(
+                        &paths, &providers, options,
+                    ))
                 })
+                .map(BackgroundResult::OpenCodePrepared);
+            let _ = sender.send(result);
+        });
+        self.task = Some(receiver);
+        self.overlay = Some(Overlay::Loading {
+            message: self
+                .language
+                .pick("Importing OpenCode configuration", "正在导入 OpenCode 配置")
+                .into(),
+        });
+    }
+
+    fn start_opencode_apply(&mut self, plan: OpenCodeImportPlan, candidate_indices: Vec<usize>) {
+        let paths = self.paths.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = documents::apply_opencode_import(&paths, plan, &candidate_indices)
                 .map(BackgroundResult::OpenCode);
             let _ = sender.send(result);
         });
@@ -1161,7 +1289,7 @@ impl App {
         );
         if self.snapshot.fetch_model_metadata {
             message.push_str(&format!(
-                "; pi.dev {} {}, {} {}",
+                "; models.dev {} {}, {} {}",
                 self.language.pick("matched", "匹配"),
                 summary.metadata,
                 self.language.pick("unresolved", "未解析"),
