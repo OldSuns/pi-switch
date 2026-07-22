@@ -1,0 +1,34 @@
+# Dependencies
+/node_modules/
+
+# Rust and napi-rs build output
+/target/
+*.node
+/native.d.ts
+*.rs.bk
+
+# Packages and reports
+*.tgz
+/dist/
+/coverage/
+/.nyc_output/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Editors and operating systems
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*~
