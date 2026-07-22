@@ -1,4 +1,6 @@
-use crate::documents::{self, ModelDraft, ModelView, ProviderDraft, ProviderView};
+use crate::documents::{
+    self, AppError, ModelDefaults, ModelDraft, ModelView, ProviderDraft, ProviderView,
+};
 
 use super::{
     input::{api_from_index, char_len, parse_optional_object, parse_positive_u64},
@@ -131,8 +133,8 @@ impl ModelFormState {
             api: 0,
             reasoning: false,
             image_input: false,
-            context_window: "128000".into(),
-            max_tokens: "16384".into(),
+            context_window: String::new(),
+            max_tokens: String::new(),
             field: 0,
             cursor: 0,
         }
@@ -152,8 +154,14 @@ impl ModelFormState {
                 .unwrap_or_default(),
             reasoning: model.reasoning,
             image_input: model.input.iter().any(|input| input == "image"),
-            context_window: model.context_window.to_string(),
-            max_tokens: model.max_tokens.to_string(),
+            context_window: model
+                .context_window
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            max_tokens: model
+                .max_tokens
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
             field: 0,
             cursor: char_len(&model.id),
         }
@@ -211,4 +219,98 @@ impl ModelFormState {
             max_tokens: parse_positive_u64(&self.max_tokens, "max tokens")?,
         })
     }
+}
+
+pub(super) struct ModelDefaultsFormState {
+    pub(super) context_window: String,
+    pub(super) max_tokens: String,
+    pub(super) input_cost: String,
+    pub(super) output_cost: String,
+    pub(super) cache_read_cost: String,
+    pub(super) cache_write_cost: String,
+    pub(super) field: usize,
+    pub(super) cursor: usize,
+}
+
+impl ModelDefaultsFormState {
+    pub(super) fn new(defaults: &ModelDefaults) -> Self {
+        Self {
+            context_window: optional_number(defaults.context_window),
+            max_tokens: optional_number(defaults.max_tokens),
+            input_cost: optional_number(defaults.input_cost),
+            output_cost: optional_number(defaults.output_cost),
+            cache_read_cost: optional_number(defaults.cache_read_cost),
+            cache_write_cost: optional_number(defaults.cache_write_cost),
+            field: 0,
+            cursor: 0,
+        }
+    }
+
+    pub(super) fn current_text(&self) -> &str {
+        match self.field {
+            0 => &self.context_window,
+            1 => &self.max_tokens,
+            2 => &self.input_cost,
+            3 => &self.output_cost,
+            4 => &self.cache_read_cost,
+            _ => &self.cache_write_cost,
+        }
+    }
+
+    pub(super) fn current_text_mut(&mut self) -> &mut String {
+        match self.field {
+            0 => &mut self.context_window,
+            1 => &mut self.max_tokens,
+            2 => &mut self.input_cost,
+            3 => &mut self.output_cost,
+            4 => &mut self.cache_read_cost,
+            _ => &mut self.cache_write_cost,
+        }
+    }
+
+    pub(super) fn select_field(&mut self, next: usize) {
+        self.field = next % 6;
+        self.cursor = char_len(self.current_text());
+    }
+
+    pub(super) fn draft(&self) -> documents::Result<ModelDefaults> {
+        Ok(ModelDefaults {
+            context_window: parse_optional_positive_u64(&self.context_window, "context window")?,
+            max_tokens: parse_optional_positive_u64(&self.max_tokens, "max tokens")?,
+            input_cost: parse_optional_nonnegative_f64(&self.input_cost, "input cost")?,
+            output_cost: parse_optional_nonnegative_f64(&self.output_cost, "output cost")?,
+            cache_read_cost: parse_optional_nonnegative_f64(
+                &self.cache_read_cost,
+                "cache read cost",
+            )?,
+            cache_write_cost: parse_optional_nonnegative_f64(
+                &self.cache_write_cost,
+                "cache write cost",
+            )?,
+        })
+    }
+}
+
+fn optional_number(value: Option<impl ToString>) -> String {
+    value.map(|value| value.to_string()).unwrap_or_default()
+}
+
+fn parse_optional_positive_u64(value: &str, field: &str) -> documents::Result<Option<u64>> {
+    if value.trim().is_empty() {
+        return Ok(None);
+    }
+    parse_positive_u64(value, field).map(Some)
+}
+
+fn parse_optional_nonnegative_f64(value: &str, field: &str) -> documents::Result<Option<f64>> {
+    if value.trim().is_empty() {
+        return Ok(None);
+    }
+    value
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .map(Some)
+        .ok_or_else(|| AppError::Invalid(format!("{field} must be a non-negative number")))
 }

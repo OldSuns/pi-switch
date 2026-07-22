@@ -4,11 +4,26 @@ use reqwest::{Client, Url};
 use serde_json::Value;
 
 use super::{
-    schema::{validate_provider_view, validate_url},
-    AppError, ProviderView, Result,
+    schema::{model_view, validate_model_id, validate_provider_view, validate_url},
+    AppError, CatalogFetch, CatalogModel, ImportOptions, ModelCatalog, ProviderView, Result,
 };
 
-pub async fn fetch_models(provider: ProviderView) -> Result<Vec<String>> {
+const PI_CATALOG_URL: &str = "https://pi.dev/api/models";
+
+pub async fn fetch_catalog() -> Result<ModelCatalog> {
+    let client = http_client()?;
+    fetch_catalog_from(&client, PI_CATALOG_URL).await
+}
+
+pub async fn fetch_models(provider: ProviderView, options: ImportOptions) -> Result<CatalogFetch> {
+    fetch_models_from(provider, options, PI_CATALOG_URL).await
+}
+
+async fn fetch_models_from(
+    provider: ProviderView,
+    options: ImportOptions,
+    pi_catalog_url: &str,
+) -> Result<CatalogFetch> {
     validate_provider_view(&provider)?;
     if provider.base_url.is_empty() || provider.api.is_empty() {
         return Err(AppError::Invalid(
@@ -23,10 +38,7 @@ pub async fn fetch_models(provider: ProviderView) -> Result<Vec<String>> {
         }
     }
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|error| AppError::Http(error.to_string()))?;
+    let client = http_client()?;
     let mut request = client.get(url);
     for (name, value) in provider_headers(&provider)? {
         request = request.header(name, value);
@@ -56,7 +68,57 @@ pub async fn fetch_models(provider: ProviderView) -> Result<Vec<String>> {
         .json()
         .await
         .map_err(|error| AppError::Http(format!("invalid JSON response: {error}")))?;
-    parse_catalog(&provider.api, &body)
+    let ids = parse_provider_catalog(&provider.api, &body)?;
+    if !options.fetch_metadata {
+        return Ok(CatalogFetch {
+            models: ids.iter().map(|id| options.defaults.model(id)).collect(),
+            unavailable: 0,
+        });
+    }
+    let catalog = fetch_catalog_from(&client, pi_catalog_url).await?;
+    let models = ids
+        .iter()
+        .filter_map(|id| catalog.resolve(&provider.id, id).cloned())
+        .collect::<Vec<_>>();
+    let unavailable = ids.len() - models.len();
+    if models.is_empty() {
+        return Err(AppError::Http(format!(
+            "pi.dev has no unambiguous metadata for provider '{}' model IDs",
+            provider.id
+        )));
+    }
+    Ok(CatalogFetch {
+        models,
+        unavailable,
+    })
+}
+
+fn http_client() -> Result<Client> {
+    Client::builder()
+        .timeout(Duration::from_secs(15))
+        .user_agent(concat!("pi-switch/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|error| AppError::Http(error.to_string()))
+}
+
+async fn fetch_catalog_from(client: &Client, url: &str) -> Result<ModelCatalog> {
+    let response = client
+        .get(url)
+        .header("accept", "application/json")
+        .send()
+        .await
+        .map_err(|error| AppError::Http(format!("pi.dev catalog: {error}")))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(AppError::Http(format!(
+            "pi.dev catalog returned HTTP {status}"
+        )));
+    }
+    let body: Value = response
+        .json()
+        .await
+        .map_err(|error| AppError::Http(format!("invalid pi.dev catalog JSON: {error}")))?;
+    parse_pi_catalog(&body)
 }
 
 pub(super) fn catalog_url(provider: &ProviderView) -> Result<Url> {
@@ -152,7 +214,7 @@ pub(super) fn environment_value(name: &str) -> Result<String> {
         .map_err(|_| AppError::Invalid(format!("environment variable '{name}' is not set")))
 }
 
-pub(super) fn parse_catalog(api: &str, body: &Value) -> Result<Vec<String>> {
+pub(super) fn parse_provider_catalog(api: &str, body: &Value) -> Result<Vec<String>> {
     let entries = if api == "google-generative-ai" {
         body.get("models")
     } else {
@@ -178,4 +240,106 @@ pub(super) fn parse_catalog(api: &str, body: &Value) -> Result<Vec<String>> {
         return Err(AppError::Http("model array contains no IDs".into()));
     }
     Ok(models)
+}
+
+pub(super) fn parse_pi_catalog(body: &Value) -> Result<ModelCatalog> {
+    let providers = body
+        .as_object()
+        .ok_or_else(|| AppError::Http("pi.dev catalog must be an object".into()))?;
+    let mut catalog = ModelCatalog::default();
+    for (provider_id, value) in providers {
+        let entries = value.as_object().ok_or_else(|| {
+            AppError::Http(format!(
+                "pi.dev provider '{provider_id}' catalog must be an object"
+            ))
+        })?;
+        let models = entries
+            .iter()
+            .map(|(key, value)| {
+                let model = catalog_model(value)?;
+                if model.id != *key {
+                    return Err(AppError::Http(format!(
+                        "pi.dev provider '{provider_id}' model key '{key}' does not match ID '{}'",
+                        model.id
+                    )));
+                }
+                Ok(model)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        catalog.insert(provider_id.clone(), models);
+    }
+    if providers.is_empty() {
+        return Err(AppError::Http(
+            "pi.dev catalog contains no providers".into(),
+        ));
+    }
+    Ok(catalog)
+}
+
+fn catalog_model(value: &Value) -> Result<CatalogModel> {
+    let source = value
+        .as_object()
+        .ok_or_else(|| AppError::Http("pi.dev model entry must be an object".into()))?;
+    let id = source
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::Http("pi.dev model entry must have a string ID".into()))?;
+    validate_model_id(id)?;
+    for field in ["contextWindow", "maxTokens"] {
+        if source
+            .get(field)
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0)
+            .is_none()
+        {
+            return Err(AppError::Http(format!(
+                "pi.dev model '{id}' {field} must be a positive integer"
+            )));
+        }
+    }
+    let cost = source
+        .get("cost")
+        .and_then(Value::as_object)
+        .ok_or_else(|| AppError::Http(format!("pi.dev model '{id}' cost must be an object")))?;
+    for field in ["input", "output", "cacheRead", "cacheWrite"] {
+        if !cost
+            .get(field)
+            .and_then(Value::as_f64)
+            .is_some_and(|value| value >= 0.0)
+        {
+            return Err(AppError::Http(format!(
+                "pi.dev model '{id}' cost.{field} must be a non-negative number"
+            )));
+        }
+    }
+
+    let mut config = serde_json::Map::new();
+    for field in [
+        "id",
+        "name",
+        "reasoning",
+        "input",
+        "cost",
+        "contextWindow",
+        "maxTokens",
+    ] {
+        if let Some(value) = source.get(field) {
+            config.insert(field.into(), value.clone());
+        }
+    }
+    let config = Value::Object(config);
+    model_view("pi.dev", 0, &config)?;
+    Ok(CatalogModel {
+        id: id.into(),
+        config,
+    })
+}
+
+#[cfg(test)]
+pub(super) async fn fetch_models_for_test(
+    provider: ProviderView,
+    options: ImportOptions,
+    catalog_url: &str,
+) -> Result<CatalogFetch> {
+    fetch_models_from(provider, options, catalog_url).await
 }

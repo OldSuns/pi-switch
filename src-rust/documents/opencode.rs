@@ -3,26 +3,99 @@ use std::fs;
 use serde_json::{json, Map, Value};
 
 use super::{
-    schema::{default_model, provider_view, validate_draft, validate_model_id},
+    network::fetch_catalog,
+    schema::{minimal_model, provider_view, validate_draft, validate_model_id},
     storage::{io_error, providers_object_mut, read_document, write_document, WriteLock},
-    AppError, ImportSummary, Paths, ProviderDraft, Result,
+    AppError, ImportOptions, ImportSummary, ModelCatalog, Paths, ProviderDraft, Result,
 };
 
-pub fn import_opencode(paths: &Paths) -> Result<ImportSummary> {
+pub fn list_opencode_providers(paths: &Paths) -> Result<Vec<String>> {
+    let source = read_source(paths)?;
+    let mut providers = source_providers(&source)?
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    providers.sort_by_key(|value| value.to_lowercase());
+    Ok(providers)
+}
+
+pub async fn import_opencode(
+    paths: &Paths,
+    provider_ids: &[String],
+    options: ImportOptions,
+) -> Result<ImportSummary> {
+    let source = read_source(paths)?;
+    let catalog = if options.fetch_metadata {
+        Some(fetch_catalog().await?)
+    } else {
+        None
+    };
+    import_source(paths, &source, catalog.as_ref(), provider_ids, &options)
+}
+
+#[cfg(test)]
+pub(super) fn import_opencode_with_catalog(
+    paths: &Paths,
+    catalog: &ModelCatalog,
+) -> Result<ImportSummary> {
+    let source = read_source(paths)?;
+    let provider_ids = source_providers(&source)?
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    import_source(
+        paths,
+        &source,
+        Some(catalog),
+        &provider_ids,
+        &ImportOptions {
+            fetch_metadata: true,
+            defaults: Default::default(),
+        },
+    )
+}
+
+fn read_source(paths: &Paths) -> Result<Value> {
     let bytes = fs::read(&paths.opencode).map_err(|source| io_error(&paths.opencode, source))?;
-    let source: Value = serde_json::from_slice(&bytes).map_err(|source| AppError::Json {
+    serde_json::from_slice(&bytes).map_err(|source| AppError::Json {
         path: paths.opencode.clone(),
         source,
-    })?;
-    let source_providers = source
+    })
+}
+
+fn source_providers(source: &Value) -> Result<&Map<String, Value>> {
+    let providers = source
         .as_object()
         .and_then(|root| root.get("provider"))
         .and_then(Value::as_object)
         .ok_or_else(|| AppError::Invalid("OpenCode provider must be an object".into()))?;
-    if source_providers.is_empty() {
+    if providers.is_empty() {
         return Err(AppError::Invalid(
             "OpenCode configuration contains no providers".into(),
         ));
+    }
+    Ok(providers)
+}
+
+fn import_source(
+    paths: &Paths,
+    source: &Value,
+    catalog: Option<&ModelCatalog>,
+    provider_ids: &[String],
+    options: &ImportOptions,
+) -> Result<ImportSummary> {
+    let source_providers = source_providers(source)?;
+    if provider_ids.is_empty() {
+        return Err(AppError::Invalid(
+            "select at least one OpenCode provider".into(),
+        ));
+    }
+    for id in provider_ids {
+        if !source_providers.contains_key(id) {
+            return Err(AppError::Invalid(format!(
+                "OpenCode provider '{id}' no longer exists"
+            )));
+        }
     }
 
     let _lock = WriteLock::acquire(paths)?;
@@ -32,11 +105,20 @@ pub fn import_opencode(paths: &Paths) -> Result<ImportSummary> {
     let mut summary = ImportSummary {
         providers: 0,
         models: 0,
+        metadata: 0,
+        defaults: 0,
+        unresolved: 0,
         changed: false,
     };
 
-    for (id, source) in source_providers {
-        summary.models += merge_provider(id, source, providers)?;
+    for id in provider_ids {
+        let source = &source_providers[id];
+        let (models, metadata, defaults, unresolved) =
+            merge_provider(id, source, providers, catalog, options)?;
+        summary.models += models;
+        summary.metadata += metadata;
+        summary.defaults += defaults;
+        summary.unresolved += unresolved;
         summary.providers += 1;
     }
 
@@ -47,7 +129,13 @@ pub fn import_opencode(paths: &Paths) -> Result<ImportSummary> {
     Ok(summary)
 }
 
-fn merge_provider(id: &str, source: &Value, providers: &mut Map<String, Value>) -> Result<usize> {
+fn merge_provider(
+    id: &str,
+    source: &Value,
+    providers: &mut Map<String, Value>,
+    catalog: Option<&ModelCatalog>,
+    import_options: &ImportOptions,
+) -> Result<(usize, usize, usize, usize)> {
     let source = source
         .as_object()
         .ok_or_else(|| AppError::Invalid(format!("OpenCode provider '{id}' must be an object")))?;
@@ -96,14 +184,28 @@ fn merge_provider(id: &str, source: &Value, providers: &mut Map<String, Value>) 
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
         .ok_or_else(|| AppError::Invalid(format!("Pi provider '{id}' models must be an array")))?;
+    let mut metadata = 0;
+    let mut defaults = 0;
+    let mut unresolved = 0;
     for (model_id, model) in source_models {
-        merge_model(id, model_id, model, target_models)?;
+        let (from_metadata, from_defaults, is_unresolved) =
+            merge_model(id, model_id, model, target_models, catalog, import_options)?;
+        metadata += usize::from(from_metadata);
+        defaults += usize::from(from_defaults);
+        unresolved += usize::from(is_unresolved);
     }
     provider_view(id, &Value::Object(target.clone()))?;
-    Ok(source_models.len())
+    Ok((source_models.len(), metadata, defaults, unresolved))
 }
 
-fn merge_model(provider_id: &str, id: &str, source: &Value, models: &mut Vec<Value>) -> Result<()> {
+fn merge_model(
+    provider_id: &str,
+    id: &str,
+    source: &Value,
+    models: &mut Vec<Value>,
+    catalog: Option<&ModelCatalog>,
+    options: &ImportOptions,
+) -> Result<(bool, bool, bool)> {
     validate_model_id(id)?;
     let source = source.as_object().ok_or_else(|| {
         AppError::Invalid(format!(
@@ -113,16 +215,33 @@ fn merge_model(provider_id: &str, id: &str, source: &Value, models: &mut Vec<Val
     let index = models
         .iter()
         .position(|model| model.get("id").and_then(Value::as_str) == Some(id));
-    let index = match index {
-        Some(index) => index,
+    let (index, is_new) = match index {
+        Some(index) => (index, false),
         None => {
-            models.push(default_model(id));
-            models.len() - 1
+            models.push(minimal_model(id));
+            (models.len() - 1, true)
         }
     };
     let target = models[index]
         .as_object_mut()
         .ok_or_else(|| AppError::Invalid("Pi model entry must be an object".into()))?;
+
+    let catalog_model = if options.fetch_metadata {
+        catalog.and_then(|catalog| catalog.resolve(provider_id, id).cloned())
+    } else {
+        Some(options.defaults.model(id))
+    };
+    if options.fetch_metadata || is_new {
+        if let Some(model) = catalog_model.as_ref() {
+            target.extend(
+                model
+                    .config
+                    .as_object()
+                    .expect("validated catalog model")
+                    .clone(),
+            );
+        }
+    }
 
     if let Some(name) = optional_string(source, "name", id)? {
         target.insert("name".into(), Value::String(name.into()));
@@ -143,7 +262,11 @@ fn merge_model(provider_id: &str, id: &str, source: &Value, models: &mut Vec<Val
             target.insert("input".into(), Value::Array(model_input(input, id)?));
         }
     }
-    Ok(())
+    Ok((
+        options.fetch_metadata && catalog_model.is_some(),
+        !options.fetch_metadata && is_new,
+        options.fetch_metadata && catalog_model.is_none(),
+    ))
 }
 
 fn provider_api(id: &str, npm: Option<&str>) -> Result<&'static str> {

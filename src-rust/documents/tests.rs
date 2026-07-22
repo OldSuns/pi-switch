@@ -32,6 +32,21 @@ fn model_draft(id: &str) -> ModelDraft {
     }
 }
 
+fn catalog_model(id: &str, context_window: u64, max_tokens: u64, input_cost: f64) -> CatalogModel {
+    CatalogModel {
+        id: id.into(),
+        config: json!({
+            "id": id,
+            "name": id,
+            "reasoning": false,
+            "input": ["text"],
+            "cost": {"input": input_cost, "output": 2, "cacheRead": 0.1, "cacheWrite": 0},
+            "contextWindow": context_window,
+            "maxTokens": max_tokens
+        }),
+    }
+}
+
 fn write_opencode(paths: &Paths, value: Value) {
     fs::create_dir_all(paths.opencode.parent().unwrap()).unwrap();
     fs::write(&paths.opencode, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
@@ -75,10 +90,13 @@ fn opencode_import_maps_and_merges_providers_and_models() {
     );
 
     assert_eq!(
-        import_opencode(&paths).unwrap(),
+        import_opencode_with_catalog(&paths, &ModelCatalog::default()).unwrap(),
         ImportSummary {
             providers: 2,
             models: 3,
+            metadata: 0,
+            defaults: 0,
+            unresolved: 3,
             changed: true
         }
     );
@@ -102,7 +120,11 @@ fn opencode_import_maps_and_merges_providers_and_models() {
     );
     assert!(!list_backups(&paths).unwrap().is_empty());
 
-    assert!(!import_opencode(&paths).unwrap().changed);
+    assert!(
+        !import_opencode_with_catalog(&paths, &ModelCatalog::default())
+            .unwrap()
+            .changed
+    );
     let imported: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
     assert_eq!(
         imported["providers"]["custom"]["models"]
@@ -124,7 +146,7 @@ fn invalid_opencode_import_does_not_overwrite_pi_models() {
         &paths,
         json!({"provider":{"bad":{"npm":"unsupported","models":{}}}}),
     );
-    assert!(import_opencode(&paths).is_err());
+    assert!(import_opencode_with_catalog(&paths, &ModelCatalog::default()).is_err());
     assert_eq!(fs::read(&paths.models).unwrap(), before);
 
     write_opencode(
@@ -139,7 +161,7 @@ fn invalid_opencode_import_does_not_overwrite_pi_models() {
             }
         }),
     );
-    assert!(import_opencode(&paths).is_err());
+    assert!(import_opencode_with_catalog(&paths, &ModelCatalog::default()).is_err());
     assert_eq!(fs::read(&paths.models).unwrap(), before);
     fs::remove_dir_all(root).unwrap();
 }
@@ -172,7 +194,19 @@ fn provider_updates_preserve_unknown_data_and_create_backup() {
         },
     )
     .unwrap();
-    assert_eq!(import_models(&paths, "new", &["added".into()]).unwrap(), 1);
+    assert_eq!(
+        import_models(
+            &paths,
+            "new",
+            &[catalog_model("added", 200_000, 32_000, 1.5)],
+            true,
+        )
+        .unwrap(),
+        ModelImportSummary {
+            added: 1,
+            updated: 0
+        }
+    );
 
     let models: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
     assert_eq!(models["schemaVersion"], 9);
@@ -218,9 +252,36 @@ fn malformed_json_stops_without_overwriting() {
 }
 
 #[test]
+fn language_setting_is_persisted_without_losing_pi_settings() {
+    let (root, paths) = fixture();
+    fs::write(&paths.settings, r#"{"theme":"dark","future":true}"#).unwrap();
+
+    set_language(&paths, "zh-CN").unwrap();
+    let settings: Value = serde_json::from_slice(&fs::read(&paths.settings).unwrap()).unwrap();
+    assert_eq!(settings["piSwitch"]["language"], "zh-CN");
+    assert_eq!(settings["theme"], "dark");
+    assert_eq!(settings["future"], true);
+    assert_eq!(load_snapshot(&paths).unwrap().language, "zh-CN");
+    set_fetch_model_metadata(&paths, false).unwrap();
+    let defaults = ModelDefaults {
+        context_window: Some(256_000),
+        input_cost: Some(0.5),
+        ..Default::default()
+    };
+    set_model_defaults(&paths, &defaults).unwrap();
+    let snapshot = load_snapshot(&paths).unwrap();
+    assert!(!snapshot.fetch_model_metadata);
+    assert_eq!(snapshot.model_defaults, defaults);
+    assert!(set_language(&paths, "invalid").is_err());
+    fs::write(&paths.settings, r#"{"piSwitch":{"language":"invalid"}}"#).unwrap();
+    assert!(load_snapshot(&paths).is_err());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn catalog_parser_is_protocol_specific() {
     assert_eq!(
-        parse_catalog(
+        parse_provider_catalog(
             "openai-completions",
             &json!({"data":[{"id":"b"},{"id":"a"}]})
         )
@@ -228,14 +289,112 @@ fn catalog_parser_is_protocol_specific() {
         vec!["a", "b"]
     );
     assert_eq!(
-        parse_catalog(
+        parse_provider_catalog(
             "google-generative-ai",
             &json!({"models":[{"name":"models/gemini"}]})
         )
         .unwrap(),
         vec!["gemini"]
     );
-    assert!(parse_catalog("openai-completions", &json!({"models":[]})).is_err());
+    assert!(parse_provider_catalog("openai-completions", &json!({"models":[]})).is_err());
+
+    let shared_a = catalog_model("shared", 100_000, 10_000, 1.0).config;
+    let shared_b = catalog_model("shared", 200_000, 20_000, 2.0).config;
+    let unique = catalog_model("unique", 300_000, 30_000, 3.0).config;
+    let catalog = parse_pi_catalog(&json!({
+        "one": {"shared": shared_a, "unique": unique},
+        "two": {"shared": shared_b}
+    }))
+    .unwrap();
+    assert_eq!(
+        catalog.resolve("one", "shared").unwrap().config["contextWindow"],
+        100_000
+    );
+    assert!(catalog.resolve("custom", "shared").is_none());
+    assert_eq!(catalog.resolve("custom", "unique").unwrap().id, "unique");
+}
+
+#[test]
+fn opencode_import_uses_live_catalog_metadata_when_unambiguous() {
+    let (root, paths) = fixture();
+    write_opencode(
+        &paths,
+        json!({
+            "provider": {
+                "custom": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "options": {"baseURL": "https://custom.test/v1"},
+                    "models": {"unique-live": {"name": "Local display name"}}
+                }
+            }
+        }),
+    );
+    let source = catalog_model("unique-live", 262_144, 65_536, 0.6).config;
+    let catalog = parse_pi_catalog(&json!({"upstream": {"unique-live": source}})).unwrap();
+
+    let summary = import_opencode_with_catalog(&paths, &catalog).unwrap();
+    assert_eq!(summary.metadata, 1);
+    assert_eq!(summary.unresolved, 0);
+    let models: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
+    let model = &models["providers"]["custom"]["models"][0];
+    assert_eq!(model["name"], "Local display name");
+    assert_eq!(model["contextWindow"], 262_144);
+    assert_eq!(model["maxTokens"], 65_536);
+    assert_eq!(model["cost"]["input"], 0.6);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn opencode_import_can_select_providers_and_use_custom_defaults() {
+    let (root, paths) = fixture();
+    write_opencode(
+        &paths,
+        json!({
+            "provider": {
+                "one": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "options": {"baseURL": "https://one.test/v1"},
+                    "models": {"model-one": {}}
+                },
+                "two": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "options": {"baseURL": "https://two.test/v1"},
+                    "models": {"model-two": {}}
+                }
+            }
+        }),
+    );
+    assert_eq!(list_opencode_providers(&paths).unwrap(), ["one", "two"]);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let summary = runtime
+        .block_on(import_opencode(
+            &paths,
+            &["two".into()],
+            ImportOptions {
+                fetch_metadata: false,
+                defaults: ModelDefaults {
+                    context_window: Some(256_000),
+                    output_cost: Some(3.5),
+                    ..Default::default()
+                },
+            },
+        ))
+        .unwrap();
+    assert_eq!(summary.providers, 1);
+    assert_eq!(summary.defaults, 1);
+    assert_eq!(summary.metadata, 0);
+    assert_eq!(summary.unresolved, 0);
+    let models: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
+    assert!(models["providers"].get("one").is_none());
+    let model = &models["providers"]["two"]["models"][0];
+    assert_eq!(model["contextWindow"], 256_000);
+    assert_eq!(model["maxTokens"], PI_DEFAULT_MAX_TOKENS);
+    assert_eq!(model["cost"]["output"], 3.5);
+    assert_eq!(model["cost"]["input"], 0.0);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -266,20 +425,26 @@ fn fetch_models_uses_the_explicit_catalog_endpoint() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut request = [0_u8; 2048];
-        let size = stream.read(&mut request).unwrap();
-        let request = String::from_utf8_lossy(&request[..size]).to_ascii_lowercase();
-        assert!(request.starts_with("get /v1/models "));
-        assert!(request.contains("authorization: bearer secret"));
-        let body = r#"{"data":[{"id":"model-z"}]}"#;
-        write!(
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let size = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..size]).to_ascii_lowercase();
+            let body = if request.starts_with("get /v1/models ") {
+                assert!(request.contains("authorization: bearer secret"));
+                r#"{"data":[{"id":"model-z"}]}"#
+            } else {
+                assert!(request.starts_with("get /api/models "));
+                r#"{"local":{"model-z":{"id":"model-z","name":"Model Z","provider":"local","baseUrl":"https://ignored.test","api":"openai-completions","reasoning":false,"input":["text"],"cost":{"input":1.25,"output":5,"cacheRead":0.1,"cacheWrite":0},"contextWindow":200000,"maxTokens":32000}}}"#
+            };
+            write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),
                 body
             )
             .unwrap();
+        }
     });
     let provider = ProviderView {
         id: "local".into(),
@@ -294,10 +459,68 @@ fn fetch_models_uses_the_explicit_catalog_endpoint() {
         .enable_all()
         .build()
         .unwrap();
-    assert_eq!(
-        runtime.block_on(fetch_models(provider)).unwrap(),
-        vec!["model-z"]
-    );
+    let fetched = runtime
+        .block_on(fetch_models_for_test(
+            provider,
+            ImportOptions {
+                fetch_metadata: true,
+                defaults: ModelDefaults::default(),
+            },
+            &format!("http://{address}/api/models"),
+        ))
+        .unwrap();
+    assert_eq!(fetched.models.len(), 1);
+    assert_eq!(fetched.models[0].id, "model-z");
+    assert_eq!(fetched.models[0].config["contextWindow"], 200_000);
+    assert_eq!(fetched.models[0].config["maxTokens"], 32_000);
+    assert_eq!(fetched.models[0].config["cost"]["input"], 1.25);
+    assert!(fetched.models[0].config.get("provider").is_none());
+    assert_eq!(fetched.unavailable, 0);
+    server.join().unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 2048];
+        let size = stream.read(&mut request).unwrap();
+        let request = String::from_utf8_lossy(&request[..size]).to_ascii_lowercase();
+        assert!(request.starts_with("get /v1/models "));
+        let body = r#"{"data":[{"id":"offline-model"}]}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+    let provider = ProviderView {
+        id: "local".into(),
+        base_url: format!("http://{address}/v1"),
+        api: "openai-completions".into(),
+        api_key: String::new(),
+        auth_header: false,
+        models: Vec::new(),
+        raw: json!({}),
+    };
+    let fetched = runtime
+        .block_on(fetch_models_for_test(
+            provider,
+            ImportOptions {
+                fetch_metadata: false,
+                defaults: ModelDefaults {
+                    context_window: Some(64_000),
+                    input_cost: Some(0.25),
+                    ..Default::default()
+                },
+            },
+            "http://127.0.0.1:1/must-not-be-requested",
+        ))
+        .unwrap();
+    assert_eq!(fetched.models[0].config["contextWindow"], 64_000);
+    assert_eq!(fetched.models[0].config["maxTokens"], PI_DEFAULT_MAX_TOKENS);
+    assert_eq!(fetched.models[0].config["cost"]["input"], 0.25);
     server.join().unwrap();
 }
 
@@ -360,8 +583,37 @@ fn model_crud_and_provider_copy_preserve_metadata_and_defaults() {
     save_model(&paths, "p", Some("alpha"), &beta).unwrap();
     save_model(&paths, "p", None, &model_draft("gamma")).unwrap();
     assert_eq!(
-        import_models(&paths, "p", &["gamma".into(), "delta".into()]).unwrap(),
-        1
+        import_models(
+            &paths,
+            "p",
+            &[catalog_model("gamma", 300_000, 40_000, 0.5)],
+            false,
+        )
+        .unwrap(),
+        ModelImportSummary {
+            added: 0,
+            updated: 0
+        }
+    );
+    assert_eq!(
+        load_snapshot(&paths).unwrap().providers[0].models[1].context_window,
+        Some(128_000)
+    );
+    assert_eq!(
+        import_models(
+            &paths,
+            "p",
+            &[
+                catalog_model("gamma", 300_000, 40_000, 0.5),
+                catalog_model("delta", 400_000, 50_000, 0.75),
+            ],
+            true,
+        )
+        .unwrap(),
+        ModelImportSummary {
+            added: 1,
+            updated: 1
+        }
     );
     assert_eq!(duplicate_provider(&paths, "p").unwrap(), "p-copy");
 

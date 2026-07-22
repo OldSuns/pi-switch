@@ -2,11 +2,15 @@ use std::{collections::BTreeSet, sync::mpsc, thread};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::documents::{self, Backup, DoctorCheck, Paths, ProviderView, Snapshot};
+use crate::documents::{
+    self, Backup, CatalogFetch, CatalogModel, DoctorCheck, ImportSummary, Paths, ProviderView,
+    Snapshot,
+};
 
 use super::{
-    forms::{FormState, ModelFormState},
-    input::{insert_char, moved, remove_char},
+    forms::{FormState, ModelDefaultsFormState, ModelFormState},
+    i18n::Language,
+    input::{char_len, insert_char, moved, remove_char},
     keys::{command_for, Command},
     API_TYPES, WIDE_WIDTH,
 };
@@ -28,6 +32,9 @@ pub(super) enum Page {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum SettingsAction {
+    Language,
+    FetchMetadata,
+    ModelDefaults,
     Reload,
     Doctor,
     Backups,
@@ -35,19 +42,37 @@ pub(super) enum SettingsAction {
 }
 
 impl SettingsAction {
-    pub(super) const ALL: [Self; 4] = [
+    pub(super) const ALL: [Self; 7] = [
+        Self::Language,
+        Self::FetchMetadata,
+        Self::ModelDefaults,
         Self::Reload,
         Self::Doctor,
         Self::Backups,
         Self::ImportOpenCode,
     ];
 
-    pub(super) fn label(self) -> &'static str {
+    pub(super) fn visible(fetch_metadata: bool) -> impl Iterator<Item = Self> {
+        Self::ALL
+            .into_iter()
+            .filter(move |action| !fetch_metadata || *action != Self::ModelDefaults)
+    }
+
+    pub(super) fn label(self, language: Language) -> String {
         match self {
-            Self::Reload => "Reload configuration",
-            Self::Doctor => "Validate configuration",
-            Self::Backups => "Browse backups",
-            Self::ImportOpenCode => "Import from OpenCode",
+            Self::Language => format!("{}: {}", language.pick("Language", "语言"), language.name()),
+            Self::FetchMetadata => language
+                .pick("Fetch model metadata from pi.dev", "从 pi.dev 获取模型信息")
+                .into(),
+            Self::ModelDefaults => language
+                .pick("Default model parameters", "默认模型参数")
+                .into(),
+            Self::Reload => language.pick("Reload configuration", "重载配置").into(),
+            Self::Doctor => language.pick("Validate configuration", "验证配置").into(),
+            Self::Backups => language.pick("Browse backups", "浏览备份").into(),
+            Self::ImportOpenCode => language
+                .pick("Import from OpenCode", "从 OpenCode 导入")
+                .into(),
         }
     }
 }
@@ -63,11 +88,11 @@ impl Page {
         }
     }
 
-    pub(super) fn label(self) -> &'static str {
+    pub(super) fn label(self, language: Language) -> &'static str {
         match self {
-            Self::Home => "Home",
-            Self::Profiles => "Profiles",
-            Self::Settings => "Settings",
+            Self::Home => language.pick("Home", "主页"),
+            Self::Profiles => language.pick("Profiles", "配置"),
+            Self::Settings => language.pick("Settings", "设置"),
         }
     }
 }
@@ -89,6 +114,7 @@ pub(super) enum Overlay {
     Error(String),
     Form(FormState),
     ModelForm(ModelFormState),
+    ModelDefaultsForm(ModelDefaultsFormState),
     ConfirmDeleteProvider(String),
     ConfirmDeleteModel {
         provider_id: String,
@@ -101,19 +127,34 @@ pub(super) enum Overlay {
     ConfirmRestore(Backup),
     Doctor(Vec<DoctorCheck>),
     Loading {
-        provider_id: String,
+        message: String,
     },
     Fetched {
         provider_id: String,
-        models: Vec<String>,
+        models: Vec<CatalogModel>,
+        unavailable: usize,
+        selected: BTreeSet<usize>,
+        cursor: usize,
+    },
+    OpenCodeProviders {
+        providers: Vec<String>,
         selected: BTreeSet<usize>,
         cursor: usize,
     },
 }
 
+enum BackgroundResult {
+    Catalog {
+        provider_id: String,
+        fetched: CatalogFetch,
+    },
+    OpenCode(ImportSummary),
+}
+
 pub(super) struct App {
     pub(super) paths: Paths,
     pub(super) snapshot: Snapshot,
+    pub(super) language: Language,
     pub(super) page: Page,
     pub(super) provider_cursor: usize,
     pub(super) model_cursor: usize,
@@ -125,7 +166,7 @@ pub(super) struct App {
     pub(super) width: u16,
     pub(super) overlay: Option<Overlay>,
     pub(super) notice: Option<Notice>,
-    pub(super) task: Option<mpsc::Receiver<documents::Result<Vec<String>>>>,
+    task: Option<mpsc::Receiver<documents::Result<BackgroundResult>>>,
     pub(super) tick_count: usize,
     pub(super) quit: bool,
 }
@@ -141,6 +182,9 @@ impl App {
                     providers: Vec::new(),
                     default_provider: None,
                     default_model: None,
+                    language: "en".into(),
+                    fetch_model_metadata: true,
+                    model_defaults: Default::default(),
                 };
                 let mut app = Self::from_snapshot(paths, snapshot);
                 app.overlay = Some(Overlay::Error(error.to_string()));
@@ -150,9 +194,11 @@ impl App {
     }
 
     pub(super) fn from_snapshot(paths: Paths, snapshot: Snapshot) -> Self {
+        let language = Language::from_code(&snapshot.language);
         Self {
             paths,
             snapshot,
+            language,
             page: Page::Home,
             provider_cursor: 0,
             model_cursor: 0,
@@ -242,18 +288,35 @@ impl App {
             return;
         };
         match receiver.try_recv() {
-            Ok(Ok(models)) => {
-                let provider_id = match self.overlay.take() {
-                    Some(Overlay::Loading { provider_id }) => provider_id,
-                    _ => String::new(),
-                };
-                let selected = (0..models.len()).collect();
+            Ok(Ok(BackgroundResult::Catalog {
+                provider_id,
+                fetched,
+            })) => {
+                let selected = (0..fetched.models.len()).collect();
+                if fetched.unavailable > 0 {
+                    self.notice(
+                        NoticeKind::Warning,
+                        format!(
+                            "{} {}",
+                            fetched.unavailable,
+                            self.language.pick(
+                                "model(s) skipped without unambiguous pi.dev metadata",
+                                "个模型因 pi.dev 元数据缺失或有歧义而跳过"
+                            )
+                        ),
+                    );
+                }
                 self.overlay = Some(Overlay::Fetched {
                     provider_id,
-                    models,
+                    models: fetched.models,
+                    unavailable: fetched.unavailable,
                     selected,
                     cursor: 0,
                 });
+                self.task = None;
+            }
+            Ok(Ok(BackgroundResult::OpenCode(summary))) => {
+                self.finish_opencode_import(summary);
                 self.task = None;
             }
             Ok(Err(error)) => {
@@ -262,7 +325,9 @@ impl App {
             }
             Err(mpsc::TryRecvError::Disconnected) => {
                 self.overlay = Some(Overlay::Error(
-                    "model catalog task ended unexpectedly".into(),
+                    self.language
+                        .pick("background task ended unexpectedly", "后台任务意外结束")
+                        .into(),
                 ));
                 self.task = None;
             }
@@ -306,7 +371,10 @@ impl App {
                 Command::Doctor => {
                     self.overlay = Some(Overlay::Doctor(documents::doctor(&self.paths)))
                 }
-                Command::Reload => self.reload(Some("Reloaded Pi configuration")),
+                Command::Reload => self.reload(Some(
+                    self.language
+                        .pick("Reloaded Pi configuration", "Pi 配置已重载"),
+                )),
                 _ => {}
             }
             return;
@@ -338,8 +406,10 @@ impl App {
                     self.settings_cursor = self.settings_cursor.saturating_sub(1)
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    self.settings_cursor =
-                        (self.settings_cursor + 1).min(SettingsAction::ALL.len() - 1)
+                    let last = SettingsAction::visible(self.snapshot.fetch_model_metadata)
+                        .count()
+                        .saturating_sub(1);
+                    self.settings_cursor = (self.settings_cursor + 1).min(last)
                 }
                 KeyCode::Enter => self.run_settings_action(),
                 KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc | KeyCode::Tab => {
@@ -415,7 +485,11 @@ impl App {
             }
             Overlay::Loading { .. } => {
                 if key.code == KeyCode::Esc {
-                    self.notice(NoticeKind::Warning, "Model request cannot be cancelled");
+                    self.notice(
+                        NoticeKind::Warning,
+                        self.language
+                            .pick("This request cannot be cancelled", "当前请求无法取消"),
+                    );
                 }
             }
             Overlay::Form(form) => {
@@ -428,11 +502,17 @@ impl App {
                     return;
                 }
             }
+            Overlay::ModelDefaultsForm(form) => {
+                if self.on_model_defaults_form_key(form, key) {
+                    return;
+                }
+            }
             Overlay::ConfirmDeleteProvider(id) => match key.code {
                 KeyCode::Char('y') | KeyCode::Enter => {
                     let id = id.clone();
                     match documents::remove_provider(&self.paths, &id) {
-                        Ok(()) => self.reload(Some("Provider deleted")),
+                        Ok(()) => self
+                            .reload(Some(self.language.pick("Provider deleted", "提供商已删除"))),
                         Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
                     }
                     return;
@@ -446,7 +526,9 @@ impl App {
             } => match key.code {
                 KeyCode::Char('y') | KeyCode::Enter => {
                     match documents::remove_model(&self.paths, provider_id, model_id) {
-                        Ok(()) => self.reload(Some("Model deleted")),
+                        Ok(()) => {
+                            self.reload(Some(self.language.pick("Model deleted", "模型已删除")))
+                        }
                         Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
                     }
                     return;
@@ -470,7 +552,9 @@ impl App {
             Overlay::ConfirmRestore(backup) => match key.code {
                 KeyCode::Char('y') | KeyCode::Enter => {
                     match documents::restore_backup(&self.paths, backup) {
-                        Ok(()) => self.reload(Some("Backup restored")),
+                        Ok(()) => {
+                            self.reload(Some(self.language.pick("Backup restored", "备份已恢复")))
+                        }
                         Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
                     }
                     return;
@@ -481,6 +565,7 @@ impl App {
             Overlay::Fetched {
                 provider_id,
                 models,
+                unavailable: _,
                 selected,
                 cursor,
             } => match key.code {
@@ -506,6 +591,40 @@ impl App {
                 }
                 _ => {}
             },
+            Overlay::OpenCodeProviders {
+                providers,
+                selected,
+                cursor,
+            } => match key.code {
+                KeyCode::Esc => return,
+                KeyCode::Up | KeyCode::Char('k') => *cursor = cursor.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => {
+                    *cursor = (*cursor + 1).min(providers.len().saturating_sub(1))
+                }
+                KeyCode::Char(' ') => {
+                    if !selected.remove(cursor) {
+                        selected.insert(*cursor);
+                    }
+                }
+                KeyCode::Char('a') => {
+                    *selected = (0..providers.len()).collect();
+                }
+                KeyCode::Enter if !selected.is_empty() => {
+                    let chosen = selected
+                        .iter()
+                        .filter_map(|index| providers.get(*index))
+                        .cloned()
+                        .collect();
+                    self.start_opencode_import(chosen);
+                    return;
+                }
+                KeyCode::Enter => self.notice(
+                    NoticeKind::Warning,
+                    self.language
+                        .pick("Select at least one provider", "请至少选择一个提供商"),
+                ),
+                _ => {}
+            },
         }
         self.overlay = Some(overlay);
     }
@@ -516,7 +635,7 @@ impl App {
                 documents::save_provider(&self.paths, form.previous_id.as_deref(), &draft)
             });
             match result {
-                Ok(()) => self.reload(Some("Provider saved")),
+                Ok(()) => self.reload(Some(self.language.pick("Provider saved", "提供商已保存"))),
                 Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
             }
             return true;
@@ -574,7 +693,7 @@ impl App {
                 )
             });
             match result {
-                Ok(()) => self.reload(Some("Model saved")),
+                Ok(()) => self.reload(Some(self.language.pick("Model saved", "模型已保存"))),
                 Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
             }
             return true;
@@ -616,6 +735,51 @@ impl App {
                     insert_char(text, cursor, character);
                     form.cursor += 1;
                 }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn on_model_defaults_form_key(
+        &mut self,
+        form: &mut ModelDefaultsFormState,
+        key: KeyEvent,
+    ) -> bool {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+            let result = form
+                .draft()
+                .and_then(|defaults| documents::set_model_defaults(&self.paths, &defaults));
+            match result {
+                Ok(()) => self.reload(Some(
+                    self.language
+                        .pick("Default model parameters saved", "默认模型参数已保存"),
+                )),
+                Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
+            }
+            return true;
+        }
+        match key.code {
+            KeyCode::Esc => return true,
+            KeyCode::Tab | KeyCode::Down => form.select_field(form.field + 1),
+            KeyCode::BackTab | KeyCode::Up => form.select_field((form.field + 5) % 6),
+            KeyCode::Left => form.cursor = form.cursor.saturating_sub(1),
+            KeyCode::Right => form.cursor = (form.cursor + 1).min(char_len(form.current_text())),
+            KeyCode::Home => form.cursor = 0,
+            KeyCode::End => form.cursor = char_len(form.current_text()),
+            KeyCode::Backspace if form.cursor > 0 => {
+                let index = form.cursor - 1;
+                remove_char(form.current_text_mut(), index);
+                form.cursor = index;
+            }
+            KeyCode::Delete => {
+                let cursor = form.cursor;
+                remove_char(form.current_text_mut(), cursor);
+            }
+            KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let cursor = form.cursor;
+                insert_char(form.current_text_mut(), cursor, character);
+                form.cursor += 1;
             }
             _ => {}
         }
@@ -665,13 +829,75 @@ impl App {
     }
 
     fn run_settings_action(&mut self) {
-        match SettingsAction::ALL[self.settings_cursor] {
-            SettingsAction::Reload => self.reload(Some("Reloaded Pi configuration")),
+        let Some(action) =
+            SettingsAction::visible(self.snapshot.fetch_model_metadata).nth(self.settings_cursor)
+        else {
+            return;
+        };
+        match action {
+            SettingsAction::Language => self.switch_language(),
+            SettingsAction::FetchMetadata => self.toggle_fetch_metadata(),
+            SettingsAction::ModelDefaults => {
+                self.overlay = Some(Overlay::ModelDefaultsForm(ModelDefaultsFormState::new(
+                    &self.snapshot.model_defaults,
+                )))
+            }
+            SettingsAction::Reload => self.reload(Some(
+                self.language
+                    .pick("Reloaded Pi configuration", "Pi 配置已重载"),
+            )),
             SettingsAction::Doctor => {
                 self.overlay = Some(Overlay::Doctor(documents::doctor(&self.paths)))
             }
             SettingsAction::Backups => self.open_backups(),
-            SettingsAction::ImportOpenCode => self.import_opencode(),
+            SettingsAction::ImportOpenCode => self.open_opencode_providers(),
+        }
+    }
+
+    fn switch_language(&mut self) {
+        let language = self.language.next();
+        match documents::set_language(&self.paths, language.code()) {
+            Ok(()) => {
+                self.language = language;
+                self.snapshot.language = language.code().into();
+                self.notice(
+                    NoticeKind::Success,
+                    format!("{}: {}", language.pick("Language", "语言"), language.name()),
+                );
+            }
+            Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
+        }
+    }
+
+    fn toggle_fetch_metadata(&mut self) {
+        let enabled = !self.snapshot.fetch_model_metadata;
+        match documents::set_fetch_model_metadata(&self.paths, enabled) {
+            Ok(()) => {
+                self.snapshot.fetch_model_metadata = enabled;
+                self.notice(
+                    NoticeKind::Success,
+                    self.language.pick(
+                        if enabled {
+                            "pi.dev model metadata enabled"
+                        } else {
+                            "pi.dev model metadata disabled"
+                        },
+                        if enabled {
+                            "已启用 pi.dev 模型信息"
+                        } else {
+                            "已关闭 pi.dev 模型信息"
+                        },
+                    ),
+                );
+            }
+            Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
+        }
+    }
+
+    fn import_options(&self) -> documents::ImportOptions {
+        documents::ImportOptions {
+            fetch_metadata: self.snapshot.fetch_model_metadata,
+            defaults: self.snapshot.model_defaults.clone(),
         }
     }
 
@@ -692,7 +918,11 @@ impl App {
         };
         if self.in_model_context() {
             let Some(model_id) = provider.models.get(self.model_cursor) else {
-                self.notice(NoticeKind::Warning, "Select a model to edit");
+                self.notice(
+                    NoticeKind::Warning,
+                    self.language
+                        .pick("Select a model to edit", "请选择要编辑的模型"),
+                );
                 return;
             };
             self.overlay = Some(Overlay::ModelForm(ModelFormState::edit(
@@ -710,7 +940,11 @@ impl App {
         };
         if self.in_model_context() {
             let Some(model_id) = provider.models.get(self.model_cursor) else {
-                self.notice(NoticeKind::Warning, "Select a model to delete");
+                self.notice(
+                    NoticeKind::Warning,
+                    self.language
+                        .pick("Select a model to delete", "请选择要删除的模型"),
+                );
                 return;
             };
             self.overlay = Some(Overlay::ConfirmDeleteModel {
@@ -728,7 +962,11 @@ impl App {
         };
         if self.in_model_context() {
             let Some(model_id) = provider.models.get(self.model_cursor) else {
-                self.notice(NoticeKind::Warning, "Select a model to copy");
+                self.notice(
+                    NoticeKind::Warning,
+                    self.language
+                        .pick("Select a model to copy", "请选择要复制的模型"),
+                );
                 return;
             };
             self.overlay = Some(Overlay::ModelForm(ModelFormState::copy(
@@ -745,7 +983,13 @@ impl App {
                     .iter()
                     .position(|index| self.snapshot.providers[*index].id == copy_id)
                     .unwrap_or(self.provider_cursor);
-                self.notice(NoticeKind::Success, format!("Created provider {copy_id}"));
+                self.notice(
+                    NoticeKind::Success,
+                    format!(
+                        "{} {copy_id}",
+                        self.language.pick("Created provider", "已创建提供商")
+                    ),
+                );
             }
             Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
         }
@@ -756,13 +1000,20 @@ impl App {
             return;
         };
         let Some(model) = provider.models.get(self.model_cursor) else {
-            self.notice(NoticeKind::Warning, "Select a provider model first");
+            self.notice(
+                NoticeKind::Warning,
+                self.language
+                    .pick("Select a provider model first", "请先选择提供商中的模型"),
+            );
             return;
         };
         let provider_id = provider.id.clone();
         let model_id = model.id.clone();
         match documents::set_default(&self.paths, &provider_id, &model_id) {
-            Ok(()) => self.reload(Some("Default model updated")),
+            Ok(()) => self.reload(Some(
+                self.language
+                    .pick("Default model updated", "默认模型已更新"),
+            )),
             Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
         }
     }
@@ -772,38 +1023,129 @@ impl App {
             return;
         };
         let provider_id = provider.id.clone();
+        let task_provider_id = provider_id.clone();
+        let options = self.import_options();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
             let result = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .map_err(|error| documents::AppError::Http(error.to_string()))
-                .and_then(|runtime| runtime.block_on(documents::fetch_models(provider)));
+                .and_then(|runtime| runtime.block_on(documents::fetch_models(provider, options)))
+                .map(|fetched| BackgroundResult::Catalog {
+                    provider_id: task_provider_id,
+                    fetched,
+                });
             let _ = sender.send(result);
         });
         self.task = Some(receiver);
-        self.overlay = Some(Overlay::Loading { provider_id });
-    }
-
-    pub(super) fn import_fetched(&mut self, provider_id: &str, models: Vec<String>) {
-        match documents::import_models(&self.paths, provider_id, &models) {
-            Ok(added) => self.reload(Some(&format!("Imported {added} new model(s)"))),
-            Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
-        }
-    }
-
-    fn import_opencode(&mut self) {
-        match documents::import_opencode(&self.paths) {
-            Ok(summary) if summary.changed => self.reload(Some(&format!(
-                "Imported {} provider(s) and {} model(s) from OpenCode",
-                summary.providers, summary.models
-            ))),
-            Ok(_) => self.notice(
-                NoticeKind::Success,
-                "Pi configuration already matches OpenCode",
+        self.overlay = Some(Overlay::Loading {
+            message: format!(
+                "{} {provider_id}",
+                self.language.pick("Fetching models for", "正在获取模型：")
             ),
+        });
+    }
+
+    pub(super) fn import_fetched(&mut self, provider_id: &str, models: Vec<CatalogModel>) {
+        match documents::import_models(
+            &self.paths,
+            provider_id,
+            &models,
+            self.snapshot.fetch_model_metadata,
+        ) {
+            Ok(summary) => self.reload(Some(&format!(
+                "{} {}, {} {}",
+                self.language.pick("Added", "新增"),
+                summary.added,
+                self.language.pick("updated", "更新"),
+                summary.updated
+            ))),
             Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
         }
+    }
+
+    fn open_opencode_providers(&mut self) {
+        match documents::list_opencode_providers(&self.paths) {
+            Ok(providers) => {
+                let selected = (0..providers.len()).collect();
+                self.overlay = Some(Overlay::OpenCodeProviders {
+                    providers,
+                    selected,
+                    cursor: 0,
+                });
+            }
+            Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
+        }
+    }
+
+    fn start_opencode_import(&mut self, providers: Vec<String>) {
+        let paths = self.paths.clone();
+        let options = self.import_options();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| documents::AppError::Http(error.to_string()))
+                .and_then(|runtime| {
+                    runtime.block_on(documents::import_opencode(&paths, &providers, options))
+                })
+                .map(BackgroundResult::OpenCode);
+            let _ = sender.send(result);
+        });
+        self.task = Some(receiver);
+        self.overlay = Some(Overlay::Loading {
+            message: self
+                .language
+                .pick("Importing OpenCode configuration", "正在导入 OpenCode 配置")
+                .into(),
+        });
+    }
+
+    fn finish_opencode_import(&mut self, summary: ImportSummary) {
+        if !summary.changed {
+            self.notice(
+                NoticeKind::Success,
+                self.language.pick(
+                    "Pi configuration already matches OpenCode",
+                    "Pi 配置已与 OpenCode 一致",
+                ),
+            );
+            return;
+        }
+        self.reload(None);
+        let mut message = format!(
+            "{} {} {}, {} {}",
+            self.language.pick("Imported", "已导入"),
+            summary.providers,
+            self.language.pick("provider(s)", "个提供商"),
+            summary.models,
+            self.language.pick("model(s)", "个模型"),
+        );
+        if self.snapshot.fetch_model_metadata {
+            message.push_str(&format!(
+                "; pi.dev {} {}, {} {}",
+                self.language.pick("matched", "匹配"),
+                summary.metadata,
+                self.language.pick("unresolved", "未解析"),
+                summary.unresolved,
+            ));
+        } else {
+            message.push_str(&format!(
+                "; {} {}",
+                self.language.pick("defaults applied", "已应用默认参数"),
+                summary.defaults,
+            ));
+        }
+        self.notice(
+            if summary.unresolved == 0 {
+                NoticeKind::Success
+            } else {
+                NoticeKind::Warning
+            },
+            message,
+        );
     }
 
     pub(super) fn open_backups(&mut self) {

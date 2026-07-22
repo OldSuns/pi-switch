@@ -1,5 +1,6 @@
 mod app;
 mod forms;
+mod i18n;
 mod input;
 mod keys;
 mod terminal;
@@ -20,7 +21,7 @@ use crate::documents::{ModelView, ProviderView, Snapshot};
 #[cfg(test)]
 use app::{Focus, Overlay, Page};
 #[cfg(test)]
-use forms::{FormState, ModelFormState};
+use forms::{FormState, ModelDefaultsFormState, ModelFormState};
 #[cfg(test)]
 use input::{truncate_width, wrap_width};
 #[cfg(test)]
@@ -85,8 +86,8 @@ mod tests {
             api: None,
             reasoning: false,
             input: vec!["text".into()],
-            context_window: 128_000,
-            max_tokens: 16_384,
+            context_window: Some(128_000),
+            max_tokens: Some(16_384),
         };
         let snapshot = Snapshot {
             models_path: paths.models.display().to_string(),
@@ -102,6 +103,9 @@ mod tests {
             }],
             default_provider: Some("示例-provider".into()),
             default_model: Some("model-a".into()),
+            language: "en".into(),
+            fetch_model_metadata: true,
+            model_defaults: Default::default(),
         };
         (root, App::from_snapshot(paths, snapshot))
     }
@@ -158,7 +162,11 @@ mod tests {
                 .collect::<String>();
             assert!(settings.contains("Configuration"));
             assert!(settings.contains("Actions"));
-            assert!(settings.contains("Import from OpenCode"));
+            if height >= 24 {
+                assert!(settings.contains("Fetch model metadata from pi.dev"));
+                assert!(!settings.contains("Default model parameters"));
+                assert!(settings.contains("Import from OpenCode"));
+            }
         }
         assert_eq!(truncate_width("示例-provider", 8), "示例-...");
         assert_eq!(UnicodeWidthStr::width("示例-provider"), 13);
@@ -169,10 +177,82 @@ mod tests {
             .all(|line| UnicodeWidthStr::width(line.as_str()) <= 6));
 
         app.overlay = Some(Overlay::Loading {
-            provider_id: "示例-provider".into(),
+            message: "loading".into(),
         });
         app.on_overlay_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(matches!(app.overlay, Some(Overlay::Loading { .. })));
+
+        app.overlay = None;
+        app.language = super::i18n::Language::Chinese;
+        app.page = Page::Settings;
+        app.focus = Focus::Content;
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let chinese = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        let chinese = chinese.replace(' ', "");
+        assert!(chinese.contains("设置"));
+        assert!(chinese.contains("语言:中文"));
+        assert!(chinese.contains("从pi.dev获取模型信息"));
+        assert!(!chinese.contains("默认模型参数"));
+        assert!(chinese.contains("从OpenCode导入"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn settings_show_model_defaults_only_when_metadata_fetch_is_off() {
+        let (root, mut app) = app();
+        app.page = Page::Settings;
+        app.focus = Focus::Content;
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let enabled = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(!enabled.contains("Default model parameters"));
+        assert!(enabled.contains("●  Fetch model metadata from pi.dev"));
+
+        app.snapshot.fetch_model_metadata = false;
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let disabled = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(disabled.contains("Default model parameters"));
+        assert!(disabled.contains("○  Fetch model metadata from pi.dev"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn model_defaults_dialog_keeps_its_left_border() {
+        let (root, mut app) = app();
+        app.overlay = Some(Overlay::ModelDefaultsForm(ModelDefaultsFormState::new(
+            &app.snapshot.model_defaults,
+        )));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let symbols = buffer.content();
+        let symbol_at = |x: u16, y: u16| symbols[(y * 80 + x) as usize].symbol();
+        assert_eq!(symbol_at(1, 2), "┌");
+        for y in 3..21 {
+            assert_eq!(symbol_at(1, y), "│", "missing left border at row {y}");
+        }
+        assert_eq!(symbol_at(1, 21), "└");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -210,6 +290,14 @@ mod tests {
 
         app.overlay = None;
         app.focus = Focus::Models;
+        app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::ModelForm(ref form))
+                if form.context_window.is_empty() && form.max_tokens.is_empty()
+        ));
+
+        app.overlay = None;
         app.on_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
         match app.overlay.as_ref() {
             Some(Overlay::ModelForm(form)) => {
@@ -306,25 +394,34 @@ mod tests {
         assert!(matches!(app.overlay, Some(Overlay::Doctor(_))));
 
         app.overlay = None;
-        for _ in 0..3 {
-            app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        }
+        app.settings_cursor = 0;
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(matches!(app.overlay, Some(Overlay::Error(_))));
+        assert_eq!(app.language, super::i18n::Language::Chinese);
+
+        app.settings_cursor = 1;
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!app.snapshot.fetch_model_metadata);
+        app.settings_cursor = 2;
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(app.overlay, Some(Overlay::ModelDefaultsForm(_))));
 
         app.overlay = None;
         fs::create_dir_all(app.paths.opencode.parent().unwrap()).unwrap();
         fs::write(
             &app.paths.opencode,
-            r#"{"provider":{"from-opencode":{"npm":"@ai-sdk/openai-compatible","options":{"baseURL":"https://opencode.test/v1"},"models":{"imported":{"name":"Imported"}}}}}"#,
+            r#"{"provider":{"first":{"npm":"@ai-sdk/openai-compatible"},"second":{"npm":"@ai-sdk/openai-compatible"}}}"#,
         )
         .unwrap();
+        app.settings_cursor = 6;
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(app
-            .snapshot
-            .providers
-            .iter()
-            .any(|provider| provider.id == "from-opencode"));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::OpenCodeProviders {
+                ref providers,
+                ref selected,
+                ..
+            }) if providers.len() == 2 && selected.len() == 2
+        ));
         let _ = fs::remove_dir_all(root);
     }
 

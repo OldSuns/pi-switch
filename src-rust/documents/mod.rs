@@ -3,17 +3,14 @@ mod opencode;
 mod schema;
 mod storage;
 
-use std::{
-    collections::BTreeSet,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use thiserror::Error;
 
 use schema::{
-    default_model, patch_model, patch_provider, provider_models_mut, provider_view, unique_copy_id,
+    patch_model, patch_provider, provider_models_mut, provider_view, unique_copy_id,
     validate_draft, validate_model_draft, validate_model_id, validate_provider_view,
 };
 use storage::{
@@ -22,7 +19,7 @@ use storage::{
 };
 
 pub use network::fetch_models;
-pub use opencode::import_opencode;
+pub use opencode::{import_opencode, list_opencode_providers};
 pub use storage::{list_backups, restore_backup};
 
 const API_TYPES: [&str; 4] = [
@@ -31,6 +28,9 @@ const API_TYPES: [&str; 4] = [
     "anthropic-messages",
     "google-generative-ai",
 ];
+
+pub const PI_DEFAULT_CONTEXT_WINDOW: u64 = 128_000;
+pub const PI_DEFAULT_MAX_TOKENS: u64 = 16_384;
 
 pub type Result<T> = std::result::Result<T, AppError>;
 
@@ -93,6 +93,9 @@ pub struct Snapshot {
     pub providers: Vec<ProviderView>,
     pub default_provider: Option<String>,
     pub default_model: Option<String>,
+    pub language: String,
+    pub fetch_model_metadata: bool,
+    pub model_defaults: ModelDefaults,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -116,8 +119,8 @@ pub struct ModelView {
     pub api: Option<String>,
     pub reasoning: bool,
     pub input: Vec<String>,
-    pub context_window: u64,
-    pub max_tokens: u64,
+    pub context_window: Option<u64>,
+    pub max_tokens: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -142,10 +145,98 @@ pub struct ModelDraft {
     pub max_tokens: u64,
 }
 
+#[derive(Clone, Debug)]
+pub struct CatalogModel {
+    pub id: String,
+    pub config: Value,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ModelCatalog {
+    providers: std::collections::BTreeMap<String, Vec<CatalogModel>>,
+}
+
+impl ModelCatalog {
+    pub fn resolve(&self, provider_id: &str, model_id: &str) -> Option<&CatalogModel> {
+        if let Some(model) = self
+            .providers
+            .get(provider_id)
+            .and_then(|models| models.iter().find(|model| model.id == model_id))
+        {
+            return Some(model);
+        }
+
+        let mut matches = self
+            .providers
+            .values()
+            .flatten()
+            .filter(|model| model.id == model_id);
+        let first = matches.next()?;
+        matches
+            .all(|model| model.config == first.config)
+            .then_some(first)
+    }
+
+    fn insert(&mut self, provider_id: String, models: Vec<CatalogModel>) {
+        self.providers.insert(provider_id, models);
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CatalogFetch {
+    pub models: Vec<CatalogModel>,
+    pub unavailable: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModelImportSummary {
+    pub added: usize,
+    pub updated: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelDefaults {
+    pub context_window: Option<u64>,
+    pub max_tokens: Option<u64>,
+    pub input_cost: Option<f64>,
+    pub output_cost: Option<f64>,
+    pub cache_read_cost: Option<f64>,
+    pub cache_write_cost: Option<f64>,
+}
+
+impl ModelDefaults {
+    pub fn model(&self, id: &str) -> CatalogModel {
+        CatalogModel {
+            id: id.into(),
+            config: json!({
+                "id": id,
+                "contextWindow": self.context_window.unwrap_or(PI_DEFAULT_CONTEXT_WINDOW),
+                "maxTokens": self.max_tokens.unwrap_or(PI_DEFAULT_MAX_TOKENS),
+                "cost": {
+                    "input": self.input_cost.unwrap_or(0.0),
+                    "output": self.output_cost.unwrap_or(0.0),
+                    "cacheRead": self.cache_read_cost.unwrap_or(0.0),
+                    "cacheWrite": self.cache_write_cost.unwrap_or(0.0)
+                }
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ImportOptions {
+    pub fetch_metadata: bool,
+    pub defaults: ModelDefaults,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct ImportSummary {
     pub providers: usize,
     pub models: usize,
+    pub metadata: usize,
+    pub defaults: usize,
+    pub unresolved: usize,
     pub changed: bool,
 }
 
@@ -180,7 +271,165 @@ pub fn load_snapshot(paths: &Paths) -> Result<Snapshot> {
         providers: views,
         default_provider: string_field(&settings, "defaultProvider")?,
         default_model: string_field(&settings, "defaultModel")?,
+        language: language_field(&settings)?,
+        fetch_model_metadata: fetch_model_metadata_field(&settings)?,
+        model_defaults: model_defaults_field(&settings)?,
     })
+}
+
+fn language_field(settings: &Value) -> Result<String> {
+    let Some(value) = settings.get("piSwitch") else {
+        return Ok("en".into());
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| AppError::Invalid("settings piSwitch must be an object".into()))?;
+    match object.get("language") {
+        None => Ok("en".into()),
+        Some(Value::String(value)) if matches!(value.as_str(), "en" | "zh-CN") => Ok(value.clone()),
+        Some(_) => Err(AppError::Invalid(
+            "settings piSwitch.language must be 'en' or 'zh-CN'".into(),
+        )),
+    }
+}
+
+fn pi_switch_object(settings: &Value) -> Result<Option<&Map<String, Value>>> {
+    settings
+        .get("piSwitch")
+        .map(|value| {
+            value
+                .as_object()
+                .ok_or_else(|| AppError::Invalid("settings piSwitch must be an object".into()))
+        })
+        .transpose()
+}
+
+fn fetch_model_metadata_field(settings: &Value) -> Result<bool> {
+    match pi_switch_object(settings)?.and_then(|value| value.get("fetchModelMetadata")) {
+        None => Ok(true),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(AppError::Invalid(
+            "settings piSwitch.fetchModelMetadata must be a boolean".into(),
+        )),
+    }
+}
+
+fn model_defaults_field(settings: &Value) -> Result<ModelDefaults> {
+    let Some(value) = pi_switch_object(settings)?.and_then(|value| value.get("modelDefaults"))
+    else {
+        return Ok(ModelDefaults::default());
+    };
+    let object = value.as_object().ok_or_else(|| {
+        AppError::Invalid("settings piSwitch.modelDefaults must be an object".into())
+    })?;
+    Ok(ModelDefaults {
+        context_window: optional_positive_u64(object, "contextWindow")?,
+        max_tokens: optional_positive_u64(object, "maxTokens")?,
+        input_cost: optional_nonnegative_f64(object, "inputCost")?,
+        output_cost: optional_nonnegative_f64(object, "outputCost")?,
+        cache_read_cost: optional_nonnegative_f64(object, "cacheReadCost")?,
+        cache_write_cost: optional_nonnegative_f64(object, "cacheWriteCost")?,
+    })
+}
+
+fn optional_positive_u64(object: &Map<String, Value>, field: &str) -> Result<Option<u64>> {
+    match object.get(field) {
+        None => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .filter(|value| *value > 0)
+            .map(Some)
+            .ok_or_else(|| {
+                AppError::Invalid(format!(
+                    "settings piSwitch.modelDefaults.{field} must be a positive integer"
+                ))
+            }),
+    }
+}
+
+fn optional_nonnegative_f64(object: &Map<String, Value>, field: &str) -> Result<Option<f64>> {
+    match object.get(field) {
+        None => Ok(None),
+        Some(value) => value
+            .as_f64()
+            .filter(|value| *value >= 0.0)
+            .map(Some)
+            .ok_or_else(|| {
+                AppError::Invalid(format!(
+                    "settings piSwitch.modelDefaults.{field} must be a non-negative number"
+                ))
+            }),
+    }
+}
+
+pub fn set_language(paths: &Paths, language: &str) -> Result<()> {
+    if !matches!(language, "en" | "zh-CN") {
+        return Err(AppError::Invalid(format!(
+            "unsupported pi-switch language '{language}'"
+        )));
+    }
+    update_pi_switch(paths, |settings| {
+        settings.insert("language".into(), Value::String(language.into()));
+    })
+}
+
+pub fn set_fetch_model_metadata(paths: &Paths, enabled: bool) -> Result<()> {
+    update_pi_switch(paths, |settings| {
+        settings.insert("fetchModelMetadata".into(), Value::Bool(enabled));
+    })
+}
+
+pub fn set_model_defaults(paths: &Paths, defaults: &ModelDefaults) -> Result<()> {
+    if defaults.context_window == Some(0) || defaults.max_tokens == Some(0) {
+        return Err(AppError::Invalid(
+            "default context window and max tokens must be positive".into(),
+        ));
+    }
+    for (field, value) in [
+        ("input cost", defaults.input_cost),
+        ("output cost", defaults.output_cost),
+        ("cache read cost", defaults.cache_read_cost),
+        ("cache write cost", defaults.cache_write_cost),
+    ] {
+        if value.is_some_and(|value| !value.is_finite() || value < 0.0) {
+            return Err(AppError::Invalid(format!(
+                "default {field} must be a non-negative number"
+            )));
+        }
+    }
+    let mut value = Map::new();
+    for (field, item) in [
+        ("contextWindow", defaults.context_window.map(Value::from)),
+        ("maxTokens", defaults.max_tokens.map(Value::from)),
+        ("inputCost", defaults.input_cost.map(Value::from)),
+        ("outputCost", defaults.output_cost.map(Value::from)),
+        ("cacheReadCost", defaults.cache_read_cost.map(Value::from)),
+        ("cacheWriteCost", defaults.cache_write_cost.map(Value::from)),
+    ] {
+        if let Some(item) = item {
+            value.insert(field.into(), item);
+        }
+    }
+    update_pi_switch(paths, |settings| {
+        if value.is_empty() {
+            settings.remove("modelDefaults");
+        } else {
+            settings.insert("modelDefaults".into(), Value::Object(value));
+        }
+    })
+}
+
+fn update_pi_switch(paths: &Paths, update: impl FnOnce(&mut Map<String, Value>)) -> Result<()> {
+    let _lock = WriteLock::acquire(paths)?;
+    let mut settings = read_document(&paths.settings, json!({}))?;
+    let root = root_object_mut(&mut settings, &paths.settings)?;
+    let pi_switch = root
+        .entry("piSwitch")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| AppError::Invalid("settings piSwitch must be an object".into()))?;
+    update(pi_switch);
+    write_document(paths, &paths.settings, "settings", &settings)
 }
 
 pub fn save_provider(
@@ -266,29 +515,51 @@ pub fn duplicate_provider(paths: &Paths, source_id: &str) -> Result<String> {
     Ok(copy_id)
 }
 
-pub fn import_models(paths: &Paths, provider_id: &str, model_ids: &[String]) -> Result<usize> {
-    for model_id in model_ids {
-        validate_model_id(model_id)?;
+pub fn import_models(
+    paths: &Paths,
+    provider_id: &str,
+    catalog_models: &[CatalogModel],
+    update_existing: bool,
+) -> Result<ModelImportSummary> {
+    for model in catalog_models {
+        validate_model_id(&model.id)?;
     }
     let _lock = WriteLock::acquire(paths)?;
     let mut root = read_document(&paths.models, json!({ "providers": {} }))?;
     let models = provider_models_mut(&mut root, provider_id)?;
-    let mut known = models
-        .iter()
-        .filter_map(|model| model.get("id").and_then(Value::as_str))
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>();
-    let mut added = 0;
-    for model_id in model_ids {
-        if known.insert(model_id.clone()) {
-            models.push(default_model(model_id));
-            added += 1;
+    let mut summary = ModelImportSummary {
+        added: 0,
+        updated: 0,
+    };
+    for catalog_model in catalog_models {
+        if let Some(existing) = models
+            .iter_mut()
+            .find(|model| model.get("id").and_then(Value::as_str) == Some(&catalog_model.id))
+        {
+            if !update_existing {
+                continue;
+            }
+            let object = existing
+                .as_object_mut()
+                .ok_or_else(|| AppError::Invalid("model entry must be an object".into()))?;
+            let before = object.clone();
+            object.extend(
+                catalog_model
+                    .config
+                    .as_object()
+                    .expect("validated catalog model")
+                    .clone(),
+            );
+            summary.updated += usize::from(*object != before);
+        } else {
+            models.push(catalog_model.config.clone());
+            summary.added += 1;
         }
     }
-    if added > 0 {
+    if summary.added + summary.updated > 0 {
         write_document(paths, &paths.models, "models", &root)?;
     }
-    Ok(added)
+    Ok(summary)
 }
 
 pub fn save_model(
@@ -457,7 +728,9 @@ fn check(ok: bool, label: impl Into<String>, detail: impl Into<String>) -> Docto
 }
 
 #[cfg(test)]
-use network::{parse_catalog, resolve_secret};
+use network::{fetch_models_for_test, parse_pi_catalog, parse_provider_catalog, resolve_secret};
+#[cfg(test)]
+use opencode::import_opencode_with_catalog;
 #[cfg(test)]
 use storage::now_millis;
 

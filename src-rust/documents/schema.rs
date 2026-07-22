@@ -89,10 +89,13 @@ pub(super) fn model_view(provider_id: &str, index: usize, value: &Value) -> Resu
             )))
         }
     };
-    let context_window =
-        optional_object_u64(object, provider_id, index, "contextWindow")?.unwrap_or(128_000);
-    let max_tokens =
-        optional_object_u64(object, provider_id, index, "maxTokens")?.unwrap_or(16_384);
+    let context_window = optional_object_u64(object, provider_id, index, "contextWindow")?;
+    let max_tokens = optional_object_u64(object, provider_id, index, "maxTokens")?;
+    if context_window == Some(0) || max_tokens == Some(0) {
+        return Err(AppError::Invalid(format!(
+            "provider '{provider_id}' model '{id}' contextWindow and maxTokens must be positive"
+        )));
+    }
     let view = ModelView {
         id,
         name,
@@ -102,15 +105,13 @@ pub(super) fn model_view(provider_id: &str, index: usize, value: &Value) -> Resu
         context_window,
         max_tokens,
     };
-    validate_model_draft(&ModelDraft {
-        id: view.id.clone(),
-        name: view.name.clone(),
-        api: view.api.clone(),
-        reasoning: view.reasoning,
-        input: view.input.clone(),
-        context_window: view.context_window,
-        max_tokens: view.max_tokens,
-    })?;
+    validate_model_id(&view.id)?;
+    if view.input != ["text"] && view.input != ["text", "image"] {
+        return Err(AppError::Invalid(format!(
+            "provider '{provider_id}' model '{}' input must be text or text + image",
+            view.id
+        )));
+    }
     Ok(view)
 }
 
@@ -235,15 +236,8 @@ pub(super) fn set_optional_value(
     }
 }
 
-pub(super) fn default_model(id: &str) -> Value {
-    json!({
-        "id": id,
-        "name": id,
-        "input": ["text"],
-        "contextWindow": 128000,
-        "maxTokens": 16384,
-        "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
-    })
+pub(super) fn minimal_model(id: &str) -> Value {
+    json!({ "id": id })
 }
 
 pub(super) fn validate_draft(draft: &ProviderDraft) -> Result<()> {

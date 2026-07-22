@@ -11,7 +11,8 @@ use unicode_width::UnicodeWidthStr;
 
 use super::{
     app::{App, Focus, Notice, NoticeKind, Overlay, Page},
-    forms::{FormState, ModelFormState},
+    forms::{FormState, ModelDefaultsFormState, ModelFormState},
+    i18n::Language,
     input::{api_label, char_len, mask_secret, truncate_width, with_cursor, wrap_width},
     keys::{all_shortcuts, shortcut, Command},
     WIDE_WIDTH,
@@ -100,7 +101,14 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
         render_notice(frame, notice, frame.area(), theme);
     }
     if let Some(overlay) = app.overlay.as_ref() {
-        render_overlay(frame, overlay, app.tick_count, frame.area(), theme);
+        render_overlay(
+            frame,
+            overlay,
+            app.language,
+            app.tick_count,
+            frame.area(),
+            theme,
+        );
     }
 }
 
@@ -139,7 +147,7 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         .as_deref()
         .zip(app.snapshot.default_model.as_deref())
         .map(|(provider, model)| format!("{provider}/{model}"))
-        .unwrap_or_else(|| "not set".into());
+        .unwrap_or_else(|| app.language.pick("not set", "未设置").into());
     let title = Line::from(vec![
         Span::styled(
             " pi-switch ",
@@ -149,20 +157,28 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         ),
         Span::styled(env!("CARGO_PKG_VERSION"), Style::default().fg(theme.muted)),
         Span::raw("  "),
-        Span::styled("default ", Style::default().fg(theme.muted)),
+        Span::styled(
+            app.language.pick("default ", "默认 "),
+            Style::default().fg(theme.muted),
+        ),
         Span::raw(default),
         Span::styled(
             format!(
-                "  {} provider(s)  {} model(s)",
+                "  {} {}  {} {}",
                 app.snapshot.providers.len(),
-                model_count
+                app.language.pick("provider(s)", "个提供商"),
+                model_count,
+                app.language.pick("model(s)", "个模型"),
             ),
             Style::default().fg(theme.muted),
         ),
     ]);
     let path_width = area.width.saturating_sub(4) as usize;
     let path = Line::from(vec![
-        Span::styled(" models ", Style::default().fg(theme.muted)),
+        Span::styled(
+            app.language.pick(" models ", " 模型文件 "),
+            Style::default().fg(theme.muted),
+        ),
         Span::raw(truncate_width(
             &app.snapshot.models_path,
             path_width.saturating_sub(8),
@@ -183,12 +199,17 @@ fn render_providers(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) 
     let content_width = area.width.saturating_sub(6) as usize;
     let title = if app.filtering || !app.filter.is_empty() {
         format!(
-            " Providers  /{}{} ",
+            " {}  /{}{} ",
+            app.language.pick("Providers", "提供商"),
             app.filter,
             if app.filtering { "_" } else { "" }
         )
     } else {
-        format!(" Providers  {} ", visible.len())
+        format!(
+            " {}  {} ",
+            app.language.pick("Providers", "提供商"),
+            visible.len()
+        )
     };
     let items = visible
         .iter()
@@ -214,7 +235,7 @@ fn render_providers(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) 
                 })
                 .collect::<Vec<_>>();
             let api = if provider.api.is_empty() {
-                "inherited"
+                app.language.pick("inherited", "继承")
             } else {
                 &provider.api
             };
@@ -228,9 +249,16 @@ fn render_providers(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) 
                 Span::raw("  "),
                 Span::styled(
                     format!(
-                        "{} model{}",
+                        "{} {}",
                         provider.models.len(),
-                        if provider.models.len() == 1 { "" } else { "s" }
+                        app.language.pick(
+                            if provider.models.len() == 1 {
+                                "model"
+                            } else {
+                                "models"
+                            },
+                            "个模型"
+                        )
                     ),
                     Style::default().fg(theme.muted),
                 ),
@@ -247,9 +275,15 @@ fn render_providers(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) 
     if items.is_empty() {
         frame.render_widget(
             Paragraph::new(if app.filter.is_empty() {
-                "No providers yet. Press n to add one."
+                app.language.pick(
+                    "No providers yet. Press n to add one.",
+                    "暂无提供商，按 n 新建。",
+                )
             } else {
-                "No provider matches this filter."
+                app.language.pick(
+                    "No provider matches this filter.",
+                    "没有提供商符合当前筛选条件。",
+                )
             })
             .style(Style::default().fg(theme.muted))
             .block(block)
@@ -277,9 +311,12 @@ fn render_providers(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) 
 fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
     let Some(provider) = app.selected_provider() else {
         frame.render_widget(
-            Paragraph::new("Select or add a provider")
-                .style(Style::default().fg(theme.muted))
-                .alignment(Alignment::Center),
+            Paragraph::new(
+                app.language
+                    .pick("Select or add a provider", "请选择或新建提供商"),
+            )
+            .style(Style::default().fg(theme.muted))
+            .alignment(Alignment::Center),
             area,
         );
         return;
@@ -295,47 +332,67 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         .unwrap_or_default();
     let lines = vec![
         Line::from(vec![
-            Span::styled("API       ", Style::default().fg(theme.muted)),
+            Span::styled(format!("{:<10}", "API"), Style::default().fg(theme.muted)),
             Span::raw(if provider.api.is_empty() {
-                "inherited"
+                app.language.pick("inherited", "继承")
             } else {
                 &provider.api
             }),
         ]),
         Line::from(vec![
-            Span::styled("Base URL  ", Style::default().fg(theme.muted)),
+            Span::styled(
+                format!("{:<10}", app.language.pick("Base URL", "基础 URL")),
+                Style::default().fg(theme.muted),
+            ),
             Span::raw(if provider.base_url.is_empty() {
-                "built-in default".into()
+                app.language.pick("built-in default", "内置默认值").into()
             } else {
                 truncate_width(&provider.base_url, width)
             }),
         ]),
         Line::from(vec![
-            Span::styled("API key   ", Style::default().fg(theme.muted)),
+            Span::styled(
+                format!("{:<10}", app.language.pick("API key", "API 密钥")),
+                Style::default().fg(theme.muted),
+            ),
             Span::raw(if provider.api_key.is_empty() {
-                "auth.json / CLI".into()
+                app.language
+                    .pick("auth.json / CLI", "auth.json / 命令行")
+                    .into()
             } else {
                 key
             }),
         ]),
         Line::from(vec![
-            Span::styled("Auth      ", Style::default().fg(theme.muted)),
+            Span::styled(
+                format!("{:<10}", app.language.pick("Auth", "认证")),
+                Style::default().fg(theme.muted),
+            ),
             Span::raw(if provider.auth_header {
-                "enabled"
+                app.language.pick("enabled", "启用")
             } else {
-                "custom headers only"
+                app.language.pick("custom headers only", "仅自定义请求头")
             }),
         ]),
         Line::from(vec![
-            Span::styled("Headers   ", Style::default().fg(theme.muted)),
-            Span::raw(format!("{header_count} configured")),
+            Span::styled(
+                format!("{:<10}", app.language.pick("Headers", "请求头")),
+                Style::default().fg(theme.muted),
+            ),
+            Span::raw(format!(
+                "{header_count} {}",
+                app.language.pick("configured", "项")
+            )),
         ]),
         Line::from(vec![
-            Span::styled("Compat    ", Style::default().fg(theme.muted)),
+            Span::styled(
+                format!("{:<10}", app.language.pick("Compat", "兼容选项")),
+                Style::default().fg(theme.muted),
+            ),
             Span::raw(if provider.raw.get("compat").is_some() {
-                "custom"
+                app.language.pick("custom", "自定义")
             } else {
-                "defaults"
+                app.language.pick("defaults", "默认")
             }),
         ]),
     ];
@@ -358,6 +415,14 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         .map(|(index, model)| {
             let is_default = app.snapshot.default_provider.as_deref() == Some(&provider.id)
                 && app.snapshot.default_model.as_deref() == Some(&model.id);
+            let context = model
+                .context_window
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| app.language.pick("unset", "未设置").into());
+            let max_tokens = model
+                .max_tokens
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| app.language.pick("unset", "未设置").into());
             let details = format!(
                 "    {}  {}{}  ctx {}  max {}",
                 model
@@ -365,10 +430,17 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
                     .as_deref()
                     .filter(|name| *name != model.id)
                     .unwrap_or(""),
-                model.api.as_deref().unwrap_or("inherit"),
-                if model.reasoning { "  reasoning" } else { "" },
-                model.context_window,
-                model.max_tokens
+                model
+                    .api
+                    .as_deref()
+                    .unwrap_or_else(|| app.language.pick("inherit", "继承")),
+                if model.reasoning {
+                    app.language.pick("  reasoning", "  推理")
+                } else {
+                    ""
+                },
+                context,
+                max_tokens
             );
             ListItem::new(Text::from(vec![
                 Line::from(vec![
@@ -382,7 +454,10 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
                     ),
                     Span::raw(&model.id),
                     if is_default {
-                        Span::styled("  default", Style::default().fg(theme.success))
+                        Span::styled(
+                            app.language.pick("  default", "  默认"),
+                            Style::default().fg(theme.success),
+                        )
                     } else {
                         Span::raw("")
                     },
@@ -399,16 +474,24 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         format!("  {}/{}", app.model_cursor + 1, provider.models.len())
     };
     let block = Block::default()
-        .title(format!(" Models  {}{} ", provider.models.len(), position))
+        .title(format!(
+            " {}  {}{} ",
+            app.language.pick("Models", "模型"),
+            provider.models.len(),
+            position
+        ))
         .borders(if active { Borders::ALL } else { Borders::TOP })
         .border_style(Style::default().fg(border));
     if items.is_empty() {
         frame.render_widget(
-            Paragraph::new("No models yet. Press n to add one or i to import the catalog.")
-                .style(Style::default().fg(theme.muted))
-                .alignment(Alignment::Center)
-                .wrap(Wrap { trim: true })
-                .block(block),
+            Paragraph::new(app.language.pick(
+                "No models yet. Press n to add one or i to import the catalog.",
+                "暂无模型，按 n 新建或按 i 从实时目录导入。",
+            ))
+            .style(Style::default().fg(theme.muted))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true })
+            .block(block),
             models,
         );
     } else {
@@ -435,12 +518,26 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
     let compact = app.width < 76;
     let binding = |command| {
         let shortcut = shortcut(command);
-        (shortcut.key, shortcut.label)
+        (
+            shortcut.key,
+            if app.language == Language::English {
+                shortcut.label
+            } else {
+                app.language.command_label(command)
+            },
+        )
     };
     let mut keys = if app.filtering {
-        vec![("Enter", "apply"), ("Esc", "clear")]
+        vec![
+            ("Enter", app.language.pick("apply", "应用")),
+            ("Esc", app.language.pick("clear", "清除")),
+        ]
     } else if app.focus == Focus::Menu {
-        vec![("Up/Down", "navigate"), ("Enter", "open"), ("q", "quit")]
+        vec![
+            ("Up/Down", app.language.pick("navigate", "导航")),
+            ("Enter", app.language.pick("open", "打开")),
+            ("q", app.language.pick("quit", "退出")),
+        ]
     } else if app.in_model_context() {
         let commands = if compact {
             &[
@@ -483,20 +580,26 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         };
         commands.iter().map(|command| binding(*command)).collect()
     } else if app.page == Page::Settings {
-        vec![("Up/Down", "select"), ("Enter", "run")]
+        vec![
+            ("Up/Down", app.language.pick("select", "选择")),
+            ("Enter", app.language.pick("run", "执行")),
+        ]
     } else {
-        vec![binding(Command::Reload), ("Left", "menu")]
+        vec![
+            binding(Command::Reload),
+            ("Left", app.language.pick("menu", "菜单")),
+        ]
     };
     if !compact && !app.filtering && app.focus != Focus::Menu {
         if app.page == Page::Profiles {
             keys.push(if app.in_model_context() {
-                ("Left", "providers")
+                ("Left", app.language.pick("providers", "提供商"))
             } else {
-                ("Enter", "models")
+                ("Enter", app.language.pick("models", "模型"))
             });
         }
         if app.page != Page::Home {
-            keys.push(("Left", "menu"));
+            keys.push(("Left", app.language.pick("menu", "菜单")));
         }
     }
     let mut spans = Vec::new();
@@ -540,30 +643,56 @@ fn render_notice(frame: &mut Frame<'_>, notice: &Notice, area: Rect, theme: Them
     );
 }
 
-fn render_overlay(frame: &mut Frame<'_>, overlay: &Overlay, tick: usize, area: Rect, theme: Theme) {
+fn render_overlay(
+    frame: &mut Frame<'_>,
+    overlay: &Overlay,
+    language: Language,
+    tick: usize,
+    area: Rect,
+    theme: Theme,
+) {
     match overlay {
         Overlay::Help => {
             let rect = modal_rect(area, 76, 22);
             let mut lines = vec![
-                Line::from("Up/Down or j/k  move selection"),
-                Line::from("Left/Right      move between menu and content"),
-                Line::from("Enter/Esc       open / go back"),
+                Line::from(language.pick(
+                    "Up/Down or j/k  move selection",
+                    "上/下 或 j/k      移动选择",
+                )),
+                Line::from(language.pick(
+                    "Left/Right      move between menu and content",
+                    "左/右            在菜单与内容间移动",
+                )),
+                Line::from(language.pick(
+                    "Enter/Esc       open / go back",
+                    "Enter/Esc       打开 / 返回",
+                )),
             ];
             lines.extend(
                 all_shortcuts()
                     .iter()
                     .filter(|binding| binding.command != Command::Help)
-                    .map(|binding| Line::from(format!("{:<16} {}", binding.key, binding.help))),
+                    .map(|binding| {
+                        let help = if language == Language::English {
+                            binding.help
+                        } else {
+                            language.command_help(binding.command)
+                        };
+                        Line::from(format!("{:<16} {help}", binding.key))
+                    }),
             );
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "Esc or Enter closes this window",
+                language.pick(
+                    "Esc or Enter closes this window",
+                    "按 Esc 或 Enter 关闭窗口",
+                ),
                 Style::default().fg(theme.muted),
             )));
             render_modal(
                 frame,
                 rect,
-                " Help ",
+                language.pick(" Help ", " 帮助 "),
                 Paragraph::new(lines),
                 theme.accent,
                 theme,
@@ -573,7 +702,7 @@ fn render_overlay(frame: &mut Frame<'_>, overlay: &Overlay, tick: usize, area: R
             let rect = modal_rect(area, 72, 10);
             let body = Paragraph::new(vec![
                 Line::from(Span::styled(
-                    "Operation failed",
+                    language.pick("Operation failed", "操作失败"),
                     Style::default()
                         .fg(theme.error)
                         .add_modifier(Modifier::BOLD),
@@ -582,40 +711,42 @@ fn render_overlay(frame: &mut Frame<'_>, overlay: &Overlay, tick: usize, area: R
                 Line::from(message.as_str()),
                 Line::from(""),
                 Line::from(Span::styled(
-                    "Esc or Enter to close",
+                    language.pick("Esc or Enter to close", "按 Esc 或 Enter 关闭"),
                     Style::default().fg(theme.muted),
                 )),
             ])
             .wrap(Wrap { trim: false });
-            render_modal(frame, rect, " Error ", body, theme.error, theme);
+            render_modal(
+                frame,
+                rect,
+                language.pick(" Error ", " 错误 "),
+                body,
+                theme.error,
+                theme,
+            );
         }
-        Overlay::Form(form) => render_form(frame, form, area, theme),
-        Overlay::ModelForm(form) => render_model_form(frame, form, area, theme),
+        Overlay::Form(form) => render_form(frame, form, language, area, theme),
+        Overlay::ModelForm(form) => render_model_form(frame, form, language, area, theme),
+        Overlay::ModelDefaultsForm(form) => {
+            render_model_defaults_form(frame, form, language, area, theme)
+        }
         Overlay::ConfirmDeleteProvider(id) => {
             let rect = modal_rect(area, 56, 8);
             let body = Paragraph::new(vec![
-                Line::from(format!("Delete provider '{id}'?")),
-                Line::from("Its default selection will also be cleared."),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "Enter/y confirm   Esc/n cancel",
-                    Style::default().fg(theme.muted),
+                Line::from(format!(
+                    "{} '{id}'?",
+                    language.pick("Delete provider", "删除提供商")
                 )),
-            ])
-            .wrap(Wrap { trim: true });
-            render_modal(frame, rect, " Confirm delete ", body, theme.error, theme);
-        }
-        Overlay::ConfirmDeleteModel {
-            provider_id,
-            model_id,
-        } => {
-            let rect = modal_rect(area, 62, 8);
-            let body = Paragraph::new(vec![
-                Line::from(format!("Delete model '{model_id}' from '{provider_id}'?")),
-                Line::from("Its default selection will be cleared if necessary."),
+                Line::from(language.pick(
+                    "Its default selection will also be cleared.",
+                    "关联的默认选择也会被清除。",
+                )),
                 Line::from(""),
                 Line::from(Span::styled(
-                    "Enter/y confirm   Esc/n cancel",
+                    language.pick(
+                        "Enter/y confirm   Esc/n cancel",
+                        "Enter/y 确认   Esc/n 取消",
+                    ),
                     Style::default().fg(theme.muted),
                 )),
             ])
@@ -623,7 +754,41 @@ fn render_overlay(frame: &mut Frame<'_>, overlay: &Overlay, tick: usize, area: R
             render_modal(
                 frame,
                 rect,
-                " Confirm model delete ",
+                language.pick(" Confirm delete ", " 确认删除 "),
+                body,
+                theme.error,
+                theme,
+            );
+        }
+        Overlay::ConfirmDeleteModel {
+            provider_id,
+            model_id,
+        } => {
+            let rect = modal_rect(area, 62, 8);
+            let body = Paragraph::new(vec![
+                Line::from(format!(
+                    "{} '{model_id}' {} '{provider_id}'?",
+                    language.pick("Delete model", "删除模型"),
+                    language.pick("from", "来自提供商")
+                )),
+                Line::from(language.pick(
+                    "Its default selection will be cleared if necessary.",
+                    "如有需要，关联的默认选择也会被清除。",
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    language.pick(
+                        "Enter/y confirm   Esc/n cancel",
+                        "Enter/y 确认   Esc/n 取消",
+                    ),
+                    Style::default().fg(theme.muted),
+                )),
+            ])
+            .wrap(Wrap { trim: true });
+            render_modal(
+                frame,
+                rect,
+                language.pick(" Confirm model delete ", " 确认删除模型 "),
                 body,
                 theme.error,
                 theme,
@@ -633,14 +798,19 @@ fn render_overlay(frame: &mut Frame<'_>, overlay: &Overlay, tick: usize, area: R
             let rect = modal_rect(area, 76, 20);
             clear_area(frame, rect, theme);
             let block = Block::default()
-                .title(format!(" Backups  {} ", items.len()))
+                .title(format!(
+                    " {}  {} ",
+                    language.pick("Backups", "备份"),
+                    items.len()
+                ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(theme.accent));
             let inner = block.inner(rect);
             frame.render_widget(block, rect);
             if items.is_empty() {
                 frame.render_widget(
-                    Paragraph::new("No backups yet.").alignment(Alignment::Center),
+                    Paragraph::new(language.pick("No backups yet.", "暂无备份。"))
+                        .alignment(Alignment::Center),
                     inner,
                 );
             } else {
@@ -663,16 +833,33 @@ fn render_overlay(frame: &mut Frame<'_>, overlay: &Overlay, tick: usize, area: R
         Overlay::ConfirmRestore(backup) => {
             let rect = modal_rect(area, 62, 8);
             let body = Paragraph::new(vec![
-                Line::from(format!("Restore {}?", backup.name)),
-                Line::from("The current document is backed up first."),
+                Line::from(format!(
+                    "{} {}?",
+                    language.pick("Restore", "恢复"),
+                    backup.name
+                )),
+                Line::from(language.pick(
+                    "The current document is backed up first.",
+                    "恢复前会先备份当前文件。",
+                )),
                 Line::from(""),
                 Line::from(Span::styled(
-                    "Enter/y confirm   Esc/n cancel",
+                    language.pick(
+                        "Enter/y confirm   Esc/n cancel",
+                        "Enter/y 确认   Esc/n 取消",
+                    ),
                     Style::default().fg(theme.muted),
                 )),
             ])
             .wrap(Wrap { trim: true });
-            render_modal(frame, rect, " Confirm restore ", body, theme.warning, theme);
+            render_modal(
+                frame,
+                rect,
+                language.pick(" Confirm restore ", " 确认恢复 "),
+                body,
+                theme.warning,
+                theme,
+            );
         }
         Overlay::Doctor(checks) => {
             let rect = modal_rect(area, 82, 22);
@@ -701,13 +888,13 @@ fn render_overlay(frame: &mut Frame<'_>, overlay: &Overlay, tick: usize, area: R
             render_modal(
                 frame,
                 rect,
-                " Doctor ",
+                language.pick(" Doctor ", " 配置检查 "),
                 Paragraph::new(lines).wrap(Wrap { trim: false }),
                 theme.accent,
                 theme,
             );
         }
-        Overlay::Loading { provider_id } => {
+        Overlay::Loading { message } => {
             let rect = modal_rect(area, 52, 7);
             let spinner = ["|", "/", "-", "\\"][tick % 4];
             let body = Paragraph::new(vec![
@@ -719,29 +906,51 @@ fn render_overlay(frame: &mut Frame<'_>, overlay: &Overlay, tick: usize, area: R
                             .fg(theme.accent)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::raw(format!("Fetching models for {provider_id}")),
+                    Span::raw(message),
                 ]),
                 Line::from(Span::styled(
-                    "Please wait; this request cannot be cancelled",
+                    language.pick(
+                        "Please wait; this request cannot be cancelled",
+                        "请稍候，当前请求无法取消",
+                    ),
                     Style::default().fg(theme.muted),
                 )),
             ])
             .alignment(Alignment::Center);
-            render_modal(frame, rect, " Model catalog ", body, theme.accent, theme);
+            render_modal(
+                frame,
+                rect,
+                language.pick(" Model catalog ", " 模型目录 "),
+                body,
+                theme.accent,
+                theme,
+            );
         }
         Overlay::Fetched {
             models,
             selected,
             cursor,
+            unavailable,
             ..
         } => {
             let rect = modal_rect(area, 76, 22);
             clear_area(frame, rect, theme);
             let block = Block::default()
                 .title(format!(
-                    " Model catalog  {}/{} selected ",
+                    " {}  {}/{} {}{} ",
+                    language.pick("Model catalog", "模型目录"),
                     selected.len(),
-                    models.len()
+                    models.len(),
+                    language.pick("selected", "已选择"),
+                    if *unavailable > 0 {
+                        format!(
+                            "  {} {}",
+                            unavailable,
+                            language.pick("unavailable", "无元数据")
+                        )
+                    } else {
+                        String::new()
+                    }
                 ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(theme.accent));
@@ -751,8 +960,75 @@ fn render_overlay(frame: &mut Frame<'_>, overlay: &Overlay, tick: usize, area: R
                 .iter()
                 .enumerate()
                 .map(|(index, model)| {
+                    let context = model.config["contextWindow"]
+                        .as_u64()
+                        .expect("validated catalog context window");
+                    let max_tokens = model.config["maxTokens"]
+                        .as_u64()
+                        .expect("validated catalog max tokens");
+                    let input = model.config["cost"]["input"]
+                        .as_f64()
+                        .expect("validated catalog input cost");
+                    let output = model.config["cost"]["output"]
+                        .as_f64()
+                        .expect("validated catalog output cost");
+                    ListItem::new(Text::from(vec![
+                        Line::from(format!(
+                            "{} {}",
+                            if selected.contains(&index) {
+                                "[x]"
+                            } else {
+                                "[ ]"
+                            },
+                            model.id
+                        )),
+                        Line::from(Span::styled(
+                            format!(
+                                "    ctx {context}  max {max_tokens}  $/M {} {input} {} {output}",
+                                language.pick("in", "输入"),
+                                language.pick("out", "输出"),
+                            ),
+                            Style::default().fg(theme.muted),
+                        )),
+                    ]))
+                })
+                .collect::<Vec<_>>();
+            let mut state = ListState::default().with_selected(Some(*cursor));
+            frame.render_stateful_widget(
+                List::new(rows).highlight_symbol(" > ").highlight_style(
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                inner,
+                &mut state,
+            );
+        }
+        Overlay::OpenCodeProviders {
+            providers,
+            selected,
+            cursor,
+        } => {
+            let rect = modal_rect(area, 70, 22);
+            clear_area(frame, rect, theme);
+            let block = Block::default()
+                .title(format!(
+                    " {}  {}/{} {} ",
+                    language.pick("OpenCode providers", "OpenCode 提供商"),
+                    selected.len(),
+                    providers.len(),
+                    language.pick("selected", "已选择")
+                ))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.accent));
+            let inner = block.inner(rect);
+            frame.render_widget(block, rect);
+            let rows = providers
+                .iter()
+                .enumerate()
+                .map(|(index, provider)| {
                     ListItem::new(format!(
-                        "{} {model}",
+                        "{} {provider}",
                         if selected.contains(&index) {
                             "[x]"
                         } else {
@@ -775,14 +1051,20 @@ fn render_overlay(frame: &mut Frame<'_>, overlay: &Overlay, tick: usize, area: R
     }
 }
 
-fn render_form(frame: &mut Frame<'_>, form: &FormState, area: Rect, theme: Theme) {
+fn render_form(
+    frame: &mut Frame<'_>,
+    form: &FormState,
+    language: Language,
+    area: Rect,
+    theme: Theme,
+) {
     let rect = modal_rect(area, 88, 22);
     clear_area(frame, rect, theme);
     let block = Block::default()
         .title(if form.previous_id.is_some() {
-            " Edit provider "
+            language.pick(" Edit provider ", " 编辑提供商 ")
         } else {
-            " Add provider "
+            language.pick(" Add provider ", " 新建提供商 ")
         })
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.accent));
@@ -802,27 +1084,34 @@ fn render_form(frame: &mut Frame<'_>, form: &FormState, area: Rect, theme: Theme
     let values = [
         form.id.clone(),
         form.base_url.clone(),
-        format!("< {} >", api_label(form.api)),
+        format!(
+            "< {} >",
+            if form.api == 0 {
+                language.pick("inherit", "继承")
+            } else {
+                api_label(form.api)
+            }
+        ),
         "*".repeat(char_len(&form.api_key)),
         format!(
             "< {} >",
             if form.auth_header {
-                "enabled"
+                language.pick("enabled", "启用")
             } else {
-                "custom only"
+                language.pick("custom only", "仅自定义")
             }
         ),
         form.headers_json.clone(),
         form.compat_json.clone(),
     ];
     let labels = [
-        "Provider ID",
-        "Base URL",
-        "API type",
-        "API key / reference",
-        "Auth header",
-        "Headers JSON",
-        "Compat JSON",
+        language.pick("Provider ID", "提供商 ID"),
+        language.pick("Base URL", "基础 URL"),
+        language.pick("API type", "API 类型"),
+        language.pick("API key / reference", "API 密钥 / 引用"),
+        language.pick("Auth header", "认证请求头"),
+        language.pick("Headers JSON", "请求头 JSON"),
+        language.pick("Compat JSON", "兼容选项 JSON"),
     ];
     for index in 0..7 {
         let active = form.field == index;
@@ -857,32 +1146,47 @@ fn render_form(frame: &mut Frame<'_>, form: &FormState, area: Rect, theme: Theme
                     .fg(theme.success)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("save  ", Style::default().fg(theme.muted)),
+            Span::styled(
+                language.pick("save  ", "保存  "),
+                Style::default().fg(theme.muted),
+            ),
             Span::styled(
                 " Tab ",
                 Style::default()
                     .fg(theme.accent)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("next field  ", Style::default().fg(theme.muted)),
+            Span::styled(
+                language.pick("next field  ", "下一字段  "),
+                Style::default().fg(theme.muted),
+            ),
             Span::styled(
                 " Esc ",
                 Style::default()
                     .fg(theme.warning)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("cancel", Style::default().fg(theme.muted)),
+            Span::styled(
+                language.pick("cancel", "取消"),
+                Style::default().fg(theme.muted),
+            ),
         ])),
         rows[7],
     );
 }
 
-fn render_model_form(frame: &mut Frame<'_>, form: &ModelFormState, area: Rect, theme: Theme) {
+fn render_model_form(
+    frame: &mut Frame<'_>,
+    form: &ModelFormState,
+    language: Language,
+    area: Rect,
+    theme: Theme,
+) {
     let rect = modal_rect(area, 84, 22);
     let title = if form.previous_id.is_some() {
-        " Edit model "
+        language.pick(" Edit model ", " 编辑模型 ")
     } else {
-        " Add model "
+        language.pick(" Add model ", " 新建模型 ")
     };
     clear_area(frame, rect, theme);
     let block = Block::default()
@@ -905,34 +1209,41 @@ fn render_model_form(frame: &mut Frame<'_>, form: &ModelFormState, area: Rect, t
     let values = [
         form.id.clone(),
         form.name.clone(),
-        format!("< {} >", api_label(form.api)),
+        format!(
+            "< {} >",
+            if form.api == 0 {
+                language.pick("inherit", "继承")
+            } else {
+                api_label(form.api)
+            }
+        ),
         format!(
             "< {} >",
             if form.reasoning {
-                "enabled"
+                language.pick("enabled", "启用")
             } else {
-                "disabled"
+                language.pick("disabled", "禁用")
             }
         ),
         format!(
             "< {} >",
             if form.image_input {
-                "text + image"
+                language.pick("text + image", "文本 + 图像")
             } else {
-                "text"
+                language.pick("text", "文本")
             }
         ),
         form.context_window.clone(),
         form.max_tokens.clone(),
     ];
     let labels = [
-        "Model ID",
-        "Display name",
-        "API override",
-        "Reasoning",
-        "Input",
-        "Context window",
-        "Max output tokens",
+        language.pick("Model ID", "模型 ID"),
+        language.pick("Display name", "显示名称"),
+        language.pick("API override", "API 覆盖"),
+        language.pick("Reasoning", "推理"),
+        language.pick("Input", "输入"),
+        language.pick("Context window", "上下文窗口"),
+        language.pick("Max output tokens", "最大输出 Token"),
     ];
     for index in 0..7 {
         let active = form.field == index;
@@ -966,16 +1277,101 @@ fn render_model_form(frame: &mut Frame<'_>, form: &ModelFormState, area: Rect, t
                     .fg(theme.success)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("save  ", Style::default().fg(theme.muted)),
+            Span::styled(
+                language.pick("save  ", "保存  "),
+                Style::default().fg(theme.muted),
+            ),
             Span::styled(
                 " Esc ",
                 Style::default()
                     .fg(theme.warning)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("cancel", Style::default().fg(theme.muted)),
+            Span::styled(
+                language.pick("cancel", "取消"),
+                Style::default().fg(theme.muted),
+            ),
         ])),
         rows[7],
+    );
+}
+
+fn render_model_defaults_form(
+    frame: &mut Frame<'_>,
+    form: &ModelDefaultsFormState,
+    language: Language,
+    area: Rect,
+    theme: Theme,
+) {
+    let rect = modal_rect(area, 82, 20);
+    let values = [
+        &form.context_window,
+        &form.max_tokens,
+        &form.input_cost,
+        &form.output_cost,
+        &form.cache_read_cost,
+        &form.cache_write_cost,
+    ];
+    let labels = [
+        language.pick("Context window", "上下文窗口"),
+        language.pick("Max output tokens", "最大输出 Token"),
+        language.pick("Input cost / M", "输入成本 / M"),
+        language.pick("Output cost / M", "输出成本 / M"),
+        language.pick("Cache read cost / M", "缓存读取成本 / M"),
+        language.pick("Cache write cost / M", "缓存写入成本 / M"),
+    ];
+    let mut lines = Vec::with_capacity(13);
+    for index in 0..6 {
+        let active = form.field == index;
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {:<25}", labels[index]),
+                Style::default().fg(if active { theme.accent } else { theme.muted }),
+            ),
+            Span::styled(
+                if active {
+                    with_cursor(values[index], form.cursor)
+                } else {
+                    values[index].clone()
+                },
+                Style::default().add_modifier(if active {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+            ),
+        ]));
+        lines.push(Line::default());
+    }
+    lines.push(Line::from(vec![
+        Span::styled(
+            " Ctrl+S ",
+            Style::default()
+                .fg(theme.success)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            language.pick("save  ", "保存  "),
+            Style::default().fg(theme.muted),
+        ),
+        Span::styled(
+            " Esc ",
+            Style::default()
+                .fg(theme.warning)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            language.pick("cancel", "取消"),
+            Style::default().fg(theme.muted),
+        ),
+    ]));
+    render_modal(
+        frame,
+        rect,
+        language.pick(" Default model parameters ", " 默认模型参数 "),
+        Paragraph::new(lines),
+        theme.accent,
+        theme,
     );
 }
 
