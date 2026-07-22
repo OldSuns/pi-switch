@@ -1,4 +1,5 @@
 mod network;
+mod opencode;
 mod schema;
 mod storage;
 
@@ -21,6 +22,7 @@ use storage::{
 };
 
 pub use network::fetch_models;
+pub use opencode::import_opencode;
 pub use storage::{list_backups, restore_backup};
 
 const API_TYPES: [&str; 4] = [
@@ -60,6 +62,7 @@ pub enum AppError {
 pub struct Paths {
     pub models: PathBuf,
     pub settings: PathBuf,
+    pub opencode: PathBuf,
     pub backups: PathBuf,
     lock: PathBuf,
 }
@@ -75,6 +78,7 @@ impl Paths {
         Self {
             models: home.join(".pi/agent/models.json"),
             settings: home.join(".pi/agent/settings.json"),
+            opencode: home.join(".config/opencode/opencode.json"),
             backups: home.join(".pi-switch/backups"),
             lock: home.join(".pi-switch/write.lock"),
         }
@@ -136,6 +140,13 @@ pub struct ModelDraft {
     pub input: Vec<String>,
     pub context_window: u64,
     pub max_tokens: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ImportSummary {
+    pub providers: usize,
+    pub models: usize,
+    pub changed: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]

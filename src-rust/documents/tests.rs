@@ -32,6 +32,118 @@ fn model_draft(id: &str) -> ModelDraft {
     }
 }
 
+fn write_opencode(paths: &Paths, value: Value) {
+    fs::create_dir_all(paths.opencode.parent().unwrap()).unwrap();
+    fs::write(&paths.opencode, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+}
+
+#[test]
+fn opencode_import_maps_and_merges_providers_and_models() {
+    let (root, paths) = fixture();
+    fs::write(
+        &paths.models,
+        r#"{"future":1,"providers":{"custom":{"futureProvider":true,"api":"openai-completions","models":[{"id":"existing","futureModel":true}]}}}"#,
+    )
+    .unwrap();
+    write_opencode(
+        &paths,
+        json!({
+            "provider": {
+                "custom": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "options": {
+                        "baseURL": "https://custom.test/v1",
+                        "apiKey": "{env:CUSTOM_KEY}",
+                        "headers": {"x-team-key": "{env:TEAM_KEY}"}
+                    },
+                    "models": {
+                        "existing": {"name": "Existing model"},
+                        "vision": {
+                            "name": "Vision model",
+                            "reasoning": true,
+                            "limit": {"context": 200000, "output": 32000},
+                            "modalities": {"input": ["text", "image"]}
+                        }
+                    }
+                },
+                "anthropic": {
+                    "npm": "@ai-sdk/anthropic",
+                    "models": {"claude": {"name": "Claude"}}
+                }
+            }
+        }),
+    );
+
+    assert_eq!(
+        import_opencode(&paths).unwrap(),
+        ImportSummary {
+            providers: 2,
+            models: 3,
+            changed: true
+        }
+    );
+    let imported: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
+    let custom = &imported["providers"]["custom"];
+    assert_eq!(imported["future"], 1);
+    assert_eq!(custom["futureProvider"], true);
+    assert_eq!(custom["baseUrl"], "https://custom.test/v1");
+    assert_eq!(custom["apiKey"], "${CUSTOM_KEY}");
+    assert_eq!(custom["headers"]["x-team-key"], "${TEAM_KEY}");
+    assert_eq!(custom["models"][0]["futureModel"], true);
+    assert_eq!(custom["models"][0]["name"], "Existing model");
+    assert_eq!(custom["models"][1]["id"], "vision");
+    assert_eq!(custom["models"][1]["reasoning"], true);
+    assert_eq!(custom["models"][1]["input"], json!(["text", "image"]));
+    assert_eq!(custom["models"][1]["contextWindow"], 200_000);
+    assert_eq!(custom["models"][1]["maxTokens"], 32_000);
+    assert_eq!(
+        imported["providers"]["anthropic"]["api"],
+        "anthropic-messages"
+    );
+    assert!(!list_backups(&paths).unwrap().is_empty());
+
+    assert!(!import_opencode(&paths).unwrap().changed);
+    let imported: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
+    assert_eq!(
+        imported["providers"]["custom"]["models"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn invalid_opencode_import_does_not_overwrite_pi_models() {
+    let (root, paths) = fixture();
+    fs::write(&paths.models, r#"{"providers":{},"keep":true}"#).unwrap();
+    let before = fs::read(&paths.models).unwrap();
+
+    write_opencode(
+        &paths,
+        json!({"provider":{"bad":{"npm":"unsupported","models":{}}}}),
+    );
+    assert!(import_opencode(&paths).is_err());
+    assert_eq!(fs::read(&paths.models).unwrap(), before);
+
+    write_opencode(
+        &paths,
+        json!({
+            "provider": {
+                "bad": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "options": {"apiKey": "{file:~/.secret}"},
+                    "models": {}
+                }
+            }
+        }),
+    );
+    assert!(import_opencode(&paths).is_err());
+    assert_eq!(fs::read(&paths.models).unwrap(), before);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn provider_updates_preserve_unknown_data_and_create_backup() {
     let (root, paths) = fixture();

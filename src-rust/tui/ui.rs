@@ -1,3 +1,5 @@
+mod pages;
+
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -8,12 +10,16 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use super::{
-    app::{App, Focus, Notice, NoticeKind, Overlay},
+    app::{App, Focus, Notice, NoticeKind, Overlay, Page},
     forms::{FormState, ModelFormState},
     input::{api_label, char_len, mask_secret, truncate_width, with_cursor, wrap_width},
     keys::{all_shortcuts, shortcut, Command},
     WIDE_WIDTH,
 };
+use pages::{render_home, render_menu, render_settings};
+
+const MENU_WIDTH: u16 = 18;
+const SHELL_WIDE_WIDTH: u16 = MENU_WIDTH + WIDE_WIDTH;
 
 #[derive(Clone, Copy)]
 struct Theme {
@@ -69,7 +75,6 @@ impl Theme {
 }
 
 pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    app.width = frame.area().width;
     let theme = Theme::detect();
     frame.render_widget(Block::default().style(theme.base()), frame.area());
     let [header, body, footer] = Layout::vertical([
@@ -79,15 +84,16 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     ])
     .areas(frame.area());
     render_header(frame, app, header, theme);
-    if app.width >= WIDE_WIDTH {
-        let [providers, detail] =
-            Layout::horizontal([Constraint::Length(34), Constraint::Min(42)]).areas(body);
-        render_providers(frame, app, providers, theme);
-        render_detail(frame, app, detail, theme);
-    } else if app.narrow_detail {
-        render_detail(frame, app, body, theme);
+    if frame.area().width >= SHELL_WIDE_WIDTH {
+        let [menu, content] =
+            Layout::horizontal([Constraint::Length(MENU_WIDTH), Constraint::Min(1)]).areas(body);
+        render_menu(frame, app, menu, theme);
+        render_page(frame, app, content, theme);
+    } else if app.focus == Focus::Menu {
+        app.width = body.width;
+        render_menu(frame, app, body, theme);
     } else {
-        render_providers(frame, app, body, theme);
+        render_page(frame, app, body, theme);
     }
     render_footer(frame, app, footer, theme);
     if let Some(notice) = app.notice.as_ref() {
@@ -95,6 +101,28 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     }
     if let Some(overlay) = app.overlay.as_ref() {
         render_overlay(frame, overlay, app.tick_count, frame.area(), theme);
+    }
+}
+
+fn render_page(frame: &mut Frame<'_>, app: &mut App, area: Rect, theme: Theme) {
+    app.width = area.width;
+    match app.page {
+        Page::Home => render_home(frame, app, area, theme),
+        Page::Profiles => render_profiles_page(frame, app, area, theme),
+        Page::Settings => render_settings(frame, app, area, theme),
+    }
+}
+
+fn render_profiles_page(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
+    if app.width >= WIDE_WIDTH {
+        let [providers, detail] =
+            Layout::horizontal([Constraint::Length(34), Constraint::Min(42)]).areas(area);
+        render_providers(frame, app, providers, theme);
+        render_detail(frame, app, detail, theme);
+    } else if app.narrow_detail {
+        render_detail(frame, app, area, theme);
+    } else {
+        render_providers(frame, app, area, theme);
     }
 }
 
@@ -405,8 +433,14 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
 
 fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
     let compact = app.width < 76;
+    let binding = |command| {
+        let shortcut = shortcut(command);
+        (shortcut.key, shortcut.label)
+    };
     let mut keys = if app.filtering {
         vec![("Enter", "apply"), ("Esc", "clear")]
+    } else if app.focus == Focus::Menu {
+        vec![("Up/Down", "navigate"), ("Enter", "open"), ("q", "quit")]
     } else if app.in_model_context() {
         let commands = if compact {
             &[
@@ -426,14 +460,8 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
                 Command::Help,
             ][..]
         };
-        commands
-            .iter()
-            .map(|command| {
-                let shortcut = shortcut(*command);
-                (shortcut.key, shortcut.label)
-            })
-            .collect()
-    } else {
+        commands.iter().map(|command| binding(*command)).collect()
+    } else if app.page == Page::Profiles {
         let commands = if compact {
             &[
                 Command::New,
@@ -453,20 +481,23 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
                 Command::Help,
             ][..]
         };
-        commands
-            .iter()
-            .map(|command| {
-                let shortcut = shortcut(*command);
-                (shortcut.key, shortcut.label)
-            })
-            .collect()
+        commands.iter().map(|command| binding(*command)).collect()
+    } else if app.page == Page::Settings {
+        vec![("Up/Down", "select"), ("Enter", "run")]
+    } else {
+        vec![binding(Command::Reload), ("Left", "menu")]
     };
-    if !compact && !app.filtering {
-        keys.push(if app.in_model_context() {
-            ("Left", "providers")
-        } else {
-            ("Enter", "models")
-        });
+    if !compact && !app.filtering && app.focus != Focus::Menu {
+        if app.page == Page::Profiles {
+            keys.push(if app.in_model_context() {
+                ("Left", "providers")
+            } else {
+                ("Enter", "models")
+            });
+        }
+        if app.page != Page::Home {
+            keys.push(("Left", "menu"));
+        }
     }
     let mut spans = Vec::new();
     for (key, label) in keys {
@@ -515,8 +546,8 @@ fn render_overlay(frame: &mut Frame<'_>, overlay: &Overlay, tick: usize, area: R
             let rect = modal_rect(area, 76, 22);
             let mut lines = vec![
                 Line::from("Up/Down or j/k  move selection"),
-                Line::from("Left/Right      switch provider and model focus"),
-                Line::from("Enter/Esc       open models / return to providers"),
+                Line::from("Left/Right      move between menu and content"),
+                Line::from("Enter/Esc       open / go back"),
             ];
             lines.extend(
                 all_shortcuts()

@@ -13,8 +13,63 @@ use super::{
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
+    Menu,
+    Content,
     Providers,
     Models,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Page {
+    Home,
+    Profiles,
+    Settings,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum SettingsAction {
+    Reload,
+    Doctor,
+    Backups,
+    ImportOpenCode,
+}
+
+impl SettingsAction {
+    pub(super) const ALL: [Self; 4] = [
+        Self::Reload,
+        Self::Doctor,
+        Self::Backups,
+        Self::ImportOpenCode,
+    ];
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Reload => "Reload configuration",
+            Self::Doctor => "Validate configuration",
+            Self::Backups => "Browse backups",
+            Self::ImportOpenCode => "Import from OpenCode",
+        }
+    }
+}
+
+impl Page {
+    pub(super) const ALL: [Self; 3] = [Self::Home, Self::Profiles, Self::Settings];
+
+    pub(super) fn index(self) -> usize {
+        match self {
+            Self::Home => 0,
+            Self::Profiles => 1,
+            Self::Settings => 2,
+        }
+    }
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Home => "Home",
+            Self::Profiles => "Profiles",
+            Self::Settings => "Settings",
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -59,8 +114,10 @@ pub(super) enum Overlay {
 pub(super) struct App {
     pub(super) paths: Paths,
     pub(super) snapshot: Snapshot,
+    pub(super) page: Page,
     pub(super) provider_cursor: usize,
     pub(super) model_cursor: usize,
+    pub(super) settings_cursor: usize,
     pub(super) focus: Focus,
     pub(super) filter: String,
     pub(super) filtering: bool,
@@ -96,9 +153,11 @@ impl App {
         Self {
             paths,
             snapshot,
+            page: Page::Home,
             provider_cursor: 0,
             model_cursor: 0,
-            focus: Focus::Providers,
+            settings_cursor: 0,
+            focus: Focus::Menu,
             filter: String::new(),
             filtering: false,
             narrow_detail: false,
@@ -234,45 +293,91 @@ impl App {
             match command {
                 Command::Quit => self.quit = true,
                 Command::Help => self.overlay = Some(Overlay::Help),
-                Command::Filter => self.filtering = true,
-                Command::New => self.open_add(),
-                Command::Edit => self.open_edit(),
-                Command::Delete => self.open_delete(),
-                Command::Copy => self.duplicate_selected(),
-                Command::Import => self.start_fetch(),
-                Command::SetDefault if self.in_model_context() => self.set_selected_default(),
-                Command::SetDefault => {}
+                Command::Filter if self.in_profiles() => self.filtering = true,
+                Command::New if self.in_profiles() => self.open_add(),
+                Command::Edit if self.in_profiles() => self.open_edit(),
+                Command::Delete if self.in_profiles() => self.open_delete(),
+                Command::Copy if self.in_profiles() => self.duplicate_selected(),
+                Command::Import if self.in_profiles() => self.start_fetch(),
+                Command::SetDefault if self.in_profiles() && self.in_model_context() => {
+                    self.set_selected_default()
+                }
                 Command::Backups => self.open_backups(),
                 Command::Doctor => {
                     self.overlay = Some(Overlay::Doctor(documents::doctor(&self.paths)))
                 }
                 Command::Reload => self.reload(Some("Reloaded Pi configuration")),
+                _ => {}
             }
             return;
         }
+
+        if self.focus == Focus::Menu {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.select_page(Page::ALL[self.page.index().saturating_sub(1)])
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.select_page(Page::ALL[(self.page.index() + 1).min(Page::ALL.len() - 1)])
+                }
+                KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                    self.focus = if self.page == Page::Profiles {
+                        Focus::Providers
+                    } else {
+                        Focus::Content
+                    };
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        if self.page == Page::Settings {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.settings_cursor = self.settings_cursor.saturating_sub(1)
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.settings_cursor =
+                        (self.settings_cursor + 1).min(SettingsAction::ALL.len() - 1)
+                }
+                KeyCode::Enter => self.run_settings_action(),
+                KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc | KeyCode::Tab => {
+                    self.focus = Focus::Menu
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        if self.page != Page::Profiles {
+            match key.code {
+                KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc | KeyCode::Tab => {
+                    self.focus = Focus::Menu
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match key.code {
             KeyCode::Tab => {
-                self.focus = if self.focus == Focus::Providers {
-                    Focus::Models
+                if self.focus == Focus::Providers {
+                    self.focus_models();
                 } else {
-                    Focus::Providers
+                    self.focus_providers();
                 }
             }
-            KeyCode::Enter if self.width < WIDE_WIDTH && !self.narrow_detail => {
-                if self.selected_provider().is_some() {
-                    self.narrow_detail = true;
-                    self.focus = Focus::Models;
-                }
-            }
-            KeyCode::Enter => self.focus = Focus::Models,
-            KeyCode::Esc if self.width < WIDE_WIDTH && self.narrow_detail => {
-                self.narrow_detail = false;
-                self.focus = Focus::Providers;
-            }
+            KeyCode::Enter => self.focus_models(),
+            KeyCode::Esc if self.focus == Focus::Models => self.focus_providers(),
+            KeyCode::Esc => self.focus = Focus::Menu,
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
-            KeyCode::Left | KeyCode::Char('h') => self.focus = Focus::Providers,
-            KeyCode::Right | KeyCode::Char('l') => self.focus = Focus::Models,
+            KeyCode::Left | KeyCode::Char('h') if self.focus == Focus::Models => {
+                self.focus_providers()
+            }
+            KeyCode::Left | KeyCode::Char('h') => self.focus = Focus::Menu,
+            KeyCode::Right | KeyCode::Char('l') => self.focus_models(),
             _ => {}
         }
     }
@@ -532,7 +637,42 @@ impl App {
     }
 
     pub(super) fn in_model_context(&self) -> bool {
-        self.focus == Focus::Models || (self.width < WIDE_WIDTH && self.narrow_detail)
+        self.page == Page::Profiles
+            && (self.focus == Focus::Models || (self.width < WIDE_WIDTH && self.narrow_detail))
+    }
+
+    pub(super) fn in_profiles(&self) -> bool {
+        self.page == Page::Profiles && self.focus != Focus::Menu
+    }
+
+    fn select_page(&mut self, page: Page) {
+        self.page = page;
+        self.filtering = false;
+        self.narrow_detail = false;
+        self.settings_cursor = 0;
+    }
+
+    fn focus_models(&mut self) {
+        if self.selected_provider().is_some() {
+            self.focus = Focus::Models;
+            self.narrow_detail = self.width < WIDE_WIDTH;
+        }
+    }
+
+    fn focus_providers(&mut self) {
+        self.focus = Focus::Providers;
+        self.narrow_detail = false;
+    }
+
+    fn run_settings_action(&mut self) {
+        match SettingsAction::ALL[self.settings_cursor] {
+            SettingsAction::Reload => self.reload(Some("Reloaded Pi configuration")),
+            SettingsAction::Doctor => {
+                self.overlay = Some(Overlay::Doctor(documents::doctor(&self.paths)))
+            }
+            SettingsAction::Backups => self.open_backups(),
+            SettingsAction::ImportOpenCode => self.import_opencode(),
+        }
     }
 
     pub(super) fn open_add(&mut self) {
@@ -648,6 +788,20 @@ impl App {
     pub(super) fn import_fetched(&mut self, provider_id: &str, models: Vec<String>) {
         match documents::import_models(&self.paths, provider_id, &models) {
             Ok(added) => self.reload(Some(&format!("Imported {added} new model(s)"))),
+            Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
+        }
+    }
+
+    fn import_opencode(&mut self) {
+        match documents::import_opencode(&self.paths) {
+            Ok(summary) if summary.changed => self.reload(Some(&format!(
+                "Imported {} provider(s) and {} model(s) from OpenCode",
+                summary.providers, summary.models
+            ))),
+            Ok(_) => self.notice(
+                NoticeKind::Success,
+                "Pi configuration already matches OpenCode",
+            ),
             Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
         }
     }

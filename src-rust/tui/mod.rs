@@ -18,7 +18,7 @@ use ui::draw;
 #[cfg(test)]
 use crate::documents::{ModelView, ProviderView, Snapshot};
 #[cfg(test)]
-use app::{Focus, Overlay};
+use app::{Focus, Overlay, Page};
 #[cfg(test)]
 use forms::{FormState, ModelFormState};
 #[cfg(test)]
@@ -27,7 +27,7 @@ use input::{truncate_width, wrap_width};
 use keys::{command_for, Command};
 
 const TICK: Duration = Duration::from_millis(120);
-const WIDE_WIDTH: u16 = 96;
+const WIDE_WIDTH: u16 = 76;
 const API_TYPES: [&str; 4] = [
     "openai-completions",
     "openai-responses",
@@ -112,17 +112,53 @@ mod tests {
         for (width, height) in [(120, 36), (80, 24), (64, 20)] {
             let backend = TestBackend::new(width, height);
             let mut terminal = Terminal::new(backend).unwrap();
+
+            app.page = Page::Home;
+            app.focus = Focus::Menu;
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-            let content = terminal
+            let menu = terminal
                 .backend()
                 .buffer()
                 .content()
                 .iter()
                 .map(|cell| cell.symbol())
                 .collect::<String>();
-            assert!(content.contains("pi-switch"));
-            assert!(content.contains("provider"));
-            assert!(content.contains("new"));
+            assert!(menu.contains("pi-switch"));
+            assert!(menu.contains("Home"));
+            assert!(menu.contains("Profiles"));
+            assert!(menu.contains("Settings"));
+            if width == 120 {
+                assert!(menu.contains("models.json"));
+                assert!(menu.contains("settings.json"));
+            }
+
+            app.page = Page::Profiles;
+            app.focus = Focus::Providers;
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let profiles = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(profiles.contains("Providers"));
+            assert!(profiles.contains("openai-completions"));
+            assert!(profiles.contains("new"));
+
+            app.page = Page::Settings;
+            app.focus = Focus::Content;
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let settings = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(settings.contains("Configuration"));
+            assert!(settings.contains("Actions"));
+            assert!(settings.contains("Import from OpenCode"));
         }
         assert_eq!(truncate_width("示例-provider", 8), "示例-...");
         assert_eq!(UnicodeWidthStr::width("示例-provider"), 13);
@@ -141,8 +177,34 @@ mod tests {
     }
 
     #[test]
+    fn profiles_use_the_actual_layout_width_for_responsive_breakpoints() {
+        let (root, mut app) = app();
+        app.page = Page::Profiles;
+        app.focus = Focus::Providers;
+        for (width, menu_visible, detail_visible) in
+            [(94, true, true), (80, false, true), (75, false, false)]
+        {
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let content = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+
+            assert_eq!(content.contains("Home"), menu_visible);
+            assert_eq!(content.contains("Base URL"), detail_visible);
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn contextual_actions_open_provider_and_model_crud() {
         let (root, mut app) = app();
+        app.page = Page::Profiles;
+        app.focus = Focus::Providers;
         app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
         assert!(matches!(app.overlay, Some(Overlay::Form(_))));
 
@@ -212,6 +274,61 @@ mod tests {
     }
 
     #[test]
+    fn menu_routes_pages_and_scopes_profile_commands() {
+        let (root, mut app) = app();
+        app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(app.overlay.is_none());
+
+        app.narrow_detail = true;
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert!(app.page == Page::Profiles);
+        assert!(!app.narrow_detail);
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.focus == Focus::Providers);
+        app.width = 75;
+        app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(app.focus == Focus::Models);
+        assert!(app.narrow_detail);
+        app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert!(app.focus == Focus::Providers);
+        assert!(!app.narrow_detail);
+        app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(matches!(app.overlay, Some(Overlay::Form(_))));
+
+        app.overlay = None;
+        app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert!(app.focus == Focus::Menu);
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert!(app.page == Page::Settings);
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.focus == Focus::Content);
+        app.on_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert!(matches!(app.overlay, Some(Overlay::Doctor(_))));
+
+        app.overlay = None;
+        for _ in 0..3 {
+            app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(app.overlay, Some(Overlay::Error(_))));
+
+        app.overlay = None;
+        fs::create_dir_all(app.paths.opencode.parent().unwrap()).unwrap();
+        fs::write(
+            &app.paths.opencode,
+            r#"{"provider":{"from-opencode":{"npm":"@ai-sdk/openai-compatible","options":{"baseURL":"https://opencode.test/v1"},"models":{"imported":{"name":"Imported"}}}}}"#,
+        )
+        .unwrap();
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app
+            .snapshot
+            .providers
+            .iter()
+            .any(|provider| provider.id == "from-opencode"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn shortcuts_use_the_same_intuitive_commands_shown_in_the_ui() {
         assert!(matches!(
             command_for(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
@@ -226,5 +343,6 @@ mod tests {
             Some(Command::Delete)
         ));
         assert!(command_for(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)).is_none());
+        assert!(command_for(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)).is_none());
     }
 }
