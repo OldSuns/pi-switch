@@ -12,6 +12,9 @@ pub(super) fn provider_view(id: &str, value: &Value) -> Result<ProviderView> {
     let object = value
         .as_object()
         .ok_or_else(|| AppError::Invalid(format!("provider '{id}' must be an object")))?;
+    if let Some(headers) = object.get("headers") {
+        validate_headers(id, headers)?;
+    }
     let models = match object.get("models") {
         None => Vec::new(),
         Some(Value::Array(items)) => {
@@ -253,10 +256,36 @@ pub(super) fn validate_draft(draft: &ProviderDraft) -> Result<()> {
     if let Some(api) = draft.api.as_deref().filter(|api| !API_TYPES.contains(api)) {
         return Err(AppError::Invalid(format!("unsupported API type '{}'", api)));
     }
-    for (field, value) in [("headers", &draft.headers), ("compat", &draft.compat)] {
-        if value.as_ref().is_some_and(|value| !value.is_object()) {
+    if let Some(headers) = &draft.headers {
+        validate_headers(id, headers)?;
+    }
+    if draft
+        .compat
+        .as_ref()
+        .is_some_and(|value| !value.is_object())
+    {
+        return Err(AppError::Invalid(
+            "provider compat must be a JSON object".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_headers(provider_id: &str, value: &Value) -> Result<()> {
+    let headers = value.as_object().ok_or_else(|| {
+        AppError::Invalid(format!(
+            "provider '{provider_id}' headers must be a JSON object"
+        ))
+    })?;
+    for (name, value) in headers {
+        if name.is_empty() || name.chars().any(char::is_control) {
             return Err(AppError::Invalid(format!(
-                "provider {field} must be a JSON object"
+                "provider '{provider_id}' header name is empty or contains control characters"
+            )));
+        }
+        if !value.is_string() {
+            return Err(AppError::Invalid(format!(
+                "provider '{provider_id}' header '{name}' must be a string"
             )));
         }
     }

@@ -9,6 +9,7 @@ path = "src-rust/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 crossterm = "0.29"
 dirs = "6"
 napi = { version = "2", features = ["napi6"] }

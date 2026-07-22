@@ -124,7 +124,7 @@ fn import_source(
 
     summary.changed = root != before;
     if summary.changed {
-        write_document(paths, &paths.models, "models", &root)?;
+        write_document(paths, &_lock, &paths.models, &root)?;
     }
     Ok(summary)
 }

@@ -47,6 +47,13 @@ pub(super) fn truncate_width(value: &str, max_width: usize) -> String {
     output
 }
 
+pub(super) fn pad_width(value: &str, width: usize) -> String {
+    format!(
+        "{value}{}",
+        " ".repeat(width.saturating_sub(UnicodeWidthStr::width(value)))
+    )
+}
+
 pub(super) fn wrap_width(value: &str, max_width: usize) -> Vec<String> {
     let max_width = max_width.max(1);
     let mut lines = Vec::new();

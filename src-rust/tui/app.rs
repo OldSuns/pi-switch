@@ -316,6 +316,7 @@ impl App {
                 self.task = None;
             }
             Ok(Ok(BackgroundResult::OpenCode(summary))) => {
+                self.overlay = None;
                 self.finish_opencode_import(summary);
                 self.task = None;
             }
@@ -352,6 +353,13 @@ impl App {
                 return;
             }
             self.on_overlay_key(key);
+            return;
+        }
+        if self.page == Page::Settings
+            && self.focus == Focus::Content
+            && key.code == KeyCode::Char(' ')
+        {
+            self.run_settings_action();
             return;
         }
         if let Some(command) = command_for(key) {
@@ -543,7 +551,7 @@ impl App {
                 KeyCode::Down | KeyCode::Char('j') => {
                     *selected = (*selected + 1).min(items.len().saturating_sub(1));
                 }
-                KeyCode::Enter if !items.is_empty() => {
+                KeyCode::Enter | KeyCode::Char(' ') if !items.is_empty() => {
                     self.overlay = Some(Overlay::ConfirmRestore(items[*selected].clone()));
                     return;
                 }
@@ -640,8 +648,36 @@ impl App {
             }
             return true;
         }
+        if form.editing_headers {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Tab => {
+                    form.editing_headers = false;
+                    form.cursor = 0;
+                }
+                KeyCode::Left => form.cursor = form.cursor.saturating_sub(1),
+                KeyCode::Right => form.cursor = (form.cursor + 1).min(char_len(&form.headers_json)),
+                KeyCode::Home => form.cursor = 0,
+                KeyCode::End => form.cursor = char_len(&form.headers_json),
+                KeyCode::Backspace if form.cursor > 0 => {
+                    let index = form.cursor - 1;
+                    remove_char(&mut form.headers_json, index);
+                    form.cursor = index;
+                }
+                KeyCode::Delete => remove_char(&mut form.headers_json, form.cursor),
+                KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    insert_char(&mut form.headers_json, form.cursor, character);
+                    form.cursor += 1;
+                }
+                _ => {}
+            }
+            return false;
+        }
         match key.code {
             KeyCode::Esc => return true,
+            KeyCode::Enter if form.field == 5 => {
+                form.editing_headers = true;
+                form.cursor = char_len(&form.headers_json);
+            }
             KeyCode::Tab | KeyCode::Down => form.select_field(form.field + 1),
             KeyCode::BackTab | KeyCode::Up => form.select_field((form.field + 6) % 7),
             KeyCode::Left if form.field == 2 => {

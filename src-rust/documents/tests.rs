@@ -189,7 +189,10 @@ fn provider_updates_preserve_unknown_data_and_create_backup() {
             api: Some("openai-responses".into()),
             api_key: "$KEY".into(),
             auth_header: true,
-            headers: Some(json!({"x-team-key":"$TEAM_KEY"})),
+            headers: Some(json!({
+                "User-Agent": "claude-cli/2.1.161",
+                "x-team-key": "$TEAM_KEY"
+            })),
             compat: Some(json!({"supportsDeveloperRole":false})),
         },
     )
@@ -216,6 +219,10 @@ fn provider_updates_preserve_unknown_data_and_create_backup() {
         "$TEAM_KEY"
     );
     assert_eq!(
+        models["providers"]["new"]["headers"]["User-Agent"],
+        "claude-cli/2.1.161"
+    );
+    assert_eq!(
         models["providers"]["new"]["compat"]["supportsDeveloperRole"],
         false
     );
@@ -224,7 +231,69 @@ fn provider_updates_preserve_unknown_data_and_create_backup() {
     let settings: Value = serde_json::from_slice(&fs::read(&paths.settings).unwrap()).unwrap();
     assert_eq!(settings["defaultProvider"], "new");
     assert_eq!(settings["theme"], "x");
-    assert!(list_backups(&paths).unwrap().len() >= 2);
+    assert_eq!(list_backups(&paths).unwrap().len(), 2);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn full_backups_are_coalesced_capped_and_restored() {
+    let (root, paths) = fixture();
+    let original_models = json!({"providers":{"old":{"models":[]}},"future":true});
+    let original_settings = json!({"defaultProvider":"old","defaultModel":"keep","theme":"dark"});
+    fs::write(&paths.models, serde_json::to_vec(&original_models).unwrap()).unwrap();
+    fs::write(
+        &paths.settings,
+        serde_json::to_vec(&original_settings).unwrap(),
+    )
+    .unwrap();
+
+    let draft = ProviderDraft {
+        id: "new".into(),
+        base_url: "https://new.test/v1".into(),
+        api: Some("openai-completions".into()),
+        api_key: String::new(),
+        auth_header: true,
+        headers: None,
+        compat: None,
+    };
+    save_provider(&paths, Some("old"), &draft).unwrap();
+    let backups = list_backups(&paths).unwrap();
+    assert_eq!(backups.len(), 1);
+    assert!(backups[0].name.starts_with("backup-"));
+    let first_backup: Value = serde_json::from_slice(&fs::read(&backups[0].path).unwrap()).unwrap();
+    assert_eq!(first_backup["models"], original_models);
+    assert_eq!(first_backup["settings"], original_settings);
+
+    save_provider(&paths, Some("new"), &draft).unwrap();
+    assert_eq!(list_backups(&paths).unwrap().len(), 1);
+    set_language(&paths, "zh-CN").unwrap();
+    assert_eq!(list_backups(&paths).unwrap().len(), 2);
+    set_language(&paths, "zh-CN").unwrap();
+    assert_eq!(list_backups(&paths).unwrap().len(), 2);
+    let before_restore_models: Value =
+        serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
+    let before_restore_settings: Value =
+        serde_json::from_slice(&fs::read(&paths.settings).unwrap()).unwrap();
+
+    restore_backup(&paths, &backups[0]).unwrap();
+    let restored_models: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
+    let restored_settings: Value =
+        serde_json::from_slice(&fs::read(&paths.settings).unwrap()).unwrap();
+    assert_eq!(restored_models, original_models);
+    assert_eq!(restored_settings, original_settings);
+    assert!(list_backups(&paths).unwrap().iter().any(|backup| {
+        let value: Value = serde_json::from_slice(&fs::read(&backup.path).unwrap()).unwrap();
+        value["models"] == before_restore_models && value["settings"] == before_restore_settings
+    }));
+
+    for index in 0..12 {
+        set_language(&paths, if index % 2 == 0 { "en" } else { "zh-CN" }).unwrap();
+    }
+    let backups = list_backups(&paths).unwrap();
+    assert_eq!(backups.len(), 10);
+    assert!(backups
+        .iter()
+        .all(|backup| backup.name.starts_with("backup-")));
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -536,6 +605,16 @@ fn invalid_shapes_and_stale_edits_fail_explicitly() {
         .unwrap_err()
         .to_string()
         .contains("string ID"));
+
+    fs::write(
+        &paths.models,
+        r#"{"providers":{"bad":{"headers":{"User-Agent":7}}}}"#,
+    )
+    .unwrap();
+    assert!(load_snapshot(&paths)
+        .unwrap_err()
+        .to_string()
+        .contains("header 'User-Agent' must be a string"));
 
     fs::write(&paths.models, r#"{"providers":{}}"#).unwrap();
     let result = save_provider(

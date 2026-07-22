@@ -9,11 +9,13 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+use crate::documents::{PI_DEFAULT_CONTEXT_WINDOW, PI_DEFAULT_MAX_TOKENS};
+
 use super::{
     app::{App, Focus, Notice, NoticeKind, Overlay, Page},
     forms::{FormState, ModelDefaultsFormState, ModelFormState},
     i18n::Language,
-    input::{api_label, char_len, mask_secret, truncate_width, with_cursor, wrap_width},
+    input::{api_label, char_len, mask_secret, pad_width, truncate_width, with_cursor, wrap_width},
     keys::{all_shortcuts, shortcut, Command},
     WIDE_WIDTH,
 };
@@ -21,6 +23,7 @@ use pages::{render_home, render_menu, render_settings};
 
 const MENU_WIDTH: u16 = 18;
 const SHELL_WIDE_WIDTH: u16 = MENU_WIDTH + WIDE_WIDTH;
+const MODEL_DEFAULT_VALUE_WIDTH: usize = 16;
 
 #[derive(Clone, Copy)]
 struct Theme {
@@ -324,15 +327,25 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
     let [info, models] = Layout::vertical([Constraint::Length(8), Constraint::Min(5)]).areas(area);
     let width = info.width.saturating_sub(14) as usize;
     let key = mask_secret(&provider.api_key);
-    let header_count = provider
+    let headers = provider
         .raw
         .get("headers")
-        .and_then(serde_json::Value::as_object)
-        .map(serde_json::Map::len)
-        .unwrap_or_default();
+        .and_then(serde_json::Value::as_object);
+    let header_summary = headers
+        .filter(|headers| !headers.is_empty())
+        .map(|headers| {
+            let names = headers.keys().cloned().collect::<Vec<_>>().join(", ");
+            format!(
+                "{} {}: {}",
+                headers.len(),
+                app.language.pick("configured", "项"),
+                truncate_width(&names, width.saturating_sub(16)),
+            )
+        })
+        .unwrap_or_else(|| app.language.pick("none", "未设置").into());
     let lines = vec![
         Line::from(vec![
-            Span::styled(format!("{:<10}", "API"), Style::default().fg(theme.muted)),
+            Span::styled(pad_width("API", 10), Style::default().fg(theme.muted)),
             Span::raw(if provider.api.is_empty() {
                 app.language.pick("inherited", "继承")
             } else {
@@ -341,7 +354,7 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         ]),
         Line::from(vec![
             Span::styled(
-                format!("{:<10}", app.language.pick("Base URL", "基础 URL")),
+                pad_width(app.language.pick("Base URL", "基础 URL"), 10),
                 Style::default().fg(theme.muted),
             ),
             Span::raw(if provider.base_url.is_empty() {
@@ -352,7 +365,7 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         ]),
         Line::from(vec![
             Span::styled(
-                format!("{:<10}", app.language.pick("API key", "API 密钥")),
+                pad_width(app.language.pick("API key", "API 密钥"), 10),
                 Style::default().fg(theme.muted),
             ),
             Span::raw(if provider.api_key.is_empty() {
@@ -365,7 +378,7 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         ]),
         Line::from(vec![
             Span::styled(
-                format!("{:<10}", app.language.pick("Auth", "认证")),
+                pad_width(app.language.pick("Auth", "认证"), 10),
                 Style::default().fg(theme.muted),
             ),
             Span::raw(if provider.auth_header {
@@ -376,17 +389,14 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         ]),
         Line::from(vec![
             Span::styled(
-                format!("{:<10}", app.language.pick("Headers", "请求头")),
+                pad_width(app.language.pick("Headers", "请求头"), 10),
                 Style::default().fg(theme.muted),
             ),
-            Span::raw(format!(
-                "{header_count} {}",
-                app.language.pick("configured", "项")
-            )),
+            Span::raw(header_summary),
         ]),
         Line::from(vec![
             Span::styled(
-                format!("{:<10}", app.language.pick("Compat", "兼容选项")),
+                pad_width(app.language.pick("Compat", "兼容选项"), 10),
                 Style::default().fg(theme.muted),
             ),
             Span::raw(if provider.raw.get("compat").is_some() {
@@ -582,7 +592,7 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
     } else if app.page == Page::Settings {
         vec![
             ("Up/Down", app.language.pick("select", "选择")),
-            ("Enter", app.language.pick("run", "执行")),
+            ("Enter/Space", app.language.pick("run", "执行")),
         ]
     } else {
         vec![
@@ -807,16 +817,18 @@ fn render_overlay(
                 .border_style(Style::default().fg(theme.accent));
             let inner = block.inner(rect);
             frame.render_widget(block, rect);
+            let [list, hint] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
             if items.is_empty() {
                 frame.render_widget(
                     Paragraph::new(language.pick("No backups yet.", "暂无备份。"))
                         .alignment(Alignment::Center),
-                    inner,
+                    list,
                 );
             } else {
                 let rows = items
                     .iter()
-                    .map(|item| ListItem::new(format!("{}  {}", item.target, item.name)))
+                    .map(|item| ListItem::new(item.name.clone()))
                     .collect::<Vec<_>>();
                 let mut state = ListState::default().with_selected(Some(*selected));
                 frame.render_stateful_widget(
@@ -825,10 +837,25 @@ fn render_overlay(
                             .fg(theme.accent)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    inner,
+                    list,
                     &mut state,
                 );
             }
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(" Enter/Space ", Style::default().fg(theme.accent)),
+                    Span::styled(
+                        language.pick("restore  ", "恢复  "),
+                        Style::default().fg(theme.muted),
+                    ),
+                    Span::styled(" Esc ", Style::default().fg(theme.accent)),
+                    Span::styled(
+                        language.pick("close", "关闭"),
+                        Style::default().fg(theme.muted),
+                    ),
+                ])),
+                hint,
+            );
         }
         Overlay::ConfirmRestore(backup) => {
             let rect = modal_rect(area, 62, 8);
@@ -1058,6 +1085,10 @@ fn render_form(
     area: Rect,
     theme: Theme,
 ) {
+    if form.editing_headers {
+        render_provider_headers_form(frame, form, language, area, theme);
+        return;
+    }
     let rect = modal_rect(area, 88, 22);
     clear_area(frame, rect, theme);
     let block = Block::default()
@@ -1101,7 +1132,12 @@ fn render_form(
                 language.pick("custom only", "仅自定义")
             }
         ),
-        form.headers_json.clone(),
+        if form.headers_json.trim().is_empty() {
+            language.pick("< none - Enter to edit >", "< 未设置 - Enter 编辑 >")
+        } else {
+            language.pick("< configured - Enter to edit >", "< 已配置 - Enter 编辑 >")
+        }
+        .into(),
         form.compat_json.clone(),
     ];
     let labels = [
@@ -1110,14 +1146,14 @@ fn render_form(
         language.pick("API type", "API 类型"),
         language.pick("API key / reference", "API 密钥 / 引用"),
         language.pick("Auth header", "认证请求头"),
-        language.pick("Headers JSON", "请求头 JSON"),
+        language.pick("Headers (all models)", "请求头（全部模型）"),
         language.pick("Compat JSON", "兼容选项 JSON"),
     ];
     for index in 0..7 {
         let active = form.field == index;
         let label = Line::from(vec![
             Span::styled(
-                format!(" {:<24}", labels[index]),
+                format!(" {}", pad_width(labels[index], 24)),
                 Style::default().fg(if active { theme.accent } else { theme.muted }),
             ),
             Span::styled(
@@ -1133,8 +1169,22 @@ fn render_form(
                 }),
             ),
         ]);
+        let lines = if index == 5 && form.headers_json.is_empty() {
+            vec![
+                label,
+                Line::from(Span::styled(
+                    language.pick(
+                        r#"  Example: {"User-Agent":"claude-cli/2.1.161"}"#,
+                        r#"  示例：{"User-Agent":"claude-cli/2.1.161"}"#,
+                    ),
+                    Style::default().fg(theme.muted),
+                )),
+            ]
+        } else {
+            vec![label]
+        };
         frame.render_widget(
-            Paragraph::new(label).wrap(Wrap { trim: false }),
+            Paragraph::new(lines).wrap(Wrap { trim: false }),
             rows[index],
         );
     }
@@ -1172,6 +1222,76 @@ fn render_form(
             ),
         ])),
         rows[7],
+    );
+}
+
+fn render_provider_headers_form(
+    frame: &mut Frame<'_>,
+    form: &FormState,
+    language: Language,
+    area: Rect,
+    theme: Theme,
+) {
+    let rect = modal_rect(area, 82, 14);
+    clear_area(frame, rect, theme);
+    let block = Block::default()
+        .title(language.pick(
+            " Provider headers - all models ",
+            " 提供商请求头 - 全部模型 ",
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    let [intro, editor, hint] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(4),
+        Constraint::Length(2),
+    ])
+    .areas(inner);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(language.pick(
+                "JSON object applied to every model in this provider.",
+                "JSON 对象会应用到此提供商的全部模型。",
+            )),
+            Line::from(Span::styled(
+                language.pick(
+                    r#"Example: {"User-Agent":"claude-cli/2.1.161"}"#,
+                    r#"示例：{"User-Agent":"claude-cli/2.1.161"}"#,
+                ),
+                Style::default().fg(theme.muted),
+            )),
+            Line::from(Span::styled(
+                language.pick(
+                    "Values may be literals, $ENV, ${ENV}, or !command.",
+                    "值支持字面量、$ENV、${ENV} 或 !command。",
+                ),
+                Style::default().fg(theme.muted),
+            )),
+        ]),
+        intro,
+    );
+    frame.render_widget(
+        Paragraph::new(with_cursor(&form.headers_json, form.cursor))
+            .style(Style::default().bg(theme.surface))
+            .wrap(Wrap { trim: false }),
+        editor,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Enter/Esc/Tab ", Style::default().fg(theme.accent)),
+            Span::styled(
+                language.pick("done  ", "完成  "),
+                Style::default().fg(theme.muted),
+            ),
+            Span::styled(" Ctrl+S ", Style::default().fg(theme.success)),
+            Span::styled(
+                language.pick("save provider", "保存提供商"),
+                Style::default().fg(theme.muted),
+            ),
+        ])),
+        hint,
     );
 }
 
@@ -1250,7 +1370,7 @@ fn render_model_form(
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
-                    format!(" {:<22}", labels[index]),
+                    format!(" {}", pad_width(labels[index], 22)),
                     Style::default().fg(if active { theme.accent } else { theme.muted }),
                 ),
                 Span::styled(
@@ -1303,7 +1423,6 @@ fn render_model_defaults_form(
     area: Rect,
     theme: Theme,
 ) {
-    let rect = modal_rect(area, 82, 20);
     let values = [
         &form.context_window,
         &form.max_tokens,
@@ -1320,27 +1439,36 @@ fn render_model_defaults_form(
         language.pick("Cache read cost / M", "缓存读取成本 / M"),
         language.pick("Cache write cost / M", "缓存写入成本 / M"),
     ];
+    let defaults = [
+        PI_DEFAULT_CONTEXT_WINDOW.to_string(),
+        PI_DEFAULT_MAX_TOKENS.to_string(),
+        "0".into(),
+        "0".into(),
+        "0".into(),
+        "0".into(),
+    ];
+    let label_width = labels
+        .iter()
+        .map(|label| UnicodeWidthStr::width(*label))
+        .max()
+        .unwrap_or_default();
+    let rect = modal_rect(
+        area,
+        (label_width + MODEL_DEFAULT_VALUE_WIDTH + 9) as u16,
+        15,
+    );
     let mut lines = Vec::with_capacity(13);
     for index in 0..6 {
         let active = form.field == index;
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!(" {:<25}", labels[index]),
-                Style::default().fg(if active { theme.accent } else { theme.muted }),
-            ),
-            Span::styled(
-                if active {
-                    with_cursor(values[index], form.cursor)
-                } else {
-                    values[index].clone()
-                },
-                Style::default().add_modifier(if active {
-                    Modifier::BOLD
-                } else {
-                    Modifier::empty()
-                }),
-            ),
-        ]));
+        lines.push(model_default_field(
+            labels[index],
+            label_width,
+            values[index],
+            &defaults[index],
+            form.cursor,
+            active,
+            theme,
+        ));
         lines.push(Line::default());
     }
     lines.push(Line::from(vec![
@@ -1375,6 +1503,62 @@ fn render_model_defaults_form(
     );
 }
 
+fn model_default_field(
+    label: &str,
+    label_width: usize,
+    value: &str,
+    default: &str,
+    cursor: usize,
+    active: bool,
+    theme: Theme,
+) -> Line<'static> {
+    let label_padding = label_width.saturating_sub(UnicodeWidthStr::width(label));
+    let border = Style::default().fg(if active { theme.accent } else { theme.border });
+    let input = Style::default().bg(theme.surface);
+    let mut spans = vec![
+        Span::styled(
+            format!(" {label}{}  ", " ".repeat(label_padding)),
+            Style::default().fg(if active { theme.accent } else { theme.muted }),
+        ),
+        Span::styled("[", border),
+        Span::styled(" ", input),
+    ];
+    if value.is_empty() {
+        let cursor = if active { "|" } else { "" };
+        let default = truncate_width(
+            default,
+            MODEL_DEFAULT_VALUE_WIDTH.saturating_sub(cursor.len()),
+        );
+        let padding = MODEL_DEFAULT_VALUE_WIDTH
+            .saturating_sub(cursor.len() + UnicodeWidthStr::width(default.as_str()));
+        spans.push(Span::styled(cursor, input.fg(theme.foreground)));
+        spans.push(Span::styled(default, input.fg(theme.muted)));
+        spans.push(Span::styled(" ".repeat(padding), input));
+    } else {
+        let value = truncate_width(
+            &if active {
+                with_cursor(value, cursor)
+            } else {
+                value.into()
+            },
+            MODEL_DEFAULT_VALUE_WIDTH,
+        );
+        let padding =
+            MODEL_DEFAULT_VALUE_WIDTH.saturating_sub(UnicodeWidthStr::width(value.as_str()));
+        spans.push(Span::styled(
+            format!("{value}{}", " ".repeat(padding)),
+            input.fg(theme.foreground).add_modifier(if active {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            }),
+        ));
+    }
+    spans.push(Span::styled(" ", input));
+    spans.push(Span::styled("]", border));
+    Line::from(spans)
+}
+
 fn render_modal<'a>(
     frame: &mut Frame<'_>,
     rect: Rect,
@@ -1396,8 +1580,13 @@ fn render_modal<'a>(
 }
 
 fn clear_area(frame: &mut Frame<'_>, area: Rect, theme: Theme) {
-    frame.render_widget(Clear, area);
-    frame.render_widget(Block::default().style(theme.base()), area);
+    // Clear adjacent cells too: a wide glyph can start outside the overlay and occupy its border.
+    let bounds = frame.area();
+    let x = area.x.saturating_sub(1).max(bounds.x);
+    let right = area.right().saturating_add(1).min(bounds.right());
+    let clear = Rect::new(x, area.y, right.saturating_sub(x), area.height);
+    frame.render_widget(Clear, clear);
+    frame.render_widget(Block::default().style(theme.base()), clear);
 }
 
 fn modal_rect(area: Rect, desired_width: u16, desired_height: u16) -> Rect {

@@ -17,7 +17,7 @@ use terminal::{terminal_error, PanicRestoreHookGuard, TuiTerminal};
 use ui::draw;
 
 #[cfg(test)]
-use crate::documents::{ModelView, ProviderView, Snapshot};
+use crate::documents::{Backup, ModelView, ProviderView, Snapshot};
 #[cfg(test)]
 use app::{Focus, Overlay, Page};
 #[cfg(test)]
@@ -68,8 +68,8 @@ mod tests {
     use ratatui::{backend::TestBackend, Terminal};
     use serde_json::json;
     use std::{
-        env, fs, process,
-        time::{SystemTime, UNIX_EPOCH},
+        env, fs, process, thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
     use unicode_width::UnicodeWidthStr;
 
@@ -162,6 +162,7 @@ mod tests {
                 .collect::<String>();
             assert!(settings.contains("Configuration"));
             assert!(settings.contains("Actions"));
+            assert!(settings.contains("Enter/Space run"));
             if height >= 24 {
                 assert!(settings.contains("Fetch model metadata from pi.dev"));
                 assert!(!settings.contains("Default model parameters"));
@@ -239,20 +240,101 @@ mod tests {
     #[test]
     fn model_defaults_dialog_keeps_its_left_border() {
         let (root, mut app) = app();
+        app.language = super::i18n::Language::Chinese;
+        app.page = Page::Settings;
+        app.focus = Focus::Content;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         app.overlay = Some(Overlay::ModelDefaultsForm(ModelDefaultsFormState::new(
             &app.snapshot.model_defaults,
         )));
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
         let symbols = buffer.content();
         let symbol_at = |x: u16, y: u16| symbols[(y * 80 + x) as usize].symbol();
-        assert_eq!(symbol_at(1, 2), "┌");
-        for y in 3..21 {
-            assert_eq!(symbol_at(1, y), "│", "missing left border at row {y}");
+        assert_eq!(symbol_at(19, 4), "┌");
+        for y in 5..18 {
+            assert_eq!(symbol_at(19, y), "│", "missing left border at row {y}");
         }
-        assert_eq!(symbol_at(1, 21), "└");
+        assert_eq!(symbol_at(19, 18), "└");
+        let content = symbols.iter().map(|cell| cell.symbol()).collect::<String>();
+        assert!(content.contains("128000"));
+        assert!(content.contains("16384"));
+        if let Some(Overlay::ModelDefaultsForm(form)) = app.overlay.as_mut() {
+            form.context_window = "256000".into();
+            form.field = 1;
+        }
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let content = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(content.contains("256000"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn backups_open_restore_confirmation_with_space() {
+        let (root, mut app) = app();
+        app.overlay = Some(Overlay::Backups {
+            items: vec![Backup {
+                path: root
+                    .join("backup-2026-07-23_14-36-08-527.json")
+                    .display()
+                    .to_string(),
+                name: "backup-2026-07-23_14-36-08-527.json".into(),
+            }],
+            selected: 0,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let content = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(content.contains("backup-2026-07-23_14-36-08-527.json"));
+        assert!(content.contains("Enter/Space"));
+        app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(matches!(app.overlay, Some(Overlay::ConfirmRestore(_))));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn chinese_provider_form_values_share_one_column() {
+        let (root, mut app) = app();
+        app.language = super::i18n::Language::Chinese;
+        let mut form = FormState::add();
+        form.id = "#".into();
+        form.base_url = "@".into();
+        form.headers_json = "H".into();
+        form.compat_json = "%".into();
+        form.field = 2;
+        app.overlay = Some(Overlay::Form(form));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let symbols = terminal.backend().buffer().content();
+        let value_x = |row: u16, value: &str| {
+            (0..80)
+                .find(|x| symbols[(row * 80 + x) as usize].symbol() == value)
+                .unwrap()
+        };
+        let columns = [
+            value_x(2, "#"),
+            value_x(4, "@"),
+            value_x(12, "<"),
+            value_x(14, "%"),
+        ];
+        assert!(
+            columns.iter().all(|column| *column == columns[0]),
+            "{columns:?}"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -323,7 +405,8 @@ mod tests {
         ));
 
         let mut provider_form = FormState::add();
-        provider_form.headers_json = r#"{"x-api-key":"$KEY"}"#.into();
+        provider_form.headers_json =
+            r#"{"User-Agent":"claude-cli/2.1.161","x-api-key":"$KEY"}"#.into();
         provider_form.compat_json = r#"{"supportsDeveloperRole":false}"#.into();
         let draft = provider_form.draft().unwrap();
         assert_eq!(draft.headers.unwrap()["x-api-key"], "$KEY");
@@ -341,7 +424,34 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(provider_content.contains("Headers JSON"));
+        assert!(provider_content.contains("Headers (all models)"));
+        assert!(provider_content.contains(r#"{"User-Agent":"claude-cli/2.1.161"}"#));
+        if let Some(Overlay::Form(form)) = app.overlay.as_mut() {
+            form.field = 5;
+        }
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Form(ref form)) if form.editing_headers
+        ));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let headers_content = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(headers_content.contains("Provider headers - all models"));
+        assert!(headers_content.contains("$ENV"));
+        app.on_key(KeyEvent::new(KeyCode::Char('{'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Form(ref form))
+                if !form.editing_headers && form.headers_json == "{"
+        ));
 
         let model = app.snapshot.providers[0].models[0].clone();
         app.overlay = Some(Overlay::ModelForm(ModelFormState::edit(
@@ -395,14 +505,14 @@ mod tests {
 
         app.overlay = None;
         app.settings_cursor = 0;
-        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         assert_eq!(app.language, super::i18n::Language::Chinese);
 
         app.settings_cursor = 1;
-        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         assert!(!app.snapshot.fetch_model_metadata);
         app.settings_cursor = 2;
-        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         assert!(matches!(app.overlay, Some(Overlay::ModelDefaultsForm(_))));
 
         app.overlay = None;
@@ -413,7 +523,7 @@ mod tests {
         )
         .unwrap();
         app.settings_cursor = 6;
-        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         assert!(matches!(
             app.overlay,
             Some(Overlay::OpenCodeProviders {
@@ -422,6 +532,23 @@ mod tests {
                 ..
             }) if providers.len() == 2 && selected.len() == 2
         ));
+        app.notice = None;
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(app.overlay, Some(Overlay::Loading { .. })));
+        let mut imported = false;
+        for _ in 0..100 {
+            app.tick();
+            imported |= app.notice.is_some();
+            if imported && app.overlay.is_none() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(imported, "OpenCode import did not finish");
+        assert!(
+            app.overlay.is_none(),
+            "loading overlay remained after import"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

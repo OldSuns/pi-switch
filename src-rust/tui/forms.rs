@@ -16,6 +16,7 @@ pub(super) struct FormState {
     pub(super) auth_header: bool,
     pub(super) headers_json: String,
     pub(super) compat_json: String,
+    pub(super) editing_headers: bool,
     pub(super) field: usize,
     pub(super) cursor: usize,
 }
@@ -31,6 +32,7 @@ impl FormState {
             auth_header: true,
             headers_json: String::new(),
             compat_json: String::new(),
+            editing_headers: false,
             field: 0,
             cursor: 0,
         }
@@ -58,6 +60,7 @@ impl FormState {
                 .get("compat")
                 .map(ToString::to_string)
                 .unwrap_or_default(),
+            editing_headers: false,
             field: 0,
             cursor: 0,
         };
@@ -74,7 +77,7 @@ impl FormState {
             0 => Some(&self.id),
             1 => Some(&self.base_url),
             3 => Some(&self.api_key),
-            5 => Some(&self.headers_json),
+            5 if self.editing_headers => Some(&self.headers_json),
             6 => Some(&self.compat_json),
             _ => None,
         }
@@ -85,7 +88,7 @@ impl FormState {
             0 => Some(&mut self.id),
             1 => Some(&mut self.base_url),
             3 => Some(&mut self.api_key),
-            5 => Some(&mut self.headers_json),
+            5 if self.editing_headers => Some(&mut self.headers_json),
             6 => Some(&mut self.compat_json),
             _ => None,
         }

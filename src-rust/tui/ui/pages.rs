@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use super::super::app::{App, Focus, Page, SettingsAction};
+use super::super::input::pad_width;
 use super::Theme;
 
 pub(super) fn render_menu(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
@@ -192,7 +193,10 @@ pub(super) fn render_settings(frame: &mut Frame<'_>, app: &App, area: Rect, them
 
 fn label_line(theme: Theme, label: &str, value: String) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("  {label:<14}"), Style::default().fg(theme.accent)),
+        Span::styled(
+            format!("  {}", pad_width(label, 14)),
+            Style::default().fg(theme.accent),
+        ),
         Span::styled(value, Style::default().fg(theme.foreground)),
     ])
 }

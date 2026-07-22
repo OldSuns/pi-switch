@@ -244,7 +244,6 @@ pub struct ImportSummary {
 pub struct Backup {
     pub path: String,
     pub name: String,
-    pub target: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -429,7 +428,7 @@ fn update_pi_switch(paths: &Paths, update: impl FnOnce(&mut Map<String, Value>))
         .as_object_mut()
         .ok_or_else(|| AppError::Invalid("settings piSwitch must be an object".into()))?;
     update(pi_switch);
-    write_document(paths, &paths.settings, "settings", &settings)
+    write_document(paths, &_lock, &paths.settings, &settings).map(|_| ())
 }
 
 pub fn save_provider(
@@ -470,10 +469,10 @@ pub fn save_provider(
         }
     }
     providers.insert(draft.id.clone(), provider);
-    write_document(paths, &paths.models, "models", &models)?;
+    write_document(paths, &_lock, &paths.models, &models)?;
 
     if let Some(old) = previous_id.filter(|old| *old != draft.id) {
-        rename_default_provider(paths, old, &draft.id)
+        rename_default_provider(paths, &_lock, old, &draft.id)
             .map_err(|error| AppError::Partial(error.to_string()))?;
     }
     Ok(())
@@ -487,14 +486,14 @@ pub fn remove_provider(paths: &Paths, id: &str) -> Result<()> {
             "provider '{id}' no longer exists"
         )));
     }
-    write_document(paths, &paths.models, "models", &models)?;
+    write_document(paths, &_lock, &paths.models, &models)?;
 
     let mut settings = read_document(&paths.settings, json!({}))?;
     if string_field(&settings, "defaultProvider")?.as_deref() == Some(id) {
         let object = root_object_mut(&mut settings, &paths.settings)?;
         object.remove("defaultProvider");
         object.remove("defaultModel");
-        write_document(paths, &paths.settings, "settings", &settings)
+        write_document(paths, &_lock, &paths.settings, &settings)
             .map_err(|error| AppError::Partial(error.to_string()))?;
     }
     Ok(())
@@ -511,7 +510,7 @@ pub fn duplicate_provider(paths: &Paths, source_id: &str) -> Result<String> {
     provider_view(source_id, &provider)?;
     let copy_id = unique_copy_id(source_id, |candidate| providers.contains_key(candidate));
     providers.insert(copy_id.clone(), provider);
-    write_document(paths, &paths.models, "models", &models)?;
+    write_document(paths, &_lock, &paths.models, &models)?;
     Ok(copy_id)
 }
 
@@ -557,7 +556,7 @@ pub fn import_models(
         }
     }
     if summary.added + summary.updated > 0 {
-        write_document(paths, &paths.models, "models", &root)?;
+        write_document(paths, &_lock, &paths.models, &root)?;
     }
     Ok(summary)
 }
@@ -602,9 +601,9 @@ pub fn save_model(
         models.push(Value::Object(model));
     }
 
-    write_document(paths, &paths.models, "models", &root)?;
+    write_document(paths, &_lock, &paths.models, &root)?;
     if let Some(previous_id) = previous_id.filter(|previous_id| *previous_id != draft.id) {
-        update_default_model(paths, provider_id, previous_id, Some(&draft.id))
+        update_default_model(paths, &_lock, provider_id, previous_id, Some(&draft.id))
             .map_err(|error| AppError::Partial(error.to_string()))?;
     }
     Ok(())
@@ -623,8 +622,8 @@ pub fn remove_model(paths: &Paths, provider_id: &str, model_id: &str) -> Result<
             ))
         })?;
     models.remove(index);
-    write_document(paths, &paths.models, "models", &root)?;
-    update_default_model(paths, provider_id, model_id, None)
+    write_document(paths, &_lock, &paths.models, &root)?;
+    update_default_model(paths, &_lock, provider_id, model_id, None)
         .map_err(|error| AppError::Partial(error.to_string()))
 }
 
@@ -646,7 +645,7 @@ pub fn set_default(paths: &Paths, provider_id: &str, model_id: &str) -> Result<(
     let object = root_object_mut(&mut settings, &paths.settings)?;
     object.insert("defaultProvider".into(), Value::String(provider_id.into()));
     object.insert("defaultModel".into(), Value::String(model_id.into()));
-    write_document(paths, &paths.settings, "settings", &settings)
+    write_document(paths, &_lock, &paths.settings, &settings).map(|_| ())
 }
 
 pub fn doctor(paths: &Paths) -> Vec<DoctorCheck> {
