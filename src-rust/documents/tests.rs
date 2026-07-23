@@ -488,6 +488,36 @@ fn opencode_import_uses_live_catalog_metadata_when_unambiguous() {
 }
 
 #[test]
+fn opencode_import_ignores_empty_model_name() {
+    let (root, paths) = fixture();
+    write_opencode(
+        &paths,
+        json!({
+            "provider": {
+                "caroline": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "models": {"deepseek-v4-pro": {"name": ""}}
+                }
+            }
+        }),
+    );
+    let mut catalog = ModelCatalog::default();
+    catalog.insert(
+        "caroline".into(),
+        vec![catalog_model("deepseek-v4-pro", 128_000, 16_384, 0.0)],
+    );
+
+    import_opencode_with_catalog(&paths, &catalog).unwrap();
+
+    let models: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
+    assert_eq!(
+        models["providers"]["caroline"]["models"][0]["name"],
+        "deepseek-v4-pro"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn opencode_import_can_select_providers_and_use_custom_defaults() {
     let (root, paths) = fixture();
     write_opencode(

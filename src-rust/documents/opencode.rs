@@ -365,8 +365,11 @@ fn merge_model(
         }
     }
 
-    if let Some(name) = optional_string(source, "name", id)? {
+    if let Some(name) = optional_string(source, "name", id)?.filter(|name| !name.is_empty()) {
         target.insert("name".into(), Value::String(name.into()));
+    }
+    if target.get("name").and_then(Value::as_str) == Some("") {
+        target.remove("name");
     }
     if let Some(reasoning) = optional_bool(source, "reasoning", id)? {
         if reasoning {
