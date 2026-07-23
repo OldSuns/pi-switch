@@ -12,7 +12,7 @@ use super::{
     i18n::Language,
     input::{char_len, edit_text_key, insert_char, moved},
     keys::{command_for, Command},
-    API_TYPES, WIDE_WIDTH,
+    API_TYPES, COMPACT_WIDTH,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -746,6 +746,12 @@ impl App {
             }
             return true;
         }
+        if form.show_help {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('?')) {
+                form.show_help = false;
+            }
+            return false;
+        }
         if form.editing_headers {
             match key.code {
                 KeyCode::Esc => {
@@ -770,6 +776,10 @@ impl App {
             }
             return false;
         }
+        if key.code == KeyCode::Char('?') && form.current_text().is_none() {
+            form.show_help = true;
+            return false;
+        }
         match key.code {
             KeyCode::Esc => return true,
             KeyCode::Enter if form.field == 5 => {
@@ -778,13 +788,16 @@ impl App {
                 form.cursor = char_len(&form.user_agent);
             }
             KeyCode::Tab | KeyCode::Down => form.select_field(form.field + 1),
-            KeyCode::BackTab | KeyCode::Up => form.select_field((form.field + 6) % 7),
+            KeyCode::BackTab | KeyCode::Up => form.select_field((form.field + 7) % 8),
             KeyCode::Left if form.field == 2 => {
                 form.api = (form.api + API_TYPES.len()) % (API_TYPES.len() + 1)
             }
             KeyCode::Right if form.field == 2 => form.api = (form.api + 1) % (API_TYPES.len() + 1),
             KeyCode::Left | KeyCode::Right if form.field == 4 => {
                 form.auth_header = !form.auth_header
+            }
+            KeyCode::Left | KeyCode::Right if form.field == 6 => {
+                form.send_session_affinity_headers = !form.send_session_affinity_headers
             }
             _ => {
                 let mut cursor = form.cursor;
@@ -868,7 +881,7 @@ impl App {
     }
 
     pub(super) fn move_selection(&mut self, delta: isize) {
-        if self.focus == Focus::Models || (self.width < WIDE_WIDTH && self.narrow_detail) {
+        if self.focus == Focus::Models || (self.width < COMPACT_WIDTH && self.narrow_detail) {
             let len = self
                 .selected_provider()
                 .map(|provider| provider.models.len())
@@ -883,7 +896,7 @@ impl App {
 
     pub(super) fn in_model_context(&self) -> bool {
         self.page == Page::Profiles
-            && (self.focus == Focus::Models || (self.width < WIDE_WIDTH && self.narrow_detail))
+            && (self.focus == Focus::Models || (self.width < COMPACT_WIDTH && self.narrow_detail))
     }
 
     pub(super) fn in_profiles(&self) -> bool {
@@ -900,7 +913,7 @@ impl App {
     fn focus_models(&mut self) {
         if self.selected_provider().is_some() {
             self.focus = Focus::Models;
-            self.narrow_detail = self.width < WIDE_WIDTH;
+            self.narrow_detail = self.width < COMPACT_WIDTH;
         }
     }
 

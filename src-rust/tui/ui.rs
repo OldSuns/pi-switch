@@ -17,12 +17,14 @@ use super::{
     i18n::Language,
     input::{api_label, mask_secret, pad_width, truncate_width, with_cursor, wrap_width},
     keys::{all_shortcuts, shortcut, Command},
-    WIDE_WIDTH,
+    COMPACT_WIDTH, WIDE_WIDTH,
 };
 use pages::{render_home, render_menu, render_settings};
 
 const MENU_WIDTH: u16 = 18;
 const SHELL_WIDE_WIDTH: u16 = MENU_WIDTH + WIDE_WIDTH;
+const DETAIL_LABEL_WIDTH: usize = 10;
+const MIN_MODELS_HEIGHT: u16 = 5;
 const MODEL_DEFAULT_VALUE_WIDTH: usize = 16;
 
 #[derive(Clone, Copy)]
@@ -128,6 +130,12 @@ fn render_profiles_page(frame: &mut Frame<'_>, app: &App, area: Rect, theme: The
     if app.width >= WIDE_WIDTH {
         let [providers, detail] =
             Layout::horizontal([Constraint::Length(34), Constraint::Min(42)]).areas(area);
+        render_providers(frame, app, providers, theme);
+        render_detail(frame, app, detail, theme);
+    } else if app.width >= COMPACT_WIDTH {
+        let [providers, detail] =
+            Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
+                .areas(area);
         render_providers(frame, app, providers, theme);
         render_detail(frame, app, detail, theme);
     } else if app.narrow_detail {
@@ -269,7 +277,7 @@ fn render_providers(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) 
             ListItem::new(Text::from(lines))
         })
         .collect::<Vec<_>>();
-    let active = app.focus == Focus::Providers || (app.width < WIDE_WIDTH && !app.narrow_detail);
+    let active = app.focus == Focus::Providers || (app.width < COMPACT_WIDTH && !app.narrow_detail);
     let border = if active { theme.accent } else { theme.border };
     let block = Block::default()
         .title(title)
@@ -324,8 +332,6 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         );
         return;
     };
-    let [info, models] = Layout::vertical([Constraint::Length(8), Constraint::Min(5)]).areas(area);
-    let width = info.width.saturating_sub(14) as usize;
     let key = mask_secret(&provider.api_key);
     let headers = provider
         .raw
@@ -336,76 +342,82 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         .map(|headers| {
             let names = headers.keys().cloned().collect::<Vec<_>>().join(", ");
             format!(
-                "{} {}: {}",
+                "{} {}: {names}",
                 headers.len(),
-                app.language.pick("configured", "项"),
-                truncate_width(&names, width.saturating_sub(16)),
+                app.language.pick("configured", "项")
             )
         })
         .unwrap_or_else(|| app.language.pick("none", "未设置").into());
-    let lines = vec![
-        Line::from(vec![
-            Span::styled(pad_width("API", 10), Style::default().fg(theme.muted)),
-            Span::raw(if provider.api.is_empty() {
+    let value_width = area.width.saturating_sub(DETAIL_LABEL_WIDTH as u16).max(1) as usize;
+    let lines = [
+        detail_field_lines(
+            "API",
+            if provider.api.is_empty() {
                 app.language.pick("inherited", "继承")
             } else {
                 &provider.api
-            }),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                pad_width(app.language.pick("Base URL", "基础 URL"), 10),
-                Style::default().fg(theme.muted),
-            ),
-            Span::raw(if provider.base_url.is_empty() {
-                app.language.pick("built-in default", "内置默认值").into()
+            },
+            value_width,
+            theme,
+        ),
+        detail_field_lines(
+            app.language.pick("Base URL", "基础 URL"),
+            if provider.base_url.is_empty() {
+                app.language.pick("built-in default", "内置默认值")
             } else {
-                truncate_width(&provider.base_url, width)
-            }),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                pad_width(app.language.pick("API key", "API 密钥"), 10),
-                Style::default().fg(theme.muted),
-            ),
-            Span::raw(if provider.api_key.is_empty() {
-                app.language
-                    .pick("auth.json / CLI", "auth.json / 命令行")
-                    .into()
+                &provider.base_url
+            },
+            value_width,
+            theme,
+        ),
+        detail_field_lines(
+            app.language.pick("API key", "API 密钥"),
+            if provider.api_key.is_empty() {
+                app.language.pick("auth.json / CLI", "auth.json / 命令行")
             } else {
-                key
-            }),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                pad_width(app.language.pick("Auth", "认证"), 10),
-                Style::default().fg(theme.muted),
-            ),
-            Span::raw(if provider.auth_header {
+                &key
+            },
+            value_width,
+            theme,
+        ),
+        detail_field_lines(
+            app.language.pick("Auth", "认证"),
+            if provider.auth_header {
                 app.language.pick("enabled", "启用")
             } else {
                 app.language.pick("custom headers only", "仅自定义请求头")
-            }),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                pad_width(app.language.pick("Headers", "请求头"), 10),
-                Style::default().fg(theme.muted),
-            ),
-            Span::raw(header_summary),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                pad_width(app.language.pick("Compat", "兼容选项"), 10),
-                Style::default().fg(theme.muted),
-            ),
-            Span::raw(if provider.raw.get("compat").is_some() {
+            },
+            value_width,
+            theme,
+        ),
+        detail_field_lines(
+            app.language.pick("Headers", "请求头"),
+            &header_summary,
+            value_width,
+            theme,
+        ),
+        detail_field_lines(
+            app.language.pick("Compat", "兼容选项"),
+            if provider.raw.get("compat").is_some() {
                 app.language.pick("custom", "自定义")
             } else {
                 app.language.pick("defaults", "默认")
-            }),
-        ]),
-    ];
+            },
+            value_width,
+            theme,
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    let desired_info_height = lines.len() as u16 + 1;
+    let max_info_height = area.height.saturating_sub(MIN_MODELS_HEIGHT).max(1);
+    let info_height = desired_info_height.max(8).min(max_info_height);
+    let [info, models] = Layout::vertical([
+        Constraint::Length(info_height),
+        Constraint::Min(MIN_MODELS_HEIGHT),
+    ])
+    .areas(area);
     frame.render_widget(
         Paragraph::new(lines)
             .block(
@@ -418,6 +430,7 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         info,
     );
 
+    let content_width = models.width.saturating_sub(6) as usize;
     let items = provider
         .models
         .iter()
@@ -434,7 +447,7 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
                 .map(format_token_count)
                 .unwrap_or_else(|| app.language.pick("unset", "未设置").into());
             let details = format!(
-                "    {}  {}{}  ctx {}  max {}",
+                "{}  {}{}  ctx {}  max {}",
                 model
                     .name
                     .as_deref()
@@ -452,31 +465,21 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
                 context,
                 max_tokens
             );
-            ListItem::new(Text::from(vec![
-                Line::from(vec![
-                    Span::styled(
-                        format!("{:>2} ", index + 1),
-                        Style::default().fg(theme.muted),
-                    ),
-                    Span::styled(
-                        if is_default { "* " } else { "  " },
-                        Style::default().fg(theme.success),
-                    ),
-                    Span::raw(&model.id),
-                    if is_default {
-                        Span::styled(
-                            app.language.pick("  default", "  默认"),
-                            Style::default().fg(theme.success),
-                        )
-                    } else {
-                        Span::raw("")
-                    },
-                ]),
-                Line::from(Span::styled(details, Style::default().fg(theme.muted))),
-            ]))
+            ListItem::new(Text::from(model_item_lines(
+                index,
+                &model.id,
+                if is_default {
+                    app.language.pick("  default", "  默认")
+                } else {
+                    ""
+                },
+                &details,
+                content_width,
+                theme,
+            )))
         })
         .collect::<Vec<_>>();
-    let active = app.focus == Focus::Models || (app.width < WIDE_WIDTH && app.narrow_detail);
+    let active = app.focus == Focus::Models || (app.width < COMPACT_WIDTH && app.narrow_detail);
     let border = if active { theme.accent } else { theme.border };
     let position = if provider.models.is_empty() {
         String::new()
@@ -522,6 +525,84 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
             &mut state,
         );
     }
+}
+
+fn detail_field_lines(
+    label: &str,
+    value: &str,
+    value_width: usize,
+    theme: Theme,
+) -> Vec<Line<'static>> {
+    let label = pad_width(label, DETAIL_LABEL_WIDTH);
+    let indent = " ".repeat(DETAIL_LABEL_WIDTH);
+    wrap_width(value, value_width)
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| {
+            Line::from(vec![
+                Span::styled(
+                    if index == 0 {
+                        label.clone()
+                    } else {
+                        indent.clone()
+                    },
+                    Style::default().fg(theme.muted),
+                ),
+                Span::raw(value),
+            ])
+        })
+        .collect()
+}
+
+fn model_item_lines(
+    index: usize,
+    id: &str,
+    default_label: &str,
+    details: &str,
+    width: usize,
+    theme: Theme,
+) -> Vec<Line<'static>> {
+    let number = format!("{:>2} ", index + 1);
+    let marker = if default_label.is_empty() { "  " } else { "* " };
+    let prefix_width = UnicodeWidthStr::width(number.as_str()) + UnicodeWidthStr::width(marker);
+    let id_width = width
+        .saturating_sub(prefix_width + UnicodeWidthStr::width(default_label))
+        .max(1);
+    let id_lines = wrap_width(id, id_width);
+    let last_id_line = id_lines.len().saturating_sub(1);
+    let mut lines = id_lines
+        .into_iter()
+        .enumerate()
+        .map(|(line_index, id)| {
+            let mut spans = if line_index == 0 {
+                vec![
+                    Span::styled(number.clone(), Style::default().fg(theme.muted)),
+                    Span::styled(marker, Style::default().fg(theme.success)),
+                    Span::raw(id),
+                ]
+            } else {
+                vec![Span::raw(" ".repeat(prefix_width)), Span::raw(id)]
+            };
+            if line_index == last_id_line && !default_label.is_empty() {
+                spans.push(Span::styled(
+                    default_label.to_owned(),
+                    Style::default().fg(theme.success),
+                ));
+            }
+            Line::from(spans)
+        })
+        .collect::<Vec<_>>();
+    lines.extend(
+        wrap_width(details, width.saturating_sub(4).max(1))
+            .into_iter()
+            .map(|details| {
+                Line::from(Span::styled(
+                    format!("    {details}"),
+                    Style::default().fg(theme.muted),
+                ))
+            }),
+    );
+    lines
 }
 
 fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
@@ -602,13 +683,13 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
     };
     if !compact && !app.filtering && app.focus != Focus::Menu {
         if app.page == Page::Profiles {
-            keys.push(if app.in_model_context() {
-                ("Left", app.language.pick("providers", "提供商"))
+            if app.in_model_context() {
+                keys.push(("Left", app.language.pick("providers", "提供商")));
             } else {
-                ("Enter", app.language.pick("models", "模型"))
-            });
-        }
-        if app.page != Page::Home {
+                keys.push(("Enter", app.language.pick("models", "模型")));
+                keys.push(("Left", app.language.pick("menu", "菜单")));
+            }
+        } else if app.page != Page::Home {
             keys.push(("Left", app.language.pick("menu", "菜单")));
         }
     }
@@ -626,6 +707,35 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         ));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn render_key_hints(frame: &mut Frame<'_>, area: Rect, hints: &[(&str, &str)], theme: Theme) {
+    let mut lines = Vec::new();
+    let mut spans = Vec::new();
+    let mut line_width = 0;
+    for &(key, label) in hints {
+        let key_width = UnicodeWidthStr::width(key) + 2;
+        let label_width = UnicodeWidthStr::width(label) + 2;
+        if !spans.is_empty() && line_width + key_width + label_width > area.width as usize {
+            lines.push(Line::from(std::mem::take(&mut spans)));
+            line_width = 0;
+        }
+        spans.push(Span::styled(
+            format!(" {key} "),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            format!("{label}  "),
+            Style::default().fg(theme.muted),
+        ));
+        line_width += key_width + label_width;
+    }
+    if !spans.is_empty() {
+        lines.push(Line::from(spans));
+    }
+    frame.render_widget(Paragraph::new(Text::from(lines)), area);
 }
 
 fn render_notice(frame: &mut Frame<'_>, notice: &Notice, area: Rect, theme: Theme) {
@@ -890,7 +1000,7 @@ fn render_overlay(
         }
         Overlay::Doctor(checks) => {
             let rect = modal_rect(area, 82, 22);
-            let lines = checks
+            let mut lines = checks
                 .iter()
                 .flat_map(|check| {
                     let color = if check.ok { theme.success } else { theme.error };
@@ -912,6 +1022,11 @@ fn render_overlay(
                     ]
                 })
                 .collect::<Vec<_>>();
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(
+                language.pick("Esc/Enter close", "Esc/Enter 关闭"),
+                Style::default().fg(theme.muted),
+            )));
             render_modal(
                 frame,
                 rect,
@@ -983,6 +1098,8 @@ fn render_overlay(
                 .border_style(Style::default().fg(theme.accent));
             let inner = block.inner(rect);
             frame.render_widget(block, rect);
+            let [list, hint] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).areas(inner);
             let rows = models
                 .iter()
                 .enumerate()
@@ -1011,8 +1128,18 @@ fn render_overlay(
                         .fg(theme.accent)
                         .add_modifier(Modifier::BOLD),
                 ),
-                inner,
+                list,
                 &mut state,
+            );
+            render_key_hints(
+                frame,
+                hint,
+                &[
+                    ("Space", language.pick("toggle", "切换")),
+                    ("Enter/s", language.pick("import", "导入")),
+                    ("Esc", language.pick("cancel", "取消")),
+                ],
+                theme,
             );
         }
         Overlay::CatalogMatches {
@@ -1119,6 +1246,8 @@ fn render_overlay(
                 .border_style(Style::default().fg(theme.accent));
             let inner = block.inner(rect);
             frame.render_widget(block, rect);
+            let [list, hint] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).areas(inner);
             let rows = providers
                 .iter()
                 .enumerate()
@@ -1140,8 +1269,19 @@ fn render_overlay(
                         .fg(theme.accent)
                         .add_modifier(Modifier::BOLD),
                 ),
-                inner,
+                list,
                 &mut state,
+            );
+            render_key_hints(
+                frame,
+                hint,
+                &[
+                    ("Space", language.pick("toggle", "切换")),
+                    ("a", language.pick("all", "全选")),
+                    ("Enter", language.pick("import", "导入")),
+                    ("Esc", language.pick("cancel", "取消")),
+                ],
+                theme,
             );
         }
     }
@@ -1178,6 +1318,7 @@ fn render_form(
         Constraint::Length(2),
         Constraint::Length(2),
         Constraint::Length(2),
+        Constraint::Length(2),
         Constraint::Min(1),
     ])
     .split(inner);
@@ -1194,7 +1335,11 @@ fn render_form(
                 api_label(form.api)
             }
         ),
-        mask_secret(&form.api_key),
+        if form.field == 3 {
+            form.api_key.clone()
+        } else {
+            mask_secret(&form.api_key)
+        },
         format!(
             "< {} >",
             if form.auth_header {
@@ -1204,18 +1349,27 @@ fn render_form(
             }
         ),
         headers_summary,
+        format!(
+            "< {} >",
+            if form.send_session_affinity_headers {
+                language.pick("enabled", "启用")
+            } else {
+                language.pick("disabled", "禁用")
+            }
+        ),
         form.compat_json.clone(),
     ];
     let labels = [
         language.pick("Provider ID", "提供商 ID"),
         language.pick("Base URL", "基础 URL"),
         language.pick("API type", "API 类型"),
-        language.pick("API key / reference", "API 密钥 / 引用"),
+        language.pick("API key", "API 密钥"),
         language.pick("Auth header", "认证请求头"),
-        language.pick("Headers (all models)", "请求头（全部模型）"),
-        language.pick("Compat JSON", "兼容选项 JSON"),
+        language.pick("Headers", "请求头"),
+        language.pick("Session affinity", "会话亲和"),
+        language.pick("Other compat JSON", "其他兼容 JSON"),
     ];
-    for index in 0..7 {
+    for index in 0..8 {
         let active = form.field == index;
         let label = Line::from(vec![
             Span::styled(
@@ -1223,7 +1377,7 @@ fn render_form(
                 Style::default().fg(if active { theme.accent } else { theme.muted }),
             ),
             Span::styled(
-                if active && !matches!(index, 2 | 4 | 5) {
+                if active && !matches!(index, 2 | 4 | 5 | 6) {
                     with_cursor(&values[index], form.cursor)
                 } else {
                     values[index].clone()
@@ -1290,8 +1444,130 @@ fn render_form(
                 Style::default().fg(theme.muted),
             ),
         ])),
-        rows[7],
+        rows[8],
     );
+    if form.show_help {
+        render_provider_field_help(frame, form, language, area, theme);
+    }
+}
+
+fn render_provider_field_help(
+    frame: &mut Frame<'_>,
+    form: &FormState,
+    language: Language,
+    area: Rect,
+    theme: Theme,
+) {
+    let rect = modal_rect(area, 76, 18);
+    let mut lines = provider_field_help(form, language, theme);
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        language.pick("Esc/Enter/? close", "按 Esc/Enter/? 关闭"),
+        Style::default().fg(theme.muted),
+    )));
+    render_modal(
+        frame,
+        rect,
+        language.pick(" Field help ", " 字段帮助 "),
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        theme.accent,
+        theme,
+    );
+}
+
+fn provider_field_help(form: &FormState, language: Language, theme: Theme) -> Vec<Line<'static>> {
+    let title = |name: &'static str| {
+        Line::from(Span::styled(
+            name,
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ))
+    };
+    let body = |text: &'static str| Line::from(Span::styled(text, Style::default()));
+    let blank = || Line::from("");
+    let field = if form.editing_headers { 8 } else { form.field };
+    match field {
+        0 => vec![
+            title(language.pick("Provider ID", "提供商 ID")),
+            body(language.pick(
+                "Identifier for this provider in models.json. Must be unique.",
+                "在 models.json 中此提供商的标识符，必须唯一。",
+            )),
+        ],
+        1 => vec![
+            title(language.pick("Base URL", "基础 URL")),
+            body(language.pick(
+                "Endpoint base, e.g. https://api.openai.com/v1",
+                "接入点基础地址,例如 https://api.openai.com/v1",
+            )),
+        ],
+        2 => vec![
+            title(language.pick("API type", "API 类型")),
+            body(language.pick("Protocol family of the provider.", "提供商的协议族。")),
+        ],
+        3 => vec![
+            title(language.pick("API key", "API 密钥")),
+            body(language.pick(
+                "Secret sent in the auth header. Supports $ENV / ${ENV} interpolation.",
+                "认证头中发送的密钥。支持 $ENV / ${ENV} 插值。",
+            )),
+        ],
+        4 => vec![
+            title(language.pick("Auth header", "认证请求头")),
+            body(language.pick(
+                "enabled  - Pi auto-sends the key as auth header.",
+                "启用  - Pi 自动把密钥作为认证头发送。",
+            )),
+            body(language.pick(
+                "custom only - Pi does NOT auto-send; use only your own headers.",
+                "仅自定义 - Pi 不自动发送;仅用你手填的 headers。",
+            )),
+            blank(),
+            body(language.pick("By API type:", "按 API 类型:")),
+            body(language.pick(
+                "  anthropic-messages -> x-api-key",
+                "  anthropic-messages -> x-api-key",
+            )),
+            body(language.pick(
+                "  google-generative-ai -> ?key=<key> query param",
+                "  google-generative-ai -> ?key=<key> 查询参数",
+            )),
+            body(language.pick(
+                "  others -> Authorization: Bearer <key>",
+                "  其他 -> Authorization: Bearer <key>",
+            )),
+        ],
+        5 => vec![
+            title(language.pick("Headers", "请求头")),
+            body(language.pick(
+                "Custom HTTP headers for all requests. Enter to edit User-Agent and other headers.",
+                "所有请求的自定义 HTTP 头。按 Enter 编辑 User-Agent 与其他请求头。",
+            )),
+        ],
+        6 => vec![
+            title(language.pick("Session affinity", "会话亲和")),
+            body(language.pick(
+                "Send session affinity headers so the same session routes to the same backend.",
+                "发送会话亲和头,使同一会话路由到同一后端。",
+            )),
+        ],
+        7 => vec![
+            title(language.pick("Other compat JSON", "其他兼容 JSON")),
+            body(language.pick(
+                "Raw compat fields preserved as-is. sendSessionAffinityHeaders is managed above.",
+                "原样保留的兼容字段。sendSessionAffinityHeaders 由上方字段管理。",
+            )),
+        ],
+        8 => vec![
+            title(language.pick("Headers", "请求头")),
+            body(language.pick(
+                "User-Agent and other HTTP headers sent on every request.",
+                "每次请求发送的 User-Agent 与其他 HTTP 头。",
+            )),
+        ],
+        _ => vec![],
+    }
 }
 
 fn headers_summary(form: &FormState, language: Language, width: usize) -> String {
@@ -1318,16 +1594,17 @@ fn render_provider_headers_form(
     let rect = modal_rect(area, 82, 12);
     clear_area(frame, rect, theme);
     let block = Block::default()
-        .title(language.pick(
-            " Provider headers - all models ",
-            " 提供商请求头 - 全部模型 ",
-        ))
+        .title(language.pick(" Provider headers ", " 提供商请求头 "))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.accent));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
-    let [user_agent, headers_json] =
-        Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).areas(inner);
+    let [user_agent, headers_json, hint] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(3),
+        Constraint::Length(2),
+    ])
+    .areas(inner);
     let user_agent_active = form.headers_field == 0;
     let user_agent_value = if user_agent_active {
         with_cursor(&form.user_agent, form.cursor)
@@ -1371,6 +1648,16 @@ fn render_provider_headers_form(
         .style(Style::default().bg(theme.surface))
         .wrap(Wrap { trim: false }),
         headers_inner,
+    );
+    render_key_hints(
+        frame,
+        hint,
+        &[
+            ("Ctrl+S", language.pick("save", "保存")),
+            ("Tab", language.pick("next field", "下一字段")),
+            ("Esc", language.pick("back", "返回")),
+        ],
+        theme,
     );
 }
 

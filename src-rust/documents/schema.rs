@@ -9,12 +9,17 @@ use super::{
     USER_AGENT_HEADER,
 };
 
+const SEND_SESSION_AFFINITY_HEADERS: &str = "sendSessionAffinityHeaders";
+
 pub(super) fn provider_view(id: &str, value: &Value) -> Result<ProviderView> {
     let object = value
         .as_object()
         .ok_or_else(|| AppError::Invalid(format!("provider '{id}' must be an object")))?;
     if let Some(headers) = object.get("headers") {
         validate_headers(id, headers)?;
+    }
+    if let Some(compat) = object.get("compat") {
+        validate_provider_compat(id, compat)?;
     }
     let models = match object.get("models") {
         None => Vec::new(),
@@ -50,6 +55,18 @@ pub(super) fn provider_view(id: &str, value: &Value) -> Result<ProviderView> {
         models,
         raw: value.clone(),
     })
+}
+
+fn validate_provider_compat(provider_id: &str, compat: &Value) -> Result<()> {
+    let object = compat.as_object().ok_or_else(|| {
+        AppError::Invalid(format!("provider '{provider_id}' compat must be an object"))
+    })?;
+    if matches!(object.get(SEND_SESSION_AFFINITY_HEADERS), Some(value) if !value.is_boolean()) {
+        return Err(AppError::Invalid(format!(
+            "provider '{provider_id}' compat.{SEND_SESSION_AFFINITY_HEADERS} must be a boolean"
+        )));
+    }
+    Ok(())
 }
 
 pub(super) fn model_view(provider_id: &str, index: usize, value: &Value) -> Result<ModelView> {
@@ -268,6 +285,18 @@ pub(super) fn validate_draft(draft: &ProviderDraft) -> Result<()> {
         return Err(AppError::Invalid(
             "provider compat must be a JSON object".into(),
         ));
+    }
+    if matches!(
+        draft
+            .compat
+            .as_ref()
+            .and_then(Value::as_object)
+            .and_then(|compat| compat.get(SEND_SESSION_AFFINITY_HEADERS)),
+        Some(value) if !value.is_boolean()
+    ) {
+        return Err(AppError::Invalid(format!(
+            "provider compat.{SEND_SESSION_AFFINITY_HEADERS} must be a boolean"
+        )));
     }
     Ok(())
 }

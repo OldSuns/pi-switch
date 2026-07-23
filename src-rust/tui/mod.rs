@@ -30,6 +30,7 @@ use input::{edit_text_key, mask_secret, truncate_width, wrap_width};
 use keys::{command_for, Command};
 
 const TICK: Duration = Duration::from_millis(120);
+const COMPACT_WIDTH: u16 = 48;
 const WIDE_WIDTH: u16 = 76;
 pub fn run() -> Result<(), String> {
     let _panic_guard = PanicRestoreHookGuard::install();
@@ -350,7 +351,8 @@ mod tests {
             value_x(2, "#"),
             value_x(4, "@"),
             value_x(12, "<"),
-            value_x(14, "%"),
+            value_x(14, "<"),
+            value_x(16, "%"),
         ];
         assert!(
             columns.iter().all(|column| *column == columns[0]),
@@ -364,9 +366,12 @@ mod tests {
         let (root, mut app) = app();
         app.page = Page::Profiles;
         app.focus = Focus::Providers;
-        for (width, menu_visible, detail_visible) in
-            [(94, true, true), (80, false, true), (75, false, false)]
-        {
+        for (width, menu_visible, detail_visible) in [
+            (94, true, true),
+            (80, false, true),
+            (48, false, true),
+            (47, false, false),
+        ] {
             let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
             let content = terminal
@@ -380,6 +385,98 @@ mod tests {
             assert_eq!(content.contains("Home"), menu_visible);
             assert_eq!(content.contains("Base URL"), detail_visible);
         }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compact_profiles_wrap_detail_values_and_model_metadata() {
+        let (root, mut app) = app();
+        app.page = Page::Profiles;
+        app.focus = Focus::Providers;
+        let mut terminal = Terminal::new(TestBackend::new(48, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rows = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(48)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>();
+        let base_url_row = rows
+            .iter()
+            .position(|row| row.contains("Base URL"))
+            .unwrap();
+
+        assert!(rows.iter().any(|row| row.contains("https://example.tes")));
+        assert!(rows.iter().any(|row| row.contains("t/v1")));
+        assert_eq!(rows[base_url_row + 1].chars().nth(29), Some('t'));
+        assert!(rows.iter().any(|row| row.contains("model-a display")));
+        assert!(rows.iter().any(|row| row.contains("ctx 128k")));
+        assert!(!rows
+            .iter()
+            .any(|row| row.contains("https://example.test/v1...")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn provider_session_affinity_compat_is_first_class_and_preserves_other_keys() {
+        let mut form = FormState::add();
+        form.compat_json = r#"{"supportsDeveloperRole":false}"#.into();
+
+        let compat = form.draft().unwrap().compat.unwrap();
+        assert_eq!(compat["sendSessionAffinityHeaders"], true);
+        assert_eq!(compat["supportsDeveloperRole"], false);
+
+        form.send_session_affinity_headers = true;
+        let compat = form.draft().unwrap().compat.unwrap();
+        assert_eq!(compat["sendSessionAffinityHeaders"], true);
+        assert_eq!(compat["supportsDeveloperRole"], false);
+
+        form.send_session_affinity_headers = false;
+        let compat = form.draft().unwrap().compat.unwrap();
+        assert_eq!(compat["sendSessionAffinityHeaders"], false);
+        assert_eq!(compat["supportsDeveloperRole"], false);
+
+        form.compat_json =
+            r#"{"sendSessionAffinityHeaders":true,"supportsDeveloperRole":false}"#.into();
+        assert!(form
+            .draft()
+            .unwrap_err()
+            .to_string()
+            .contains("managed by Session affinity"));
+        form.compat_json = r#"{"supportsDeveloperRole":false}"#.into();
+
+        let mut provider = ProviderView {
+            id: "custom".into(),
+            base_url: "https://example.test/v1".into(),
+            api: "openai-completions".into(),
+            api_key: "$KEY".into(),
+            auth_header: true,
+            models: Vec::new(),
+            raw: json!({
+                "compat": {
+                    "sendSessionAffinityHeaders": true,
+                    "supportsDeveloperRole": false
+                }
+            }),
+        };
+        let edited = FormState::edit(&provider);
+        assert!(edited.send_session_affinity_headers);
+        assert_eq!(edited.compat_json, r#"{"supportsDeveloperRole":false}"#);
+
+        provider.raw = json!({"compat":{"supportsDeveloperRole":false}});
+        let edited = FormState::edit(&provider);
+        assert!(edited.send_session_affinity_headers);
+        assert_eq!(edited.compat_json, r#"{"supportsDeveloperRole":false}"#);
+
+        let (root, mut app) = app();
+        let mut form = FormState::add();
+        form.field = 6;
+        assert!(form.send_session_affinity_headers);
+        app.on_form_key(&mut form, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(!form.send_session_affinity_headers);
+        app.on_form_key(&mut form, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert!(form.send_session_affinity_headers);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -465,7 +562,8 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(provider_content.contains("Headers (all models)"));
+        assert!(provider_content.contains("Headers"));
+        assert!(!provider_content.contains("(all models)"));
         assert!(provider_content.contains("User-Agent"));
         assert!(provider_content.contains("x-api-key"));
 
@@ -507,9 +605,13 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(headers_content.contains("Provider headers - all models"));
+        assert!(headers_content.contains("Provider headers"));
+        assert!(!headers_content.contains("all models"));
         assert!(headers_content.contains("User-Agent"));
         assert!(headers_content.contains("Other headers JSON"));
+        assert!(headers_content.contains("Ctrl+S"));
+        assert!(headers_content.contains("Tab"));
+        assert!(headers_content.contains("Esc"));
         assert!(!headers_content.contains("User-Agent is separate"));
         app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -549,6 +651,62 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(model_content.contains("Context window"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn provider_form_question_mark_help_and_api_key_masking() {
+        let (root, mut app) = app();
+        app.language = super::i18n::Language::Chinese;
+        let mut form = FormState::add();
+        form.api_key = "sk-1234567890abcdef".into();
+        form.field = 4;
+        app.overlay = Some(Overlay::Form(form));
+        app.on_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+        if let Some(Overlay::Form(ref form)) = app.overlay {
+            assert!(form.show_help, "show_help should be true after '?'");
+        }
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let help_content = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        let help_content = help_content.replace(' ', "");
+        assert!(help_content.contains("仅自定义"));
+        app.on_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+        if let Some(Overlay::Form(ref form)) = app.overlay {
+            assert!(!form.show_help);
+        }
+        if let Some(Overlay::Form(ref mut form)) = app.overlay.as_mut() {
+            form.field = 3;
+        }
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let masked = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(masked.contains("1234567890abcdef"));
+        assert!(!masked.contains("sk-1...cdef"));
+        if let Some(Overlay::Form(ref mut form)) = app.overlay.as_mut() {
+            form.field = 0;
+        }
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let plain = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(plain.contains("sk-1...cdef"));
+        assert!(!plain.contains("1234567890abcdef"));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -651,7 +809,7 @@ mod tests {
         assert!(!app.narrow_detail);
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(app.focus == Focus::Providers);
-        app.width = 75;
+        app.width = 47;
         app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert!(app.focus == Focus::Models);
         assert!(app.narrow_detail);
@@ -765,5 +923,93 @@ mod tests {
         ));
         assert!(command_for(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)).is_none());
         assert!(command_for(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)).is_none());
+    }
+
+    #[test]
+    fn profile_footer_shows_only_the_current_left_action() {
+        let (root, mut app) = app();
+        app.page = Page::Profiles;
+        app.focus = Focus::Models;
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let models_footer = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(models_footer.contains("Left providers"));
+        assert!(!models_footer.contains("Left menu"));
+
+        app.focus = Focus::Providers;
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let providers_footer = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(providers_footer.contains("Left menu"));
+        assert!(providers_footer.contains("Enter models"));
+        assert!(!providers_footer.contains("Left providers"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn interactive_overlays_show_their_key_hints() {
+        let (root, mut app) = app();
+        let mut terminal = Terminal::new(TestBackend::new(48, 24)).unwrap();
+
+        app.overlay = Some(Overlay::Fetched {
+            provider_id: "custom".into(),
+            models: vec![catalog_model("model-a", 128_000, 16_384, 1.0)],
+            unavailable: 0,
+            selected: [0].into_iter().collect(),
+            cursor: 0,
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let fetched = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(fetched.contains("Space toggle"));
+        assert!(fetched.contains("Enter/s import"));
+        assert!(fetched.contains("Esc cancel"));
+
+        app.overlay = Some(Overlay::OpenCodeProviders {
+            providers: vec!["one".into(), "two".into()],
+            selected: [0, 1].into_iter().collect(),
+            cursor: 0,
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let opencode = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(opencode.contains("Space toggle"));
+        assert!(opencode.contains("a all"));
+        assert!(opencode.contains("Enter import"));
+        assert!(opencode.contains("Esc cancel"));
+
+        app.overlay = Some(Overlay::Doctor(Vec::new()));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let doctor = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(doctor.contains("Esc/Enter close"));
+        let _ = fs::remove_dir_all(root);
     }
 }

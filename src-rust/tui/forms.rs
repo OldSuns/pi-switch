@@ -4,6 +4,8 @@ use crate::documents::{
 };
 use serde_json::{Map, Value};
 
+const SEND_SESSION_AFFINITY_HEADERS: &str = "sendSessionAffinityHeaders";
+
 use super::{
     input::{api_from_index, char_len, parse_optional_object, parse_positive_u64},
     API_TYPES,
@@ -18,11 +20,13 @@ pub(super) struct FormState {
     pub(super) auth_header: bool,
     pub(super) user_agent: String,
     pub(super) headers_json: String,
+    pub(super) send_session_affinity_headers: bool,
     pub(super) compat_json: String,
     pub(super) editing_headers: bool,
     pub(super) headers_field: usize,
     pub(super) field: usize,
     pub(super) cursor: usize,
+    pub(super) show_help: bool,
 }
 
 impl FormState {
@@ -36,16 +40,19 @@ impl FormState {
             auth_header: true,
             user_agent: String::new(),
             headers_json: String::new(),
+            send_session_affinity_headers: true,
             compat_json: String::new(),
             editing_headers: false,
             headers_field: 0,
             field: 0,
             cursor: 0,
+            show_help: false,
         }
     }
 
     pub(super) fn edit(provider: &ProviderView) -> Self {
         let (user_agent, headers_json) = split_headers(provider);
+        let (send_session_affinity_headers, compat_json) = split_compat(provider);
         let mut form = Self {
             previous_id: Some(provider.id.clone()),
             id: provider.id.clone(),
@@ -59,15 +66,13 @@ impl FormState {
             auth_header: provider.auth_header,
             user_agent,
             headers_json,
-            compat_json: provider
-                .raw
-                .get("compat")
-                .map(ToString::to_string)
-                .unwrap_or_default(),
+            send_session_affinity_headers,
+            compat_json,
             editing_headers: false,
             headers_field: 0,
             field: 0,
             cursor: 0,
+            show_help: false,
         };
         form.cursor = form.current_len();
         form
@@ -83,7 +88,7 @@ impl FormState {
             1 => Some(&self.base_url),
             3 => Some(&self.api_key),
             5 if self.editing_headers => Some(&self.headers_json),
-            6 => Some(&self.compat_json),
+            7 => Some(&self.compat_json),
             _ => None,
         }
     }
@@ -94,13 +99,13 @@ impl FormState {
             1 => Some(&mut self.base_url),
             3 => Some(&mut self.api_key),
             5 if self.editing_headers => Some(&mut self.headers_json),
-            6 => Some(&mut self.compat_json),
+            7 => Some(&mut self.compat_json),
             _ => None,
         }
     }
 
     pub(super) fn select_field(&mut self, next: usize) {
-        self.field = next % 7;
+        self.field = next % 8;
         self.cursor = self.current_len();
     }
 
@@ -144,9 +149,51 @@ impl FormState {
             api_key: self.api_key.trim().into(),
             auth_header: self.auth_header,
             headers,
-            compat: parse_optional_object(&self.compat_json, "compat")?,
+            compat: merge_send_session_affinity_headers(
+                parse_optional_object(&self.compat_json, "compat")?,
+                self.send_session_affinity_headers,
+            )?,
         })
     }
+}
+
+fn split_compat(provider: &ProviderView) -> (bool, String) {
+    let Some(compat) = provider.raw.get("compat").and_then(Value::as_object) else {
+        return (true, String::new());
+    };
+    let send_session_affinity_headers = compat
+        .get(SEND_SESSION_AFFINITY_HEADERS)
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let mut others = compat.clone();
+    others.remove(SEND_SESSION_AFFINITY_HEADERS);
+    let compat_json = if others.is_empty() {
+        String::new()
+    } else {
+        Value::Object(others).to_string()
+    };
+    (send_session_affinity_headers, compat_json)
+}
+
+fn merge_send_session_affinity_headers(
+    compat: Option<Value>,
+    send_session_affinity_headers: bool,
+) -> documents::Result<Option<Value>> {
+    let mut compat = match compat {
+        None => Map::new(),
+        Some(Value::Object(compat)) => compat,
+        Some(_) => unreachable!("parse_optional_object only returns objects"),
+    };
+    if compat.contains_key(SEND_SESSION_AFFINITY_HEADERS) {
+        return Err(AppError::Invalid(format!(
+            "{SEND_SESSION_AFFINITY_HEADERS} is managed by Session affinity; remove it from Other compat JSON"
+        )));
+    }
+    compat.insert(
+        SEND_SESSION_AFFINITY_HEADERS.into(),
+        Value::Bool(send_session_affinity_headers),
+    );
+    Ok(Some(Value::Object(compat)))
 }
 
 fn split_headers(provider: &ProviderView) -> (String, String) {

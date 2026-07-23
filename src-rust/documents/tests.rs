@@ -777,6 +777,22 @@ fn invalid_shapes_and_stale_edits_fail_explicitly() {
         .to_string()
         .contains("multiple User-Agent headers with different casing"));
 
+    fs::write(&paths.models, r#"{"providers":{"bad":{"compat":[]}}}"#).unwrap();
+    assert!(load_snapshot(&paths)
+        .unwrap_err()
+        .to_string()
+        .contains("compat must be an object"));
+
+    fs::write(
+        &paths.models,
+        r#"{"providers":{"bad":{"compat":{"sendSessionAffinityHeaders":"yes"}}}}"#,
+    )
+    .unwrap();
+    assert!(load_snapshot(&paths)
+        .unwrap_err()
+        .to_string()
+        .contains("compat.sendSessionAffinityHeaders must be a boolean"));
+
     fs::write(&paths.models, r#"{"providers":{}}"#).unwrap();
     let result = save_provider(
         &paths,
