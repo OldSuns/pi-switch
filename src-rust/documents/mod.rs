@@ -27,6 +27,7 @@ pub const API_TYPES: [&str; 4] = [
     "anthropic-messages",
     "google-generative-ai",
 ];
+pub const USER_AGENT_HEADER: &str = "User-Agent";
 
 pub const PI_DEFAULT_CONTEXT_WINDOW: u64 = 128_000;
 pub const PI_DEFAULT_MAX_TOKENS: u64 = 16_384;

@@ -6,6 +6,7 @@ use serde_json::{json, Map, Value};
 use super::{
     storage::{provider_string, providers_object_mut},
     AppError, ModelDraft, ModelView, ProviderDraft, ProviderView, Result, API_TYPES,
+    USER_AGENT_HEADER,
 };
 
 pub(super) fn provider_view(id: &str, value: &Value) -> Result<ProviderView> {
@@ -277,6 +278,16 @@ fn validate_headers(provider_id: &str, value: &Value) -> Result<()> {
             "provider '{provider_id}' headers must be a JSON object"
         ))
     })?;
+    if headers
+        .keys()
+        .filter(|name| name.eq_ignore_ascii_case(USER_AGENT_HEADER))
+        .count()
+        > 1
+    {
+        return Err(AppError::Invalid(format!(
+            "provider '{provider_id}' has multiple User-Agent headers with different casing"
+        )));
+    }
     for (name, value) in headers {
         if name.is_empty() || name.chars().any(char::is_control) {
             return Err(AppError::Invalid(format!(

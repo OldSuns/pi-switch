@@ -1181,6 +1181,8 @@ fn render_form(
         Constraint::Min(1),
     ])
     .split(inner);
+    let headers_summary =
+        headers_summary(form, language, usize::from(inner.width.saturating_sub(26)));
     let values = [
         form.id.clone(),
         form.base_url.clone(),
@@ -1201,12 +1203,7 @@ fn render_form(
                 language.pick("custom only", "仅自定义")
             }
         ),
-        if form.headers_json.trim().is_empty() {
-            language.pick("< none - Enter to edit >", "< 未设置 - Enter 编辑 >")
-        } else {
-            language.pick("< configured - Enter to edit >", "< 已配置 - Enter 编辑 >")
-        }
-        .into(),
+        headers_summary,
         form.compat_json.clone(),
     ];
     let labels = [
@@ -1226,7 +1223,7 @@ fn render_form(
                 Style::default().fg(if active { theme.accent } else { theme.muted }),
             ),
             Span::styled(
-                if active && !matches!(index, 2 | 4) {
+                if active && !matches!(index, 2 | 4 | 5) {
                     with_cursor(&values[index], form.cursor)
                 } else {
                     values[index].clone()
@@ -1238,13 +1235,16 @@ fn render_form(
                 }),
             ),
         ]);
-        let lines = if index == 5 && form.headers_json.is_empty() {
+        let lines = if index == 5
+            && form.user_agent.trim().is_empty()
+            && form.headers_json.trim().is_empty()
+        {
             vec![
                 label,
                 Line::from(Span::styled(
                     language.pick(
-                        r#"  Example: {"User-Agent":"claude-cli/2.1.161"}"#,
-                        r#"  示例：{"User-Agent":"claude-cli/2.1.161"}"#,
+                        "  Enter to configure User-Agent or other headers",
+                        "  Enter 编辑 User-Agent 或其他请求头",
                     ),
                     Style::default().fg(theme.muted),
                 )),
@@ -1294,6 +1294,20 @@ fn render_form(
     );
 }
 
+fn headers_summary(form: &FormState, language: Language, width: usize) -> String {
+    let body = match form.header_names() {
+        Err(()) => language.pick("invalid JSON", "JSON 无效").to_owned(),
+        Ok(names) if names.is_empty() => language
+            .pick("none - Enter to edit", "未设置 - Enter 编辑")
+            .to_owned(),
+        Ok(names) => names.join(", "),
+    };
+    format!(
+        "< {} >",
+        truncate_width(&body, width.saturating_sub(4).max(1))
+    )
+}
+
 fn render_provider_headers_form(
     frame: &mut Frame<'_>,
     form: &FormState,
@@ -1301,7 +1315,7 @@ fn render_provider_headers_form(
     area: Rect,
     theme: Theme,
 ) {
-    let rect = modal_rect(area, 82, 14);
+    let rect = modal_rect(area, 82, 16);
     clear_area(frame, rect, theme);
     let block = Block::default()
         .title(language.pick(
@@ -1312,8 +1326,10 @@ fn render_provider_headers_form(
         .border_style(Style::default().fg(theme.accent));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
-    let [intro, editor, hint] = Layout::vertical([
+    let [intro, user_agent, json_label, editor, hint] = Layout::vertical([
         Constraint::Length(3),
+        Constraint::Length(2),
+        Constraint::Length(1),
         Constraint::Min(4),
         Constraint::Length(2),
     ])
@@ -1321,47 +1337,102 @@ fn render_provider_headers_form(
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(language.pick(
-                "JSON object applied to every model in this provider.",
-                "JSON 对象会应用到此提供商的全部模型。",
+                "User-Agent is separate; other headers use the JSON editor.",
+                "User-Agent 单独编辑，其他请求头使用 JSON 编辑器。",
             )),
             Line::from(Span::styled(
                 language.pick(
-                    r#"Example: {"User-Agent":"claude-cli/2.1.161"}"#,
-                    r#"示例：{"User-Agent":"claude-cli/2.1.161"}"#,
+                    "User-Agent accepts literals, $ENV, ${ENV}, or !command references.",
+                    "User-Agent 支持字面量、$ENV、${ENV} 或 !command 引用。",
                 ),
                 Style::default().fg(theme.muted),
             )),
             Line::from(Span::styled(
                 language.pick(
-                    "Values may be literals, $ENV, ${ENV}, or !command.",
-                    "值支持字面量、$ENV、${ENV} 或 !command。",
+                    "Other header values also support !command references.",
+                    "其他请求头值也支持 !command 引用。",
                 ),
                 Style::default().fg(theme.muted),
             )),
         ]),
         intro,
     );
-    frame.render_widget(
-        Paragraph::new(with_cursor(&form.headers_json, form.cursor))
-            .style(Style::default().bg(theme.surface))
-            .wrap(Wrap { trim: false }),
-        editor,
-    );
+    let user_agent_active = form.headers_field == 0;
+    let user_agent_value = if user_agent_active {
+        with_cursor(&form.user_agent, form.cursor)
+    } else if form.user_agent.is_empty() {
+        language.pick("< not set >", "< 未设置 >").to_owned()
+    } else {
+        form.user_agent.clone()
+    };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(" Enter/Esc/Tab ", Style::default().fg(theme.accent)),
             Span::styled(
-                language.pick("done  ", "完成  "),
-                Style::default().fg(theme.muted),
+                format!("{}: ", language.pick("User-Agent", "User-Agent")),
+                Style::default().fg(if user_agent_active {
+                    theme.accent
+                } else {
+                    theme.muted
+                }),
             ),
-            Span::styled(" Ctrl+S ", Style::default().fg(theme.success)),
-            Span::styled(
-                language.pick("save provider", "保存提供商"),
-                Style::default().fg(theme.muted),
-            ),
-        ])),
-        hint,
+            Span::raw(user_agent_value),
+        ]))
+        .style(Style::default().bg(if user_agent_active {
+            theme.surface
+        } else {
+            theme.background
+        })),
+        user_agent,
     );
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            language.pick("Other headers JSON", "其他请求头 JSON"),
+            Style::default().fg(if form.headers_field == 1 {
+                theme.accent
+            } else {
+                theme.muted
+            }),
+        )),
+        json_label,
+    );
+    frame.render_widget(
+        Paragraph::new(if form.headers_field == 1 {
+            with_cursor(&form.headers_json, form.cursor)
+        } else {
+            form.headers_json.clone()
+        })
+        .style(Style::default().bg(theme.surface))
+        .wrap(Wrap { trim: false }),
+        editor,
+    );
+    let mut hints = Vec::new();
+    if form.headers_field == 1 {
+        hints.extend([
+            Span::styled(" Enter ", Style::default().fg(theme.accent)),
+            Span::styled(
+                language.pick("newline  ", "换行  "),
+                Style::default().fg(theme.muted),
+            ),
+        ]);
+    }
+    hints.extend([
+        Span::styled(" Tab ", Style::default().fg(theme.accent)),
+        Span::styled(
+            language.pick("next  ", "下一个  "),
+            Style::default().fg(theme.muted),
+        ),
+        Span::styled(" Esc ", Style::default().fg(theme.accent)),
+        Span::styled(
+            language.pick("back  ", "返回  "),
+            Style::default().fg(theme.muted),
+        ),
+        Span::styled(" Ctrl+S ", Style::default().fg(theme.success)),
+        Span::styled(
+            language.pick("save provider", "保存提供商"),
+            Style::default().fg(theme.muted),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(Line::from(hints)), hint);
 }
 
 fn render_model_form(

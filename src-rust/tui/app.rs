@@ -10,7 +10,7 @@ use crate::documents::{
 use super::{
     forms::{FormState, ModelDefaultsFormState, ModelFormState},
     i18n::Language,
-    input::{char_len, edit_text_key, moved},
+    input::{char_len, edit_text_key, insert_char, moved},
     keys::{command_for, Command},
     API_TYPES, WIDE_WIDTH,
 };
@@ -748,11 +748,25 @@ impl App {
         }
         if form.editing_headers {
             match key.code {
-                KeyCode::Esc | KeyCode::Enter | KeyCode::Tab => {
+                KeyCode::Esc => {
                     form.editing_headers = false;
                     form.cursor = 0;
                 }
-                _ => edit_text_key(&mut form.headers_json, &mut form.cursor, key),
+                KeyCode::Tab => form.select_headers_field(form.headers_field + 1),
+                KeyCode::BackTab => form.select_headers_field(form.headers_field + 1),
+                KeyCode::Enter if form.headers_field == 1 => {
+                    insert_char(&mut form.headers_json, form.cursor, '\n');
+                    form.cursor += 1;
+                }
+                _ => {
+                    let mut cursor = form.cursor;
+                    if form.headers_field == 0 {
+                        edit_text_key(&mut form.user_agent, &mut cursor, key);
+                    } else {
+                        edit_text_key(&mut form.headers_json, &mut cursor, key);
+                    }
+                    form.cursor = cursor;
+                }
             }
             return false;
         }
@@ -760,7 +774,8 @@ impl App {
             KeyCode::Esc => return true,
             KeyCode::Enter if form.field == 5 => {
                 form.editing_headers = true;
-                form.cursor = char_len(&form.headers_json);
+                form.headers_field = 0;
+                form.cursor = char_len(&form.user_agent);
             }
             KeyCode::Tab | KeyCode::Down => form.select_field(form.field + 1),
             KeyCode::BackTab | KeyCode::Up => form.select_field((form.field + 6) % 7),

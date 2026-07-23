@@ -1,6 +1,8 @@
 use crate::documents::{
     self, AppError, ModelDefaults, ModelDraft, ModelView, ProviderDraft, ProviderView,
+    USER_AGENT_HEADER,
 };
+use serde_json::{Map, Value};
 
 use super::{
     input::{api_from_index, char_len, parse_optional_object, parse_positive_u64},
@@ -14,9 +16,11 @@ pub(super) struct FormState {
     pub(super) api: usize,
     pub(super) api_key: String,
     pub(super) auth_header: bool,
+    pub(super) user_agent: String,
     pub(super) headers_json: String,
     pub(super) compat_json: String,
     pub(super) editing_headers: bool,
+    pub(super) headers_field: usize,
     pub(super) field: usize,
     pub(super) cursor: usize,
 }
@@ -30,15 +34,18 @@ impl FormState {
             api: 1,
             api_key: "$OPENAI_API_KEY".into(),
             auth_header: true,
+            user_agent: String::new(),
             headers_json: String::new(),
             compat_json: String::new(),
             editing_headers: false,
+            headers_field: 0,
             field: 0,
             cursor: 0,
         }
     }
 
     pub(super) fn edit(provider: &ProviderView) -> Self {
+        let (user_agent, headers_json) = split_headers(provider);
         let mut form = Self {
             previous_id: Some(provider.id.clone()),
             id: provider.id.clone(),
@@ -50,17 +57,15 @@ impl FormState {
                 .unwrap_or_default(),
             api_key: provider.api_key.clone(),
             auth_header: provider.auth_header,
-            headers_json: provider
-                .raw
-                .get("headers")
-                .map(ToString::to_string)
-                .unwrap_or_default(),
+            user_agent,
+            headers_json,
             compat_json: provider
                 .raw
                 .get("compat")
                 .map(ToString::to_string)
                 .unwrap_or_default(),
             editing_headers: false,
+            headers_field: 0,
             field: 0,
             cursor: 0,
         };
@@ -99,17 +104,92 @@ impl FormState {
         self.cursor = self.current_len();
     }
 
+    pub(super) fn select_headers_field(&mut self, next: usize) {
+        self.headers_field = next % 2;
+        self.cursor = char_len(if self.headers_field == 0 {
+            &self.user_agent
+        } else {
+            &self.headers_json
+        });
+    }
+
+    pub(super) fn header_names(&self) -> Result<Vec<String>, ()> {
+        let mut names = Vec::new();
+        if !self.user_agent.trim().is_empty() {
+            names.push(USER_AGENT_HEADER.into());
+        }
+        if !self.headers_json.trim().is_empty() {
+            let value: Value = serde_json::from_str(&self.headers_json).map_err(|_| ())?;
+            let headers = value.as_object().ok_or(())?;
+            let mut others = headers
+                .keys()
+                .filter(|name| !name.eq_ignore_ascii_case(USER_AGENT_HEADER))
+                .cloned()
+                .collect::<Vec<_>>();
+            others.sort_by_key(|name| name.to_ascii_lowercase());
+            names.extend(others);
+        }
+        Ok(names)
+    }
+
     pub(super) fn draft(&self) -> documents::Result<ProviderDraft> {
+        let headers = merge_user_agent(
+            parse_optional_object(&self.headers_json, "headers")?,
+            &self.user_agent,
+        )?;
         Ok(ProviderDraft {
             id: self.id.trim().into(),
             base_url: self.base_url.trim().into(),
             api: api_from_index(self.api),
             api_key: self.api_key.trim().into(),
             auth_header: self.auth_header,
-            headers: parse_optional_object(&self.headers_json, "headers")?,
+            headers,
             compat: parse_optional_object(&self.compat_json, "compat")?,
         })
     }
+}
+
+fn split_headers(provider: &ProviderView) -> (String, String) {
+    let Some(headers) = provider.raw.get("headers").and_then(Value::as_object) else {
+        return (String::new(), String::new());
+    };
+    let user_agent = headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(USER_AGENT_HEADER))
+        .map(|(_, value)| {
+            value
+                .as_str()
+                .expect("provider header values are validated strings")
+                .to_owned()
+        })
+        .unwrap_or_default();
+    let mut others = headers.clone();
+    others.retain(|name, _| !name.eq_ignore_ascii_case(USER_AGENT_HEADER));
+    let headers_json = if others.is_empty() {
+        String::new()
+    } else {
+        Value::Object(others).to_string()
+    };
+    (user_agent, headers_json)
+}
+
+fn merge_user_agent(headers: Option<Value>, user_agent: &str) -> documents::Result<Option<Value>> {
+    let mut headers = match headers {
+        None => Map::new(),
+        Some(Value::Object(headers)) => headers,
+        Some(_) => unreachable!("parse_optional_object only returns objects"),
+    };
+    headers.retain(|name, _| !name.eq_ignore_ascii_case(USER_AGENT_HEADER));
+    let user_agent = user_agent.trim();
+    if user_agent.chars().any(char::is_control) {
+        return Err(AppError::Invalid(
+            "User-Agent must not contain control characters".into(),
+        ));
+    }
+    if !user_agent.is_empty() {
+        headers.insert(USER_AGENT_HEADER.into(), Value::String(user_agent.into()));
+    }
+    Ok((!headers.is_empty()).then_some(Value::Object(headers)))
 }
 
 pub(super) struct ModelFormState {

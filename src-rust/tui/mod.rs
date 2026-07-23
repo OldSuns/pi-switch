@@ -425,16 +425,36 @@ mod tests {
         ));
 
         let mut provider_form = FormState::add();
-        provider_form.headers_json =
-            r#"{"User-Agent":"claude-cli/2.1.161","x-api-key":"$KEY"}"#.into();
+        provider_form.user_agent = "  claude-cli/2.1.161  ".into();
+        provider_form.headers_json = r#"{"user-agent":"old","x-api-key":"$KEY"}"#.into();
         provider_form.compat_json = r#"{"supportsDeveloperRole":false}"#.into();
         let draft = provider_form.draft().unwrap();
-        assert_eq!(draft.headers.unwrap()["x-api-key"], "$KEY");
+        let headers = draft.headers.unwrap();
+        assert_eq!(headers["User-Agent"], "claude-cli/2.1.161");
+        assert!(headers.get("user-agent").is_none());
+        assert_eq!(headers["x-api-key"], "$KEY");
         assert_eq!(draft.compat.unwrap()["supportsDeveloperRole"], false);
+        provider_form.user_agent.clear();
+        let headers = provider_form.draft().unwrap().headers.unwrap();
+        assert!(headers.get("User-Agent").is_none());
         provider_form.headers_json = "[]".into();
         assert!(provider_form.draft().is_err());
 
-        app.overlay = Some(Overlay::Form(FormState::add()));
+        let mut provider = app.snapshot.providers[0].clone();
+        provider.raw = json!({
+            "headers": {
+                "user-agent": "legacy-agent",
+                "x-team": "team"
+            }
+        });
+        let edited = FormState::edit(&provider);
+        assert_eq!(edited.user_agent, "legacy-agent");
+        assert_eq!(edited.headers_json, r#"{"x-team":"team"}"#);
+
+        let mut configured_form = FormState::add();
+        configured_form.user_agent = "claude-cli/2.1.161".into();
+        configured_form.headers_json = r#"{"x-api-key":"$KEY"}"#.into();
+        app.overlay = Some(Overlay::Form(configured_form));
         let mut terminal = Terminal::new(TestBackend::new(64, 20)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let provider_content = terminal
@@ -445,14 +465,37 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(provider_content.contains("Headers (all models)"));
-        assert!(provider_content.contains(r#"{"User-Agent":"claude-cli/2.1.161"}"#));
+        assert!(provider_content.contains("User-Agent"));
+        assert!(provider_content.contains("x-api-key"));
+
+        let mut invalid_form = FormState::add();
+        invalid_form.headers_json = "[".into();
+        app.overlay = Some(Overlay::Form(invalid_form));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let invalid_content = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(invalid_content.contains("invalid JSON"));
+
         if let Some(Overlay::Form(form)) = app.overlay.as_mut() {
+            *form = FormState::add();
+            form.user_agent = "claude-cli/2.1.161".into();
+            form.headers_json = r#"{"x-api-key":"$KEY"}"#.into();
             form.field = 5;
         }
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(
             app.overlay,
             Some(Overlay::Form(ref form)) if form.editing_headers
+        ));
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Form(ref form)) if form.editing_headers && form.user_agent == "claude-cli/2.1.161"
         ));
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -465,12 +508,27 @@ mod tests {
             .collect::<String>();
         assert!(headers_content.contains("Provider headers - all models"));
         assert!(headers_content.contains("$ENV"));
+        assert!(!headers_content.contains("newline"));
+        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let json_content = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(json_content.contains("newline"));
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Char('{'), KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(matches!(
             app.overlay,
             Some(Overlay::Form(ref form))
-                if !form.editing_headers && form.headers_json == "{"
+                if !form.editing_headers
+                    && form.headers_json.contains("x-api-key")
+                    && form.headers_json.ends_with("\n{")
+                    && form.headers_field == 1
         ));
 
         let model = app.snapshot.providers[0].models[0].clone();

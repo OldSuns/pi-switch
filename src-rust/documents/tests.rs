@@ -737,6 +737,16 @@ fn invalid_shapes_and_stale_edits_fail_explicitly() {
         .to_string()
         .contains("header 'User-Agent' must be a string"));
 
+    fs::write(
+        &paths.models,
+        r#"{"providers":{"bad":{"headers":{"User-Agent":"one","user-agent":"two"}}}}"#,
+    )
+    .unwrap();
+    assert!(load_snapshot(&paths)
+        .unwrap_err()
+        .to_string()
+        .contains("multiple User-Agent headers with different casing"));
+
     fs::write(&paths.models, r#"{"providers":{}}"#).unwrap();
     let result = save_provider(
         &paths,
