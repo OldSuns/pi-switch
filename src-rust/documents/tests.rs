@@ -648,7 +648,7 @@ fn fetch_models_uses_the_explicit_catalog_endpoint() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
-        for _ in 0..2 {
+        for _ in 0..3 {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = [0_u8; 2048];
             let size = stream.read(&mut request).unwrap();
@@ -656,6 +656,8 @@ fn fetch_models_uses_the_explicit_catalog_endpoint() {
             let body = if request.starts_with("get /v1/models ") {
                 assert!(request.contains("authorization: bearer secret"));
                 r#"{"data":[{"id":"model-z"},{"id":"shared"}]}"#
+            } else if request.starts_with("get /api/ratio_config ") {
+                r#"{"success":true,"data":{"model_ratio":{"model-z":0.5},"completion_ratio":{"model-z":2.0}}}"#
             } else {
                 assert!(request.starts_with("get /api.json "));
                 r#"{"local":{"id":"local","name":"Local","env":[],"models":{"model-z":{"id":"model-z","name":"Model Z","reasoning":false,"modalities":{"input":["text"],"output":["text"]},"cost":{"input":1.25,"output":5,"cache_read":0.1},"limit":{"context":200000,"output":32000}}}},"one":{"id":"one","name":"One","env":[],"models":{"shared":{"id":"shared","name":"Shared","reasoning":false,"modalities":{"input":["text"],"output":["text"]},"cost":{"input":1,"output":2},"limit":{"context":100000,"output":10000}}}},"two":{"id":"two","name":"Two","env":[],"models":{"shared":{"id":"shared","name":"Shared","reasoning":false,"modalities":{"input":["text"],"output":["text"]},"cost":{"input":2,"output":4},"limit":{"context":200000,"output":20000}}}}}"#
@@ -697,24 +699,42 @@ fn fetch_models_uses_the_explicit_catalog_endpoint() {
     assert_eq!(fetched.ambiguous[0].model_id, "shared");
     assert_eq!(fetched.ambiguous[0].candidates.len(), 2);
     assert_eq!(fetched.unavailable, 0);
+    // ratio_config prices are computed at the network layer; the app overlays
+    // them onto the catalog metadata when displaying the import list.
+    assert!(fetched.ratio_config_used);
+    let ratio = &fetched.ratio_prices["model-z"];
+    assert_eq!(ratio.input, 1.0);
+    assert_eq!(ratio.output, 2.0);
+    assert!(!fetched.ratio_prices.contains_key("shared"));
     server.join().unwrap();
 
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut request = [0_u8; 2048];
-        let size = stream.read(&mut request).unwrap();
-        let request = String::from_utf8_lossy(&request[..size]).to_ascii_lowercase();
-        assert!(request.starts_with("get /v1/models "));
-        let body = r#"{"data":[{"id":"offline-model"}]}"#;
-        write!(
-            stream,
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        )
-        .unwrap();
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let size = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..size]).to_ascii_lowercase();
+            if request.starts_with("get /api/ratio_config ") {
+                // No ratio_config endpoint on this gateway.
+                write!(
+                    stream,
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+            } else {
+                assert!(request.starts_with("get /v1/models "));
+                let body = r#"{"data":[{"id":"offline-model"}]}"#;
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            }
+        }
     });
     let provider = ProviderView {
         id: "local".into(),
@@ -741,6 +761,8 @@ fn fetch_models_uses_the_explicit_catalog_endpoint() {
     assert_eq!(fetched.models[0].config["contextWindow"], 64_000);
     assert_eq!(fetched.models[0].config["maxTokens"], PI_DEFAULT_MAX_TOKENS);
     assert_eq!(fetched.models[0].config["cost"]["input"], 0.25);
+    assert!(!fetched.ratio_config_used);
+    assert!(fetched.ratio_prices.is_empty());
     server.join().unwrap();
 }
 
@@ -911,4 +933,60 @@ fn model_crud_and_provider_copy_preserve_metadata_and_defaults() {
     assert!(settings.get("defaultModel").is_none());
     assert_eq!(settings["theme"], "keep");
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn parse_ratio_config_handles_envelope_and_failure() {
+    // wrapped in { success, data }
+    let body = json!({
+        "success": true,
+        "data": {
+            "model_ratio": {"gpt-4": 2.5},
+            "completion_ratio": {"gpt-4": 1.5},
+            "cache_ratio": {"gpt-4": 0.5},
+            "create_cache_ratio": {"gpt-4": 0.25}
+        }
+    });
+    let ratios = parse_ratio_config(&body);
+    assert_eq!(ratios.model_ratio.get("gpt-4"), Some(&2.5));
+    assert_eq!(ratios.completion_ratio.get("gpt-4"), Some(&1.5));
+    assert_eq!(ratios.cache_ratio.get("gpt-4"), Some(&0.5));
+    assert_eq!(ratios.create_cache_ratio.get("gpt-4"), Some(&0.25));
+
+    // bare object (no envelope)
+    let ratios = parse_ratio_config(&json!({"model_ratio": {"claude": 1.0}}));
+    assert_eq!(ratios.model_ratio.get("claude"), Some(&1.0));
+    assert!(ratios.completion_ratio.is_empty());
+
+    // success:false → empty
+    let ratios = parse_ratio_config(&json!({"success": false, "data": {"model_ratio": {"x": 1}}}));
+    assert!(ratios.model_ratio.is_empty());
+
+    // non-object → empty
+    assert!(parse_ratio_config(&json!("nope")).model_ratio.is_empty());
+    assert!(parse_ratio_config(&json!(null)).model_ratio.is_empty());
+
+    // missing keys → empty maps, no panic
+    assert!(parse_ratio_config(&json!({})).model_ratio.is_empty());
+
+    // non-numeric values ignored
+    let ratios = parse_ratio_config(&json!({"model_ratio": {"ok": 1.0, "bad": "x", "nan": null}}));
+    assert_eq!(ratios.model_ratio.len(), 1);
+    assert_eq!(ratios.model_ratio.get("ok"), Some(&1.0));
+}
+
+#[test]
+fn find_ratio_matches_exact_case_insensitive_and_prefix() {
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("gpt-4".into(), 2.0);
+    map.insert("claude-3".into(), 1.0);
+
+    // exact
+    assert_eq!(find_ratio("gpt-4", &map), Some(2.0));
+    // case-insensitive
+    assert_eq!(find_ratio("GPT-4", &map), Some(2.0));
+    // prefix match (version tags)
+    assert_eq!(find_ratio("gpt-4-turbo-2024", &map), Some(2.0));
+    // no match
+    assert_eq!(find_ratio("gemini", &map), None);
 }

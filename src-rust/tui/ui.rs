@@ -12,7 +12,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::documents::{CatalogModel, PI_DEFAULT_CONTEXT_WINDOW, PI_DEFAULT_MAX_TOKENS};
 
 use super::{
-    app::{App, Focus, Notice, NoticeKind, Overlay, Page},
+    app::{visible_fetched_indices, App, Focus, Notice, NoticeKind, Overlay, Page},
     forms::{FormState, ModelDefaultsFormState, ModelFormState},
     i18n::Language,
     input::{api_label, mask_secret, pad_width, truncate_width, with_cursor, wrap_width},
@@ -1073,17 +1073,31 @@ fn render_overlay(
             selected,
             cursor,
             unavailable,
+            ratio_config_used,
+            filter,
+            filtering,
             ..
         } => {
-            let rect = modal_rect(area, 76, 22);
+            let rect = near_full_rect(area);
             clear_area(frame, rect, theme);
+            let price_source = if *ratio_config_used {
+                language.pick("prices: ratio_config", "价格: ratio_config")
+            } else {
+                language.pick("prices: models.dev", "价格: models.dev")
+            };
+            let filter_label = if *filtering || !filter.is_empty() {
+                format!("  /{}{}", filter, if *filtering { "_" } else { "" })
+            } else {
+                String::new()
+            };
             let block = Block::default()
                 .title(format!(
-                    " {}  {}/{} {}{} ",
+                    " {}  {}/{} {}  {}{}{} ",
                     language.pick("Model catalog", "模型目录"),
                     selected.len(),
                     models.len(),
                     language.pick("selected", "已选择"),
+                    price_source,
                     if *unavailable > 0 {
                         format!(
                             "  {} {}",
@@ -1092,7 +1106,8 @@ fn render_overlay(
                         )
                     } else {
                         String::new()
-                    }
+                    },
+                    filter_label,
                 ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(theme.accent));
@@ -1100,14 +1115,15 @@ fn render_overlay(
             frame.render_widget(block, rect);
             let [list, hint] =
                 Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).areas(inner);
-            let rows = models
+            let visible = visible_fetched_indices(models, filter);
+            let rows = visible
                 .iter()
-                .enumerate()
-                .map(|(index, model)| {
+                .map(|&original| {
+                    let model = &models[original];
                     ListItem::new(Text::from(vec![
                         Line::from(format!(
                             "{} {}",
-                            if selected.contains(&index) {
+                            if selected.contains(&original) {
                                 "[x]"
                             } else {
                                 "[ ]"
@@ -1121,7 +1137,8 @@ fn render_overlay(
                     ]))
                 })
                 .collect::<Vec<_>>();
-            let mut state = ListState::default().with_selected(Some(*cursor));
+            let mut state =
+                ListState::default().with_selected(if *filtering { None } else { Some(*cursor) });
             frame.render_stateful_widget(
                 List::new(rows).highlight_symbol(" > ").highlight_style(
                     Style::default()
@@ -1131,11 +1148,23 @@ fn render_overlay(
                 list,
                 &mut state,
             );
+            if visible.is_empty() {
+                frame.render_widget(
+                    Paragraph::new(
+                        language.pick("No models match this filter.", "没有模型符合当前筛选条件。"),
+                    )
+                    .style(Style::default().fg(theme.muted))
+                    .alignment(Alignment::Center),
+                    list,
+                );
+            }
             render_key_hints(
                 frame,
                 hint,
                 &[
                     ("Space", language.pick("toggle", "切换")),
+                    ("a", language.pick("all", "全选")),
+                    ("/", language.pick("filter", "筛选")),
                     ("Enter/s", language.pick("import", "导入")),
                     ("Esc", language.pick("cancel", "取消")),
                 ],
@@ -1148,7 +1177,7 @@ fn render_overlay(
             cursor,
             ..
         } => {
-            let rect = modal_rect(area, 78, 22);
+            let rect = near_full_rect(area);
             clear_area(frame, rect, theme);
             let block = Block::default()
                 .title(format!(
@@ -1996,4 +2025,13 @@ fn modal_rect(area: Rect, desired_width: u16, desired_height: u16) -> Rect {
         width,
         height,
     )
+}
+
+/// Near-full-screen rect leaving a 1-cell margin on every side. Used by the
+/// model-import overlay so the catalog list has room to breathe instead of
+/// sitting in a small centered modal.
+fn near_full_rect(area: Rect) -> Rect {
+    let width = area.width.saturating_sub(2).max(1);
+    let height = area.height.saturating_sub(2).max(1);
+    Rect::new(area.x + 1, area.y + 1, width, height)
 }

@@ -17,9 +17,7 @@ use terminal::{terminal_error, PanicRestoreHookGuard, TuiTerminal};
 use ui::draw;
 
 #[cfg(test)]
-use crate::documents::{
-    Backup, CatalogAmbiguity, CatalogCandidate, CatalogModel, ModelView, ProviderView, Snapshot,
-};
+use crate::documents::{Backup, CatalogModel, ModelView, ProviderView, Snapshot};
 #[cfg(test)]
 use app::{Focus, Overlay, Page};
 #[cfg(test)]
@@ -747,32 +745,25 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_catalog_prices_are_listed_and_selectable() {
+    fn ambiguous_models_auto_resolve_into_the_fetched_list() {
+        // Ambiguities used to gate the model list behind a metadata-source
+        // picker; they now auto-resolve to the first candidate so the user
+        // sees every gateway model up front in the selection list.
         let (root, mut app) = app();
-        app.overlay = Some(Overlay::CatalogMatches {
-            ambiguities: vec![CatalogAmbiguity {
-                provider_id: "custom".into(),
-                model_id: "shared".into(),
-                candidates: vec![
-                    CatalogCandidate {
-                        provider_id: "one".into(),
-                        model: catalog_model("shared", 128_000, 16_384, 1.0),
-                    },
-                    CatalogCandidate {
-                        provider_id: "two".into(),
-                        model: catalog_model("shared", 1_048_576, 128_000, 2.0),
-                    },
-                ],
-            }],
-            index: 0,
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        app.overlay = Some(Overlay::Fetched {
+            provider_id: "custom".into(),
+            models: vec![
+                catalog_model("resolved", 128_000, 16_384, 1.0),
+                catalog_model("shared", 1_048_576, 128_000, 2.0),
+            ],
+            unavailable: 0,
+            selected: std::collections::BTreeSet::new(),
             cursor: 0,
-            continuation: Some(app::CatalogContinuation::Fetched {
-                provider_id: "custom".into(),
-                models: Vec::new(),
-                unavailable: 0,
-            }),
+            ratio_config_used: true,
+            filter: String::new(),
+            filtering: false,
         });
-        let mut terminal = Terminal::new(TestBackend::new(100, 28)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let content = terminal
             .backend()
@@ -781,19 +772,15 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(content.contains("Choose metadata source"));
-        assert!(content.contains("one"));
-        assert!(content.contains("two"));
-        assert!(content.contains("ctx 128k"));
-        assert!(content.contains("ctx 1M"));
-
+        assert!(content.contains("resolved"));
+        assert!(content.contains("shared"));
+        assert!(content.contains("ratio_config"));
+        // The auto-resolved model is selectable like any other.
         app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-        assert!(matches!(
-            app.overlay,
-            Some(Overlay::Fetched { ref models, .. })
-                if models.len() == 1 && models[0].config["cost"]["input"] == 2.0
-        ));
+        if let Some(Overlay::Fetched { ref selected, .. }) = app.overlay {
+            assert_eq!(selected.len(), 1);
+        }
         let _ = fs::remove_dir_all(root);
     }
 
@@ -969,6 +956,9 @@ mod tests {
             unavailable: 0,
             selected: [0].into_iter().collect(),
             cursor: 0,
+            ratio_config_used: false,
+            filter: String::new(),
+            filtering: false,
         });
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let fetched = terminal
@@ -979,6 +969,8 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(fetched.contains("Space toggle"));
+        assert!(fetched.contains("a all"));
+        assert!(fetched.contains("/ filter"));
         assert!(fetched.contains("Enter/s import"));
         assert!(fetched.contains("Esc cancel"));
 
@@ -1010,6 +1002,94 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(doctor.contains("Esc/Enter close"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn fetched_catalog_filters_selects_all_and_requires_a_choice() {
+        let (root, mut app) = app();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        app.overlay = Some(Overlay::Fetched {
+            provider_id: "custom".into(),
+            models: vec![
+                catalog_model("gpt-4", 128_000, 16_384, 1.0),
+                catalog_model("claude-3", 200_000, 8_192, 2.0),
+                catalog_model("gemini-1.5", 1_000_000, 32_768, 3.0),
+            ],
+            unavailable: 0,
+            selected: std::collections::BTreeSet::new(),
+            cursor: 0,
+            ratio_config_used: true,
+            filter: String::new(),
+            filtering: false,
+        });
+
+        // Importing with nothing selected warns and keeps the overlay open.
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(app.overlay, Some(Overlay::Fetched { .. })));
+        assert!(app.notice.is_some());
+        app.notice = None;
+
+        // 'a' selects every model; 'a' again deselects them all.
+        app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        if let Some(Overlay::Fetched { ref selected, .. }) = app.overlay {
+            assert_eq!(selected.len(), 3);
+        }
+        app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        if let Some(Overlay::Fetched { ref selected, .. }) = app.overlay {
+            assert!(selected.is_empty());
+        }
+
+        // '/' enters filtering; typing narrows the visible list.
+        app.on_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+        if let Some(Overlay::Fetched {
+            ref filter,
+            ref filtering,
+            ..
+        }) = app.overlay
+        {
+            assert_eq!(filter, "gpt");
+            assert!(*filtering);
+        }
+
+        // Enter exits filter editing but retains the text.
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        if let Some(Overlay::Fetched {
+            ref filter,
+            ref filtering,
+            ..
+        }) = app.overlay
+        {
+            assert_eq!(filter, "gpt");
+            assert!(!*filtering);
+        }
+
+        // 'a' now selects only the visible (filtered) model.
+        app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        if let Some(Overlay::Fetched { ref selected, .. }) = app.overlay {
+            assert_eq!(selected.len(), 1);
+        }
+
+        // Render: only gpt-4 is visible; the price source label shows ratio_config.
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let content = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(content.contains("gpt-4"));
+        assert!(!content.contains("claude-3"));
+        assert!(!content.contains("gemini-1.5"));
+        assert!(content.contains("ratio_config"));
+
+        // Esc cancels and closes the overlay.
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.overlay.is_none());
         let _ = fs::remove_dir_all(root);
     }
 }

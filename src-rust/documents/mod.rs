@@ -147,6 +147,27 @@ pub struct CatalogModel {
     pub config: Value,
 }
 
+/// Per-model cost computed from NewAPI `/api/ratio_config`. Costs are per 1M
+/// tokens in USD (`ratio × 2`, since `1 USD = 500,000 quota`).
+#[derive(Clone, Debug)]
+pub struct RatioCost {
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
+}
+
+impl RatioCost {
+    pub fn to_cost_json(&self) -> Value {
+        json!({
+            "input": self.input,
+            "output": self.output,
+            "cacheRead": self.cache_read,
+            "cacheWrite": self.cache_write
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ModelCatalog {
     providers: std::collections::BTreeMap<String, Vec<CatalogModel>>,
@@ -214,6 +235,11 @@ pub struct CatalogFetch {
     pub models: Vec<CatalogModel>,
     pub ambiguous: Vec<CatalogAmbiguity>,
     pub unavailable: usize,
+    /// Per-model costs from `/api/ratio_config`, keyed by model id. Applied on
+    /// top of catalog metadata so displayed and imported prices reflect the
+    /// gateway's own ratios when available.
+    pub ratio_prices: std::collections::BTreeMap<String, RatioCost>,
+    pub ratio_config_used: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -765,7 +791,8 @@ fn check(ok: bool, label: impl Into<String>, detail: impl Into<String>) -> Docto
 
 #[cfg(test)]
 use network::{
-    fetch_models_for_test, parse_models_dev_catalog, parse_provider_catalog, resolve_secret,
+    fetch_models_for_test, find_ratio, parse_models_dev_catalog, parse_provider_catalog,
+    parse_ratio_config, resolve_secret,
 };
 #[cfg(test)]
 use opencode::{import_opencode_with_catalog, prepare_opencode_with_catalog};

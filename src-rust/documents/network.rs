@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, env, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env,
+    time::Duration,
+};
 
 use reqwest::{blocking::Client, Url};
 use serde_json::{json, Value};
@@ -6,10 +10,13 @@ use serde_json::{json, Value};
 use super::{
     schema::{model_view, validate_model_id, validate_provider_view, validate_url},
     AppError, CatalogAmbiguity, CatalogFetch, CatalogModel, ImportOptions, ModelCatalog,
-    ProviderView, Result,
+    ProviderView, RatioCost, Result,
 };
 
 const MODELS_DEV_CATALOG_URL: &str = "https://models.dev/api.json";
+const QUOTA_PER_USD: f64 = 500_000.0;
+const TOKENS_PER_COST: f64 = 1_000_000.0;
+const COST_FACTOR: f64 = TOKENS_PER_COST / QUOTA_PER_USD;
 
 pub fn fetch_catalog() -> Result<ModelCatalog> {
     let client = http_client()?;
@@ -40,6 +47,11 @@ fn fetch_models_from(
     }
 
     let client = http_client()?;
+
+    // ratio_config — best-effort; failure or malformed payload → no ratio prices.
+    let ratios = fetch_ratio_config(&client, &provider);
+    let ratio_config_used = ratios.is_some();
+
     let mut request = client.get(url);
     for (name, value) in provider_headers(&provider)? {
         request = request.header(name, value);
@@ -68,11 +80,17 @@ fn fetch_models_from(
         .json()
         .map_err(|error| AppError::Http(format!("invalid JSON response: {error}")))?;
     let ids = parse_provider_catalog(&provider.api, &body)?;
+    let ratio_prices = ratios
+        .as_ref()
+        .map(|ratios| compute_ratio_prices(&ids, ratios))
+        .unwrap_or_default();
     if !options.fetch_metadata {
         return Ok(CatalogFetch {
             models: ids.iter().map(|id| options.defaults.model(id)).collect(),
             ambiguous: Vec::new(),
             unavailable: 0,
+            ratio_prices,
+            ratio_config_used,
         });
     }
     let catalog = fetch_catalog_from(&client, metadata_catalog_url)?;
@@ -105,6 +123,8 @@ fn fetch_models_from(
         models,
         ambiguous,
         unavailable,
+        ratio_prices,
+        ratio_config_used,
     })
 }
 
@@ -114,6 +134,144 @@ fn http_client() -> Result<Client> {
         .user_agent(concat!("pi-switch/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| AppError::Http(error.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// NewAPI ratio_config — best-effort price source. NewAPI gateways expose
+// /api/ratio_config at the gateway root (i.e. baseUrl with any trailing /v1
+// stripped). Failure is silent: the caller falls back to models.dev prices.
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+pub(super) struct Ratios {
+    pub(super) model_ratio: BTreeMap<String, f64>,
+    pub(super) completion_ratio: BTreeMap<String, f64>,
+    pub(super) cache_ratio: BTreeMap<String, f64>,
+    pub(super) create_cache_ratio: BTreeMap<String, f64>,
+}
+
+fn gateway_root_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    trimmed
+        .strip_suffix("/v1")
+        .map(str::to_owned)
+        .unwrap_or_else(|| trimmed.to_owned())
+}
+
+/// Fetch /api/ratio_config from the gateway root. Any error (unreachable,
+/// non-2xx, malformed JSON) returns None so the caller falls back silently.
+fn fetch_ratio_config(client: &Client, provider: &ProviderView) -> Option<Ratios> {
+    let result = (|| -> Result<Option<Ratios>> {
+        let root = gateway_root_url(&provider.base_url);
+        let url = Url::parse(&format!("{root}/api/ratio_config"))
+            .map_err(|error| AppError::Http(format!("invalid ratio_config url: {error}")))?;
+        let key = resolve_secret(&provider.api_key)?;
+        let headers = provider_headers(provider)?;
+        let mut request = client.get(url);
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+        if provider.auth_header {
+            if let Some(key) = key.as_deref() {
+                request = match provider.api.as_str() {
+                    "anthropic-messages" => request.header("x-api-key", key),
+                    "google-generative-ai" => request,
+                    _ => request.bearer_auth(key),
+                };
+            }
+        }
+        let response = request
+            .send()
+            .map_err(|error| AppError::Http(error.to_string()))?;
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+        let body: Value = response
+            .json()
+            .map_err(|error| AppError::Http(format!("invalid ratio_config JSON: {error}")))?;
+        Ok(Some(parse_ratio_config(&body)))
+    })();
+    result.ok().flatten()
+}
+
+/// Parse a /api/ratio_config payload defensively. Returns empty maps on any
+/// shape issue or an explicit `success: false`. The payload may be wrapped in
+/// a `{ success, data }` envelope or be the ratio object directly.
+pub(super) fn parse_ratio_config(body: &Value) -> Ratios {
+    let Some(root) = body.as_object() else {
+        return Ratios::default();
+    };
+    if root.get("success").and_then(Value::as_bool) == Some(false) {
+        return Ratios::default();
+    }
+    let data = root.get("data").unwrap_or(body);
+    Ratios {
+        model_ratio: as_ratio_map(data.get("model_ratio")),
+        completion_ratio: as_ratio_map(data.get("completion_ratio")),
+        cache_ratio: as_ratio_map(data.get("cache_ratio")),
+        create_cache_ratio: as_ratio_map(data.get("create_cache_ratio")),
+    }
+}
+
+fn as_ratio_map(value: Option<&Value>) -> BTreeMap<String, f64> {
+    let Some(object) = value.and_then(Value::as_object) else {
+        return BTreeMap::new();
+    };
+    object
+        .iter()
+        .filter_map(|(key, value)| {
+            value
+                .as_f64()
+                .filter(|value| value.is_finite())
+                .map(|value| (key.clone(), value))
+        })
+        .collect()
+}
+
+/// Resolve a model's ratio, tolerating version tags or casing differences:
+/// exact match, then case-insensitive, then prefix match.
+pub(super) fn find_ratio(model_id: &str, ratios: &BTreeMap<String, f64>) -> Option<f64> {
+    if let Some(&value) = ratios.get(model_id) {
+        return Some(value);
+    }
+    let lower = model_id.to_lowercase();
+    for (key, &value) in ratios {
+        if key.to_lowercase() == lower {
+            return Some(value);
+        }
+    }
+    for (key, &value) in ratios {
+        if lower.starts_with(&key.to_lowercase()) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// Build the per-model price map from NewAPI ratios. Only models present in
+/// `model_ratio` get a ratio-derived price; the rest stay with their catalog
+/// (models.dev or defaults) cost. `1 USD = 500,000 quota`; `cost = ratio × 2`
+/// per 1M tokens.
+fn compute_ratio_prices(ids: &[String], ratios: &Ratios) -> BTreeMap<String, RatioCost> {
+    let mut prices = BTreeMap::new();
+    for id in ids {
+        let Some(model_rate) = find_ratio(id, &ratios.model_ratio) else {
+            continue;
+        };
+        let completion_rate = find_ratio(id, &ratios.completion_ratio).unwrap_or(1.0);
+        let cache_rate = find_ratio(id, &ratios.cache_ratio).unwrap_or(0.0);
+        let create_cache_rate = find_ratio(id, &ratios.create_cache_ratio).unwrap_or(0.0);
+        prices.insert(
+            id.clone(),
+            RatioCost {
+                input: model_rate * COST_FACTOR,
+                output: model_rate * completion_rate * COST_FACTOR,
+                cache_read: model_rate * cache_rate * COST_FACTOR,
+                cache_write: model_rate * create_cache_rate * COST_FACTOR,
+            },
+        );
+    }
+    prices
 }
 
 fn fetch_catalog_from(client: &Client, url: &str) -> Result<ModelCatalog> {

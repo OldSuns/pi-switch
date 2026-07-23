@@ -1,10 +1,11 @@
-use std::{collections::BTreeSet, sync::mpsc, thread};
+use std::collections::{BTreeMap, BTreeSet};
+use std::{sync::mpsc, thread};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::documents::{
     self, Backup, CatalogAmbiguity, CatalogFetch, CatalogModel, DoctorCheck, ImportSummary,
-    OpenCodeImportPlan, Paths, ProviderView, Snapshot,
+    OpenCodeImportPlan, Paths, ProviderView, RatioCost, Snapshot,
 };
 
 use super::{
@@ -138,6 +139,9 @@ pub(super) enum Overlay {
         unavailable: usize,
         selected: BTreeSet<usize>,
         cursor: usize,
+        ratio_config_used: bool,
+        filter: String,
+        filtering: bool,
     },
     CatalogMatches {
         ambiguities: Vec<CatalogAmbiguity>,
@@ -153,11 +157,6 @@ pub(super) enum Overlay {
 }
 
 pub(super) enum CatalogContinuation {
-    Fetched {
-        provider_id: String,
-        models: Vec<CatalogModel>,
-        unavailable: usize,
-    },
     OpenCode {
         plan: OpenCodeImportPlan,
         candidate_indices: Vec<usize>,
@@ -315,10 +314,21 @@ impl App {
                 fetched,
             })) => {
                 let CatalogFetch {
-                    models,
+                    mut models,
                     ambiguous,
                     unavailable,
+                    ratio_prices,
+                    ratio_config_used,
                 } = fetched;
+                // Auto-resolve ambiguities with the first candidate so the model
+                // selection list shows every gateway model up front. Metadata is
+                // editable per-model after import, and ratio_config prices overlay
+                // on top regardless of which candidate was picked.
+                for ambiguity in &ambiguous {
+                    if let Some(first) = ambiguity.candidates.first() {
+                        models.push(first.model.clone());
+                    }
+                }
                 if unavailable > 0 {
                     self.notice(
                         NoticeKind::Warning,
@@ -333,20 +343,13 @@ impl App {
                     );
                 }
                 self.task = None;
-                if ambiguous.is_empty() {
-                    self.show_fetched(provider_id, models, unavailable);
-                } else {
-                    self.overlay = Some(Overlay::CatalogMatches {
-                        ambiguities: ambiguous,
-                        index: 0,
-                        cursor: 0,
-                        continuation: Some(CatalogContinuation::Fetched {
-                            provider_id,
-                            models,
-                            unavailable,
-                        }),
-                    });
-                }
+                self.show_fetched(
+                    provider_id,
+                    models,
+                    unavailable,
+                    &ratio_prices,
+                    ratio_config_used,
+                );
             }
             Ok(Ok(BackgroundResult::OpenCodePrepared(plan))) => {
                 self.task = None;
@@ -625,29 +628,88 @@ impl App {
                 unavailable: _,
                 selected,
                 cursor,
-            } => match key.code {
-                KeyCode::Esc => return,
-                KeyCode::Up | KeyCode::Char('k') => *cursor = cursor.saturating_sub(1),
-                KeyCode::Down | KeyCode::Char('j') => {
-                    *cursor = (*cursor + 1).min(models.len().saturating_sub(1))
-                }
-                KeyCode::Char(' ') => {
-                    if !selected.remove(cursor) {
-                        selected.insert(*cursor);
+                ratio_config_used: _,
+                filter,
+                filtering,
+            } => {
+                if *filtering {
+                    match key.code {
+                        KeyCode::Esc => {
+                            *filtering = false;
+                            filter.clear();
+                            *cursor = 0;
+                        }
+                        KeyCode::Enter => {
+                            *filtering = false;
+                            *cursor = 0;
+                        }
+                        KeyCode::Backspace => {
+                            filter.pop();
+                            *cursor = 0;
+                        }
+                        KeyCode::Char(character)
+                            if !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
+                            filter.push(character);
+                            *cursor = 0;
+                        }
+                        _ => {}
+                    }
+                } else {
+                    let visible = visible_fetched_indices(models, filter);
+                    match key.code {
+                        KeyCode::Esc => return,
+                        KeyCode::Char('/') if !models.is_empty() => {
+                            *filtering = true;
+                            *cursor = 0;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => *cursor = cursor.saturating_sub(1),
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if !visible.is_empty() {
+                                *cursor = (*cursor + 1).min(visible.len() - 1);
+                            }
+                        }
+                        KeyCode::Char(' ') => {
+                            if let Some(&original) = visible.get(*cursor) {
+                                if !selected.remove(&original) {
+                                    selected.insert(original);
+                                }
+                            }
+                        }
+                        KeyCode::Char('a') => {
+                            if !visible.is_empty() {
+                                let all_selected = visible.iter().all(|&i| selected.contains(&i));
+                                for &original in &visible {
+                                    if all_selected {
+                                        selected.remove(&original);
+                                    } else {
+                                        selected.insert(original);
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Enter | KeyCode::Char('s') => {
+                            if selected.is_empty() {
+                                self.notice(
+                                    NoticeKind::Warning,
+                                    self.language
+                                        .pick("Select at least one model", "请至少选择一个模型"),
+                                );
+                            } else {
+                                let id = provider_id.clone();
+                                let chosen = selected
+                                    .iter()
+                                    .filter_map(|index| models.get(*index))
+                                    .cloned()
+                                    .collect::<Vec<_>>();
+                                self.import_fetched(&id, chosen);
+                                return;
+                            }
+                        }
+                        _ => {}
                     }
                 }
-                KeyCode::Enter | KeyCode::Char('s') => {
-                    let id = provider_id.clone();
-                    let chosen = selected
-                        .iter()
-                        .filter_map(|index| models.get(*index))
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    self.import_fetched(&id, chosen);
-                    return;
-                }
-                _ => {}
-            },
+            }
             Overlay::CatalogMatches {
                 ambiguities,
                 index,
@@ -667,13 +729,10 @@ impl App {
                     let Some(ambiguity) = ambiguities.get(*index) else {
                         return;
                     };
-                    let Some(candidate) = ambiguity.candidates.get(*cursor) else {
+                    if ambiguity.candidates.get(*cursor).is_none() {
                         return;
-                    };
+                    }
                     match continuation.as_mut().expect("catalog match continuation") {
-                        CatalogContinuation::Fetched { models, .. } => {
-                            models.push(candidate.model.clone());
-                        }
                         CatalogContinuation::OpenCode {
                             candidate_indices, ..
                         } => candidate_indices.push(*cursor),
@@ -682,11 +741,6 @@ impl App {
                     *cursor = 0;
                     if *index == ambiguities.len() {
                         match continuation.take().expect("catalog match continuation") {
-                            CatalogContinuation::Fetched {
-                                provider_id,
-                                models,
-                                unavailable,
-                            } => self.show_fetched(provider_id, models, unavailable),
                             CatalogContinuation::OpenCode {
                                 plan,
                                 candidate_indices,
@@ -1156,14 +1210,33 @@ impl App {
         }
     }
 
-    fn show_fetched(&mut self, provider_id: String, models: Vec<CatalogModel>, unavailable: usize) {
-        let selected = (0..models.len()).collect();
+    fn show_fetched(
+        &mut self,
+        provider_id: String,
+        mut models: Vec<CatalogModel>,
+        unavailable: usize,
+        ratio_prices: &BTreeMap<String, RatioCost>,
+        ratio_config_used: bool,
+    ) {
+        // Apply ratio_config prices on top of catalog (models.dev or default) metadata.
+        for model in &mut models {
+            if let Some(cost) = ratio_prices.get(&model.id) {
+                if let Some(object) = model.config.as_object_mut() {
+                    object.insert("cost".into(), cost.to_cost_json());
+                }
+            }
+        }
+        // Default to nothing selected — the user chooses what to import.
+        let selected = BTreeSet::new();
         self.overlay = Some(Overlay::Fetched {
             provider_id,
             models,
             unavailable,
             selected,
             cursor: 0,
+            ratio_config_used,
+            filter: String::new(),
+            filtering: false,
         });
     }
 
@@ -1267,4 +1340,18 @@ impl App {
             Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
         }
     }
+}
+
+/// Indices into `models` whose id contains the (case-insensitive) filter needle.
+/// An empty needle returns every index. `cursor` and `selected` on the overlay
+/// are kept in original-index space; only the rendered list is filtered, so
+/// toggling the filter never drops a selection.
+pub(super) fn visible_fetched_indices(models: &[CatalogModel], filter: &str) -> Vec<usize> {
+    let needle = filter.to_lowercase();
+    models
+        .iter()
+        .enumerate()
+        .filter(|(_, model)| needle.is_empty() || model.id.to_lowercase().contains(&needle))
+        .map(|(index, _)| index)
+        .collect()
 }
