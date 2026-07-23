@@ -1,3 +1,4 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::documents;
@@ -151,6 +152,25 @@ pub(super) fn remove_char(value: &mut String, char_index: usize) {
     let start = byte_index(value, char_index);
     let end = byte_index(value, char_index + 1);
     value.replace_range(start..end, "");
+}
+
+pub(super) fn edit_text_key(value: &mut String, cursor: &mut usize, key: KeyEvent) {
+    match key.code {
+        KeyCode::Left => *cursor = cursor.saturating_sub(1),
+        KeyCode::Right => *cursor = (*cursor + 1).min(char_len(value)),
+        KeyCode::Home => *cursor = 0,
+        KeyCode::End => *cursor = char_len(value),
+        KeyCode::Backspace if *cursor > 0 => {
+            *cursor -= 1;
+            remove_char(value, *cursor);
+        }
+        KeyCode::Delete => remove_char(value, *cursor),
+        KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            insert_char(value, *cursor, character);
+            *cursor += 1;
+        }
+        _ => {}
+    }
 }
 
 pub(super) fn with_cursor(value: &str, char_index: usize) -> String {

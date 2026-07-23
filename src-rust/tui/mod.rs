@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyEventKind};
 
-use crate::documents::Paths;
+use crate::documents::{Paths, API_TYPES};
 
 use app::App;
 use terminal::{terminal_error, PanicRestoreHookGuard, TuiTerminal};
@@ -25,19 +25,12 @@ use app::{Focus, Overlay, Page};
 #[cfg(test)]
 use forms::{FormState, ModelDefaultsFormState, ModelFormState};
 #[cfg(test)]
-use input::{truncate_width, wrap_width};
+use input::{edit_text_key, truncate_width, wrap_width};
 #[cfg(test)]
 use keys::{command_for, Command};
 
 const TICK: Duration = Duration::from_millis(120);
 const WIDE_WIDTH: u16 = 76;
-const API_TYPES: [&str; 4] = [
-    "openai-completions",
-    "openai-responses",
-    "anthropic-messages",
-    "google-generative-ai",
-];
-
 pub fn run() -> Result<(), String> {
     let _panic_guard = PanicRestoreHookGuard::install();
     let paths = Paths::discover().map_err(|error| error.to_string())?;
@@ -664,6 +657,35 @@ mod tests {
             "loading overlay remained after import"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn text_editing_keeps_unicode_cursor_boundaries() {
+        let mut value = "中a".to_owned();
+        let mut cursor = 2;
+
+        edit_text_key(
+            &mut value,
+            &mut cursor,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+        edit_text_key(
+            &mut value,
+            &mut cursor,
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE),
+        );
+        edit_text_key(
+            &mut value,
+            &mut cursor,
+            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+        );
+        edit_text_key(
+            &mut value,
+            &mut cursor,
+            KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
+        );
+
+        assert_eq!((value.as_str(), cursor), ("b", 0));
     }
 
     #[test]

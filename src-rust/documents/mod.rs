@@ -5,7 +5,6 @@ mod storage;
 
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
 use serde_json::{json, Map, Value};
 use thiserror::Error;
 
@@ -22,7 +21,7 @@ pub use network::fetch_models;
 pub use opencode::{apply_opencode_import, list_opencode_providers, prepare_opencode_import};
 pub use storage::{list_backups, restore_backup};
 
-const API_TYPES: [&str; 4] = [
+pub const API_TYPES: [&str; 4] = [
     "openai-completions",
     "openai-responses",
     "anthropic-messages",
@@ -85,8 +84,7 @@ impl Paths {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct Snapshot {
     pub models_path: String,
     pub settings_path: String,
@@ -98,8 +96,7 @@ pub struct Snapshot {
     pub model_defaults: ModelDefaults,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct ProviderView {
     pub id: String,
     pub base_url: String,
@@ -107,12 +104,10 @@ pub struct ProviderView {
     pub api_key: String,
     pub auth_header: bool,
     pub models: Vec<ModelView>,
-    #[serde(skip)]
     pub raw: Value,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct ModelView {
     pub id: String,
     pub name: Option<String>,
@@ -226,8 +221,7 @@ pub struct ModelImportSummary {
     pub updated: usize,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ModelDefaults {
     pub context_window: Option<u64>,
     pub max_tokens: Option<u64>,
@@ -281,13 +275,14 @@ pub struct OpenCodeImportPlan {
     pub ambiguous: Vec<CatalogAmbiguity>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct Backup {
     pub path: String,
     pub name: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(not(test), napi_derive::napi(object))]
+#[derive(Clone, Debug)]
 pub struct DoctorCheck {
     pub ok: bool,
     pub label: String,

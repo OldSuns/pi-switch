@@ -1,4 +1,3 @@
-const { existsSync } = require("node:fs");
 const { resolve } = require("node:path");
 
 function linuxLibc() {
@@ -18,9 +17,4 @@ function targetSuffix() {
 }
 
 const filename = `pi-switch-native.${targetSuffix()}.node`;
-const binary = resolve(__dirname, filename);
-if (!existsSync(binary)) {
-  throw new Error(`Native binding not found for ${process.platform}-${process.arch}: ${binary}`);
-}
-
-module.exports = require(binary);
+module.exports = require(resolve(__dirname, filename));

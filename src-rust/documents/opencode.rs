@@ -20,7 +20,7 @@ pub fn list_opencode_providers(paths: &Paths) -> Result<Vec<String>> {
     Ok(providers)
 }
 
-pub async fn prepare_opencode_import(
+pub fn prepare_opencode_import(
     paths: &Paths,
     provider_ids: &[String],
     options: ImportOptions,
@@ -28,7 +28,7 @@ pub async fn prepare_opencode_import(
     let source = read_source(paths)?;
     validate_provider_ids(&source, provider_ids)?;
     let catalog = if options.fetch_metadata {
-        Some(fetch_catalog().await?)
+        Some(fetch_catalog()?)
     } else {
         None
     };

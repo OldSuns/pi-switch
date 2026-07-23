@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, env, time::Duration};
 
-use reqwest::{Client, Url};
+use reqwest::{blocking::Client, Url};
 use serde_json::{json, Value};
 
 use super::{
@@ -11,16 +11,16 @@ use super::{
 
 const MODELS_DEV_CATALOG_URL: &str = "https://models.dev/api.json";
 
-pub async fn fetch_catalog() -> Result<ModelCatalog> {
+pub fn fetch_catalog() -> Result<ModelCatalog> {
     let client = http_client()?;
-    fetch_catalog_from(&client, MODELS_DEV_CATALOG_URL).await
+    fetch_catalog_from(&client, MODELS_DEV_CATALOG_URL)
 }
 
-pub async fn fetch_models(provider: ProviderView, options: ImportOptions) -> Result<CatalogFetch> {
-    fetch_models_from(provider, options, MODELS_DEV_CATALOG_URL).await
+pub fn fetch_models(provider: ProviderView, options: ImportOptions) -> Result<CatalogFetch> {
+    fetch_models_from(provider, options, MODELS_DEV_CATALOG_URL)
 }
 
-async fn fetch_models_from(
+fn fetch_models_from(
     provider: ProviderView,
     options: ImportOptions,
     metadata_catalog_url: &str,
@@ -59,7 +59,6 @@ async fn fetch_models_from(
 
     let response = request
         .send()
-        .await
         .map_err(|error| AppError::Http(error.to_string()))?;
     let status = response.status();
     if !status.is_success() {
@@ -67,7 +66,6 @@ async fn fetch_models_from(
     }
     let body: Value = response
         .json()
-        .await
         .map_err(|error| AppError::Http(format!("invalid JSON response: {error}")))?;
     let ids = parse_provider_catalog(&provider.api, &body)?;
     if !options.fetch_metadata {
@@ -77,7 +75,7 @@ async fn fetch_models_from(
             unavailable: 0,
         });
     }
-    let catalog = fetch_catalog_from(&client, metadata_catalog_url).await?;
+    let catalog = fetch_catalog_from(&client, metadata_catalog_url)?;
     let mut models = Vec::new();
     let mut ambiguous = Vec::new();
     let mut unavailable = 0;
@@ -118,12 +116,11 @@ fn http_client() -> Result<Client> {
         .map_err(|error| AppError::Http(error.to_string()))
 }
 
-async fn fetch_catalog_from(client: &Client, url: &str) -> Result<ModelCatalog> {
+fn fetch_catalog_from(client: &Client, url: &str) -> Result<ModelCatalog> {
     let response = client
         .get(url)
         .header("accept", "application/json")
         .send()
-        .await
         .map_err(|error| AppError::Http(format!("models.dev catalog: {error}")))?;
     let status = response.status();
     if !status.is_success() {
@@ -133,7 +130,6 @@ async fn fetch_catalog_from(client: &Client, url: &str) -> Result<ModelCatalog> 
     }
     let body: Value = response
         .json()
-        .await
         .map_err(|error| AppError::Http(format!("invalid models.dev catalog JSON: {error}")))?;
     parse_models_dev_catalog(&body)
 }
@@ -442,10 +438,10 @@ fn nonnegative_f64(value: Option<&Value>, id: &str, field: &str) -> Result<f64> 
 }
 
 #[cfg(test)]
-pub(super) async fn fetch_models_for_test(
+pub(super) fn fetch_models_for_test(
     provider: ProviderView,
     options: ImportOptions,
     catalog_url: &str,
 ) -> Result<CatalogFetch> {
-    fetch_models_from(provider, options, catalog_url).await
+    fetch_models_from(provider, options, catalog_url)
 }

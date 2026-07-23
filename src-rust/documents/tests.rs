@@ -508,24 +508,19 @@ fn opencode_import_can_select_providers_and_use_custom_defaults() {
         }),
     );
     assert_eq!(list_opencode_providers(&paths).unwrap(), ["one", "two"]);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let plan = runtime
-        .block_on(prepare_opencode_import(
-            &paths,
-            &["two".into()],
-            ImportOptions {
-                fetch_metadata: false,
-                defaults: ModelDefaults {
-                    context_window: Some(256_000),
-                    output_cost: Some(3.5),
-                    ..Default::default()
-                },
+    let plan = prepare_opencode_import(
+        &paths,
+        &["two".into()],
+        ImportOptions {
+            fetch_metadata: false,
+            defaults: ModelDefaults {
+                context_window: Some(256_000),
+                output_cost: Some(3.5),
+                ..Default::default()
             },
-        ))
-        .unwrap();
+        },
+    )
+    .unwrap();
     assert!(plan.ambiguous.is_empty());
     let summary = apply_opencode_import(&paths, plan, &[]).unwrap();
     assert_eq!(summary.providers, 1);
@@ -653,20 +648,15 @@ fn fetch_models_uses_the_explicit_catalog_endpoint() {
         models: Vec::new(),
         raw: json!({}),
     };
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let fetched = runtime
-        .block_on(fetch_models_for_test(
-            provider,
-            ImportOptions {
-                fetch_metadata: true,
-                defaults: ModelDefaults::default(),
-            },
-            &format!("http://{address}/api.json"),
-        ))
-        .unwrap();
+    let fetched = fetch_models_for_test(
+        provider,
+        ImportOptions {
+            fetch_metadata: true,
+            defaults: ModelDefaults::default(),
+        },
+        &format!("http://{address}/api.json"),
+    )
+    .unwrap();
     assert_eq!(fetched.models.len(), 1);
     assert_eq!(fetched.models[0].id, "model-z");
     assert_eq!(fetched.models[0].config["contextWindow"], 200_000);
@@ -705,20 +695,19 @@ fn fetch_models_uses_the_explicit_catalog_endpoint() {
         models: Vec::new(),
         raw: json!({}),
     };
-    let fetched = runtime
-        .block_on(fetch_models_for_test(
-            provider,
-            ImportOptions {
-                fetch_metadata: false,
-                defaults: ModelDefaults {
-                    context_window: Some(64_000),
-                    input_cost: Some(0.25),
-                    ..Default::default()
-                },
+    let fetched = fetch_models_for_test(
+        provider,
+        ImportOptions {
+            fetch_metadata: false,
+            defaults: ModelDefaults {
+                context_window: Some(64_000),
+                input_cost: Some(0.25),
+                ..Default::default()
             },
-            "http://127.0.0.1:1/must-not-be-requested",
-        ))
-        .unwrap();
+        },
+        "http://127.0.0.1:1/must-not-be-requested",
+    )
+    .unwrap();
     assert_eq!(fetched.models[0].config["contextWindow"], 64_000);
     assert_eq!(fetched.models[0].config["maxTokens"], PI_DEFAULT_MAX_TOKENS);
     assert_eq!(fetched.models[0].config["cost"]["input"], 0.25);

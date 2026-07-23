@@ -10,7 +10,7 @@ use crate::documents::{
 use super::{
     forms::{FormState, ModelDefaultsFormState, ModelFormState},
     i18n::Language,
-    input::{char_len, insert_char, moved, remove_char},
+    input::{char_len, edit_text_key, moved},
     keys::{command_for, Command},
     API_TYPES, WIDE_WIDTH,
 };
@@ -752,21 +752,7 @@ impl App {
                     form.editing_headers = false;
                     form.cursor = 0;
                 }
-                KeyCode::Left => form.cursor = form.cursor.saturating_sub(1),
-                KeyCode::Right => form.cursor = (form.cursor + 1).min(char_len(&form.headers_json)),
-                KeyCode::Home => form.cursor = 0,
-                KeyCode::End => form.cursor = char_len(&form.headers_json),
-                KeyCode::Backspace if form.cursor > 0 => {
-                    let index = form.cursor - 1;
-                    remove_char(&mut form.headers_json, index);
-                    form.cursor = index;
-                }
-                KeyCode::Delete => remove_char(&mut form.headers_json, form.cursor),
-                KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    insert_char(&mut form.headers_json, form.cursor, character);
-                    form.cursor += 1;
-                }
-                _ => {}
+                _ => edit_text_key(&mut form.headers_json, &mut form.cursor, key),
             }
             return false;
         }
@@ -785,33 +771,13 @@ impl App {
             KeyCode::Left | KeyCode::Right if form.field == 4 => {
                 form.auth_header = !form.auth_header
             }
-            KeyCode::Left => form.cursor = form.cursor.saturating_sub(1),
-            KeyCode::Right => form.cursor = (form.cursor + 1).min(form.current_len()),
-            KeyCode::Home => form.cursor = 0,
-            KeyCode::End => form.cursor = form.current_len(),
-            KeyCode::Backspace => {
-                if form.cursor > 0 {
-                    let index = form.cursor - 1;
-                    if let Some(text) = form.current_text_mut() {
-                        remove_char(text, index);
-                    }
-                    form.cursor = index;
-                }
-            }
-            KeyCode::Delete => {
-                let cursor = form.cursor;
+            _ => {
+                let mut cursor = form.cursor;
                 if let Some(text) = form.current_text_mut() {
-                    remove_char(text, cursor);
+                    edit_text_key(text, &mut cursor, key);
+                    form.cursor = cursor;
                 }
             }
-            KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let cursor = form.cursor;
-                if let Some(text) = form.current_text_mut() {
-                    insert_char(text, cursor, character);
-                    form.cursor += 1;
-                }
-            }
-            _ => {}
         }
         false
     }
@@ -844,33 +810,13 @@ impl App {
             KeyCode::Left | KeyCode::Right if form.field == 4 => {
                 form.image_input = !form.image_input
             }
-            KeyCode::Left => form.cursor = form.cursor.saturating_sub(1),
-            KeyCode::Right => form.cursor = (form.cursor + 1).min(form.current_len()),
-            KeyCode::Home => form.cursor = 0,
-            KeyCode::End => form.cursor = form.current_len(),
-            KeyCode::Backspace => {
-                if form.cursor > 0 {
-                    let index = form.cursor - 1;
-                    if let Some(text) = form.current_text_mut() {
-                        remove_char(text, index);
-                    }
-                    form.cursor = index;
-                }
-            }
-            KeyCode::Delete => {
-                let cursor = form.cursor;
+            _ => {
+                let mut cursor = form.cursor;
                 if let Some(text) = form.current_text_mut() {
-                    remove_char(text, cursor);
+                    edit_text_key(text, &mut cursor, key);
+                    form.cursor = cursor;
                 }
             }
-            KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let cursor = form.cursor;
-                if let Some(text) = form.current_text_mut() {
-                    insert_char(text, cursor, character);
-                    form.cursor += 1;
-                }
-            }
-            _ => {}
         }
         false
     }
@@ -897,25 +843,11 @@ impl App {
             KeyCode::Esc => return true,
             KeyCode::Tab | KeyCode::Down => form.select_field(form.field + 1),
             KeyCode::BackTab | KeyCode::Up => form.select_field((form.field + 5) % 6),
-            KeyCode::Left => form.cursor = form.cursor.saturating_sub(1),
-            KeyCode::Right => form.cursor = (form.cursor + 1).min(char_len(form.current_text())),
-            KeyCode::Home => form.cursor = 0,
-            KeyCode::End => form.cursor = char_len(form.current_text()),
-            KeyCode::Backspace if form.cursor > 0 => {
-                let index = form.cursor - 1;
-                remove_char(form.current_text_mut(), index);
-                form.cursor = index;
+            _ => {
+                let mut cursor = form.cursor;
+                edit_text_key(form.current_text_mut(), &mut cursor, key);
+                form.cursor = cursor;
             }
-            KeyCode::Delete => {
-                let cursor = form.cursor;
-                remove_char(form.current_text_mut(), cursor);
-            }
-            KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let cursor = form.cursor;
-                insert_char(form.current_text_mut(), cursor, character);
-                form.cursor += 1;
-            }
-            _ => {}
         }
         false
     }
@@ -1161,15 +1093,12 @@ impl App {
         let options = self.import_options();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let result = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|error| documents::AppError::Http(error.to_string()))
-                .and_then(|runtime| runtime.block_on(documents::fetch_models(provider, options)))
-                .map(|fetched| BackgroundResult::Catalog {
+            let result = documents::fetch_models(provider, options).map(|fetched| {
+                BackgroundResult::Catalog {
                     provider_id: task_provider_id,
                     fetched,
-                });
+                }
+            });
             let _ = sender.send(result);
         });
         self.task = Some(receiver);
@@ -1229,15 +1158,7 @@ impl App {
         let options = self.import_options();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let result = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|error| documents::AppError::Http(error.to_string()))
-                .and_then(|runtime| {
-                    runtime.block_on(documents::prepare_opencode_import(
-                        &paths, &providers, options,
-                    ))
-                })
+            let result = documents::prepare_opencode_import(&paths, &providers, options)
                 .map(BackgroundResult::OpenCodePrepared);
             let _ = sender.send(result);
         });

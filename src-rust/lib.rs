@@ -11,10 +11,10 @@ pub fn version() -> String {
     env!("CARGO_PKG_VERSION").to_owned()
 }
 
-#[cfg_attr(not(test), napi_derive::napi(js_name = "doctorJson"))]
-pub fn doctor_json() -> JsResult<String> {
+#[cfg_attr(not(test), napi_derive::napi)]
+pub fn doctor() -> JsResult<Vec<documents::DoctorCheck>> {
     let paths = documents::Paths::discover().map_err(js_error)?;
-    serde_json::to_string(&documents::doctor(&paths)).map_err(js_error)
+    Ok(documents::doctor(&paths))
 }
 
 #[cfg_attr(not(test), napi_derive::napi(js_name = "runTui"))]
