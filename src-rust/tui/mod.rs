@@ -25,7 +25,7 @@ use app::{Focus, Overlay, Page};
 #[cfg(test)]
 use forms::{FormState, ModelDefaultsFormState, ModelFormState};
 #[cfg(test)]
-use input::{edit_text_key, truncate_width, wrap_width};
+use input::{edit_text_key, mask_secret, truncate_width, wrap_width};
 #[cfg(test)]
 use keys::{command_for, Command};
 
@@ -190,6 +190,7 @@ mod tests {
             }
         }
         assert_eq!(truncate_width("示例-provider", 8), "示例-...");
+        assert_eq!(mask_secret("sk-1234567890abcdef"), "sk-1...cdef");
         assert_eq!(UnicodeWidthStr::width("示例-provider"), 13);
         let wrapped = wrap_width("示例-provider", 6);
         assert_eq!(wrapped.concat(), "示例-provider");
@@ -507,8 +508,9 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(headers_content.contains("Provider headers - all models"));
-        assert!(headers_content.contains("$ENV"));
-        assert!(!headers_content.contains("newline"));
+        assert!(headers_content.contains("User-Agent"));
+        assert!(headers_content.contains("Other headers JSON"));
+        assert!(!headers_content.contains("User-Agent is separate"));
         app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let json_content = terminal
@@ -518,7 +520,8 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(json_content.contains("newline"));
+        assert!(json_content.contains("Other headers JSON"));
+        assert!(json_content.contains("$KEY"));
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Char('{'), KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));

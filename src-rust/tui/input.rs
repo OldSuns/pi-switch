@@ -13,11 +13,11 @@ pub(super) fn mask_secret(value: &str) -> String {
     } else {
         format!(
             "{}...{}",
-            value.chars().take(3).collect::<String>(),
+            value.chars().take(4).collect::<String>(),
             value
                 .chars()
                 .rev()
-                .take(2)
+                .take(4)
                 .collect::<String>()
                 .chars()
                 .rev()
