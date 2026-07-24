@@ -28,16 +28,19 @@ const MIN_MODELS_HEIGHT: u16 = 5;
 const MODEL_DEFAULT_VALUE_WIDTH: usize = 16;
 
 #[derive(Clone, Copy)]
-struct Theme {
-    foreground: Color,
-    background: Color,
-    surface: Color,
-    accent: Color,
-    success: Color,
-    warning: Color,
-    error: Color,
-    muted: Color,
-    border: Color,
+pub(super) struct Theme {
+    pub(super) foreground: Color,
+    pub(super) background: Color,
+    pub(super) surface: Color,
+    pub(super) surface_hi: Color,
+    pub(super) accent: Color,
+    pub(super) accent_dim: Color,
+    pub(super) success: Color,
+    pub(super) warning: Color,
+    pub(super) error: Color,
+    pub(super) muted: Color,
+    pub(super) dim: Color,
+    pub(super) border: Color,
 }
 
 impl Theme {
@@ -47,36 +50,70 @@ impl Theme {
                 foreground: Color::Reset,
                 background: Color::Reset,
                 surface: Color::Reset,
+                surface_hi: Color::Reset,
                 accent: Color::Reset,
+                accent_dim: Color::Reset,
                 success: Color::Reset,
                 warning: Color::Reset,
                 error: Color::Reset,
                 muted: Color::Reset,
+                dim: Color::Reset,
                 border: Color::Reset,
             };
         }
+        // ponytail: single precision-instrument palette; multi-theme later if needed
         Self {
-            foreground: Color::Rgb(230, 237, 243),
-            background: Color::Rgb(13, 17, 23),
-            surface: Color::Rgb(22, 27, 34),
-            accent: Color::Rgb(88, 166, 255),
-            success: Color::Rgb(63, 185, 80),
-            warning: Color::Rgb(210, 153, 34),
-            error: Color::Rgb(248, 81, 73),
-            muted: Color::Rgb(139, 148, 158),
-            border: Color::Rgb(48, 54, 61),
+            foreground: Color::Rgb(220, 230, 242),
+            background: Color::Rgb(8, 12, 18),
+            surface: Color::Rgb(14, 20, 28),
+            surface_hi: Color::Rgb(20, 30, 42),
+            accent: Color::Rgb(64, 160, 255),
+            accent_dim: Color::Rgb(32, 78, 128),
+            success: Color::Rgb(56, 168, 92),
+            warning: Color::Rgb(196, 148, 48),
+            error: Color::Rgb(220, 84, 76),
+            muted: Color::Rgb(110, 124, 140),
+            dim: Color::Rgb(70, 82, 96),
+            border: Color::Rgb(36, 48, 62),
         }
     }
 
-    fn base(self) -> Style {
+    pub(super) fn base(self) -> Style {
         Style::default().fg(self.foreground).bg(self.background)
     }
 
-    fn selected(self) -> Style {
+    pub(super) fn selected(self) -> Style {
         Style::default()
             .fg(self.foreground)
+            .bg(self.surface_hi)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    pub(super) fn panel(self, active: bool) -> Style {
+        Style::default().fg(if active { self.accent } else { self.accent_dim })
+    }
+
+    pub(super) fn keycap(self) -> Style {
+        Style::default()
+            .fg(self.accent)
             .bg(self.surface)
             .add_modifier(Modifier::BOLD)
+    }
+
+    pub(super) fn label(self) -> Style {
+        Style::default().fg(self.muted)
+    }
+
+    pub(super) fn value(self) -> Style {
+        Style::default().fg(self.foreground)
+    }
+
+    pub(super) fn dim_text(self) -> Style {
+        Style::default().fg(self.dim)
+    }
+
+    fn surface_style(self) -> Style {
+        Style::default().fg(self.foreground).bg(self.surface)
     }
 }
 
@@ -166,40 +203,39 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(env!("CARGO_PKG_VERSION"), Style::default().fg(theme.muted)),
-        Span::raw("  "),
-        Span::styled(
-            app.language.pick("default ", "默认 "),
-            Style::default().fg(theme.muted),
-        ),
-        Span::raw(default),
+        Span::styled(env!("CARGO_PKG_VERSION"), theme.dim_text()),
+        Span::styled("  ·  ", theme.dim_text()),
+        Span::styled(app.language.pick("default ", "默认 "), theme.label()),
+        Span::styled(default, theme.value().add_modifier(Modifier::BOLD)),
+        Span::styled("  ·  ", theme.dim_text()),
         Span::styled(
             format!(
-                "  {} {}  {} {}",
+                "{} {}  ·  {} {}",
                 app.snapshot.providers.len(),
                 app.language.pick("provider(s)", "个提供商"),
                 model_count,
                 app.language.pick("model(s)", "个模型"),
             ),
-            Style::default().fg(theme.muted),
+            theme.label(),
         ),
     ]);
     let path_width = area.width.saturating_sub(4) as usize;
     let path = Line::from(vec![
         Span::styled(
             app.language.pick(" models ", " 模型文件 "),
-            Style::default().fg(theme.muted),
+            theme.dim_text(),
         ),
-        Span::raw(truncate_width(
-            &app.snapshot.models_path,
-            path_width.saturating_sub(8),
-        )),
+        Span::styled(
+            truncate_width(&app.snapshot.models_path, path_width.saturating_sub(8)),
+            theme.label(),
+        ),
     ]);
     frame.render_widget(
         Paragraph::new(vec![title, path]).block(
             Block::default()
                 .borders(Borders::BOTTOM)
-                .border_style(Style::default().fg(theme.border)),
+                .border_style(Style::default().fg(theme.border))
+                .style(theme.base()),
         ),
         area,
     );
@@ -278,11 +314,20 @@ fn render_providers(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) 
         })
         .collect::<Vec<_>>();
     let active = app.focus == Focus::Providers || (app.width < COMPACT_WIDTH && !app.narrow_detail);
-    let border = if active { theme.accent } else { theme.border };
     let block = Block::default()
-        .title(title)
+        .title(Span::styled(
+            title,
+            if active {
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                theme.label()
+            },
+        ))
         .borders(Borders::RIGHT)
-        .border_style(Style::default().fg(border));
+        .border_style(theme.panel(active))
+        .style(theme.base());
     if items.is_empty() {
         frame.render_widget(
             Paragraph::new(if app.filter.is_empty() {
@@ -296,7 +341,7 @@ fn render_providers(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) 
                     "没有提供商符合当前筛选条件。",
                 )
             })
-            .style(Style::default().fg(theme.muted))
+            .style(theme.dim_text())
             .block(block)
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: true }),
@@ -422,9 +467,15 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         Paragraph::new(lines)
             .block(
                 Block::default()
-                    .title(format!(" {} ", provider.id))
+                    .title(Span::styled(
+                        format!(" {} ", provider.id),
+                        Style::default()
+                            .fg(theme.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ))
                     .borders(Borders::BOTTOM)
-                    .border_style(Style::default().fg(theme.border)),
+                    .border_style(Style::default().fg(theme.border))
+                    .style(theme.base()),
             )
             .wrap(Wrap { trim: false }),
         info,
@@ -480,21 +531,30 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         })
         .collect::<Vec<_>>();
     let active = app.focus == Focus::Models || (app.width < COMPACT_WIDTH && app.narrow_detail);
-    let border = if active { theme.accent } else { theme.border };
     let position = if provider.models.is_empty() {
         String::new()
     } else {
         format!("  {}/{}", app.model_cursor + 1, provider.models.len())
     };
     let block = Block::default()
-        .title(format!(
-            " {}  {}{} ",
-            app.language.pick("Models", "模型"),
-            provider.models.len(),
-            position
+        .title(Span::styled(
+            format!(
+                " {}  {}{} ",
+                app.language.pick("Models", "模型"),
+                provider.models.len(),
+                position
+            ),
+            if active {
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                theme.label()
+            },
         ))
         .borders(if active { Borders::ALL } else { Borders::TOP })
-        .border_style(Style::default().fg(border));
+        .border_style(theme.panel(active))
+        .style(theme.base());
     if items.is_empty() {
         frame.render_widget(
             Paragraph::new(app.language.pick(
@@ -546,9 +606,9 @@ fn detail_field_lines(
                     } else {
                         indent.clone()
                     },
-                    Style::default().fg(theme.muted),
+                    theme.dim_text(),
                 ),
-                Span::raw(value),
+                Span::styled(value, theme.value()),
             ])
         })
         .collect()
@@ -695,18 +755,10 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
     }
     let mut spans = Vec::new();
     for (key, label) in keys {
-        spans.push(Span::styled(
-            format!(" {key} "),
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            format!("{label}  "),
-            Style::default().fg(theme.muted),
-        ));
+        spans.push(Span::styled(format!(" {key} "), theme.keycap()));
+        spans.push(Span::styled(format!("{label}  "), theme.label()));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    frame.render_widget(Paragraph::new(Line::from(spans)).style(theme.base()), area);
 }
 
 fn checkbox_span(checked: bool, theme: Theme) -> Span<'static> {
@@ -734,22 +786,14 @@ fn render_key_hints(frame: &mut Frame<'_>, area: Rect, hints: &[(&str, &str)], t
             lines.push(Line::from(std::mem::take(&mut spans)));
             line_width = 0;
         }
-        spans.push(Span::styled(
-            format!(" {key} "),
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            format!("{label}  "),
-            Style::default().fg(theme.muted),
-        ));
+        spans.push(Span::styled(format!(" {key} "), theme.keycap()));
+        spans.push(Span::styled(format!("{label}  "), theme.label()));
         line_width += key_width + label_width;
     }
     if !spans.is_empty() {
         lines.push(Line::from(spans));
     }
-    frame.render_widget(Paragraph::new(Text::from(lines)), area);
+    frame.render_widget(Paragraph::new(Text::from(lines)).style(theme.base()), area);
 }
 
 fn render_notice(frame: &mut Frame<'_>, notice: &Notice, area: Rect, theme: Theme) {
@@ -767,10 +811,12 @@ fn render_notice(frame: &mut Frame<'_>, notice: &Notice, area: Rect, theme: Them
             &notice.message,
             width.saturating_sub(4) as usize,
         ))
+        .style(theme.surface_style())
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(color)),
+                .border_style(Style::default().fg(color))
+                .style(theme.surface_style()),
         )
         .alignment(Alignment::Center),
         rect,
@@ -932,13 +978,15 @@ fn render_overlay(
             let rect = modal_rect(area, 76, 20);
             clear_area(frame, rect, theme);
             let block = Block::default()
-                .title(format!(
-                    " {}  {} ",
-                    language.pick("Backups", "备份"),
-                    items.len()
+                .title(Span::styled(
+                    format!(" {}  {} ", language.pick("Backups", "备份"), items.len()),
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD),
                 ))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.accent));
+                .border_style(Style::default().fg(theme.accent))
+                .style(theme.surface_style());
             let inner = block.inner(rect);
             frame.render_widget(block, rect);
             let [list, hint] =
@@ -946,6 +994,7 @@ fn render_overlay(
             if items.is_empty() {
                 frame.render_widget(
                     Paragraph::new(language.pick("No backups yet.", "暂无备份。"))
+                        .style(theme.dim_text())
                         .alignment(Alignment::Center),
                     list,
                 );
@@ -956,27 +1005,19 @@ fn render_overlay(
                     .collect::<Vec<_>>();
                 let mut state = ListState::default().with_selected(Some(*selected));
                 frame.render_stateful_widget(
-                    List::new(rows).highlight_symbol(" > ").highlight_style(
-                        Style::default()
-                            .fg(theme.accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
+                    List::new(rows)
+                        .highlight_symbol(" > ")
+                        .highlight_style(theme.selected()),
                     list,
                     &mut state,
                 );
             }
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
-                    Span::styled(" Enter/Space ", Style::default().fg(theme.accent)),
-                    Span::styled(
-                        language.pick("restore  ", "恢复  "),
-                        Style::default().fg(theme.muted),
-                    ),
-                    Span::styled(" Esc ", Style::default().fg(theme.accent)),
-                    Span::styled(
-                        language.pick("close", "关闭"),
-                        Style::default().fg(theme.muted),
-                    ),
+                    Span::styled(" Enter/Space ", theme.keycap()),
+                    Span::styled(language.pick("restore  ", "恢复  "), theme.label()),
+                    Span::styled(" Esc ", theme.keycap()),
+                    Span::styled(language.pick("close", "关闭"), theme.label()),
                 ])),
                 hint,
             );
@@ -1112,27 +1153,33 @@ fn render_overlay(
                 language.pick("overwrite: off", "覆盖: 关")
             };
             let block = Block::default()
-                .title(format!(
-                    " {}  {}/{} {}  {}  {}{}{} ",
-                    language.pick("Model catalog", "模型目录"),
-                    selected.len(),
-                    models.len(),
-                    language.pick("selected", "已选择"),
-                    price_source,
-                    overwrite_label,
-                    if *unavailable > 0 {
-                        format!(
-                            "  {} {}",
-                            unavailable,
-                            language.pick("unavailable", "无元数据")
-                        )
-                    } else {
-                        String::new()
-                    },
-                    filter_label,
+                .title(Span::styled(
+                    format!(
+                        " {}  {}/{} {}  {}  {}{}{} ",
+                        language.pick("Model catalog", "模型目录"),
+                        selected.len(),
+                        models.len(),
+                        language.pick("selected", "已选择"),
+                        price_source,
+                        overwrite_label,
+                        if *unavailable > 0 {
+                            format!(
+                                "  {} {}",
+                                unavailable,
+                                language.pick("unavailable", "无元数据")
+                            )
+                        } else {
+                            String::new()
+                        },
+                        filter_label,
+                    ),
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD),
                 ))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.accent));
+                .border_style(Style::default().fg(theme.accent))
+                .style(theme.surface_style());
             let inner = block.inner(rect);
             frame.render_widget(block, rect);
             let [list, hint] =
@@ -1149,14 +1196,14 @@ fn render_overlay(
                     if existing.contains(&model.id) {
                         first_line.push(Span::styled(
                             format!(" {}", language.pick("exists", "已存在")),
-                            Style::default().fg(theme.muted),
+                            theme.label(),
                         ));
                     }
                     ListItem::new(Text::from(vec![
                         Line::from(first_line),
                         Line::from(Span::styled(
                             format!("   {}", catalog_summary(model, language)),
-                            Style::default().fg(theme.muted),
+                            theme.label(),
                         )),
                     ]))
                 })
@@ -1164,11 +1211,9 @@ fn render_overlay(
             let mut state =
                 ListState::default().with_selected(if *filtering { None } else { Some(*cursor) });
             frame.render_stateful_widget(
-                List::new(rows).highlight_symbol(" > ").highlight_style(
-                    Style::default()
-                        .fg(theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                List::new(rows)
+                    .highlight_symbol(" > ")
+                    .highlight_style(theme.selected()),
                 list,
                 &mut state,
             );
@@ -1177,7 +1222,7 @@ fn render_overlay(
                     Paragraph::new(
                         language.pick("No models match this filter.", "没有模型符合当前筛选条件。"),
                     )
-                    .style(Style::default().fg(theme.muted))
+                    .style(theme.dim_text())
                     .alignment(Alignment::Center),
                     list,
                 );
@@ -1207,14 +1252,20 @@ fn render_overlay(
             let rect = near_full_rect(area);
             clear_area(frame, rect, theme);
             let block = Block::default()
-                .title(format!(
-                    " {}  {}/{} ",
-                    language.pick("Choose metadata source", "选择元数据来源"),
-                    index + 1,
-                    ambiguities.len()
+                .title(Span::styled(
+                    format!(
+                        " {}  {}/{} ",
+                        language.pick("Choose metadata source", "选择元数据来源"),
+                        index + 1,
+                        ambiguities.len()
+                    ),
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD),
                 ))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.accent));
+                .border_style(Style::default().fg(theme.accent))
+                .style(theme.surface_style());
             let inner = block.inner(rect);
             frame.render_widget(block, rect);
             let [heading, list, hint] = Layout::vertical([
@@ -1226,16 +1277,20 @@ fn render_overlay(
             if let Some(ambiguity) = ambiguities.get(*index) {
                 frame.render_widget(
                     Paragraph::new(vec![
-                        Line::from(format!(
-                            "{}: {}",
-                            language.pick("Target provider", "目标提供商"),
-                            ambiguity.provider_id
-                        )),
-                        Line::from(format!(
-                            "{}: {}",
-                            language.pick("Model", "模型"),
-                            ambiguity.model_id
-                        )),
+                        Line::from(vec![
+                            Span::styled(
+                                format!("{}: ", language.pick("Target provider", "目标提供商")),
+                                theme.label(),
+                            ),
+                            Span::styled(ambiguity.provider_id.clone(), theme.value()),
+                        ]),
+                        Line::from(vec![
+                            Span::styled(
+                                format!("{}: ", language.pick("Model", "模型")),
+                                theme.label(),
+                            ),
+                            Span::styled(ambiguity.model_id.clone(), theme.value()),
+                        ]),
                     ])
                     .wrap(Wrap { trim: false }),
                     heading,
@@ -1251,34 +1306,26 @@ fn render_overlay(
                             )),
                             Line::from(Span::styled(
                                 format!("    {}", catalog_summary(&candidate.model, language)),
-                                Style::default().fg(theme.muted),
+                                theme.label(),
                             )),
                         ]))
                     })
                     .collect::<Vec<_>>();
                 let mut state = ListState::default().with_selected(Some(*cursor));
                 frame.render_stateful_widget(
-                    List::new(rows).highlight_symbol(" > ").highlight_style(
-                        Style::default()
-                            .fg(theme.accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
+                    List::new(rows)
+                        .highlight_symbol(" > ")
+                        .highlight_style(theme.selected()),
                     list,
                     &mut state,
                 );
             }
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
-                    Span::styled(" Enter/Space ", Style::default().fg(theme.accent)),
-                    Span::styled(
-                        language.pick("select  ", "选择  "),
-                        Style::default().fg(theme.muted),
-                    ),
-                    Span::styled(" Esc ", Style::default().fg(theme.accent)),
-                    Span::styled(
-                        language.pick("cancel", "取消"),
-                        Style::default().fg(theme.muted),
-                    ),
+                    Span::styled(" Enter/Space ", theme.keycap()),
+                    Span::styled(language.pick("select  ", "选择  "), theme.label()),
+                    Span::styled(" Esc ", theme.keycap()),
+                    Span::styled(language.pick("cancel", "取消"), theme.label()),
                 ])),
                 hint,
             );
@@ -1291,15 +1338,21 @@ fn render_overlay(
             let rect = modal_rect(area, 70, 22);
             clear_area(frame, rect, theme);
             let block = Block::default()
-                .title(format!(
-                    " {}  {}/{} {} ",
-                    language.pick("OpenCode providers", "OpenCode 提供商"),
-                    selected.len(),
-                    providers.len(),
-                    language.pick("selected", "已选择")
+                .title(Span::styled(
+                    format!(
+                        " {}  {}/{} {} ",
+                        language.pick("OpenCode providers", "OpenCode 提供商"),
+                        selected.len(),
+                        providers.len(),
+                        language.pick("selected", "已选择")
+                    ),
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD),
                 ))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.accent));
+                .border_style(Style::default().fg(theme.accent))
+                .style(theme.surface_style());
             let inner = block.inner(rect);
             frame.render_widget(block, rect);
             let [list, hint] =
@@ -1316,11 +1369,9 @@ fn render_overlay(
                 .collect::<Vec<_>>();
             let mut state = ListState::default().with_selected(Some(*cursor));
             frame.render_stateful_widget(
-                List::new(rows).highlight_symbol(" > ").highlight_style(
-                    Style::default()
-                        .fg(theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                List::new(rows)
+                    .highlight_symbol(" > ")
+                    .highlight_style(theme.selected()),
                 list,
                 &mut state,
             );
@@ -1355,13 +1406,19 @@ fn render_form(
     let rect = modal_rect(area, 88, 22);
     clear_area(frame, rect, theme);
     let block = Block::default()
-        .title(if form.previous_id.is_some() {
-            language.pick(" Edit provider ", " 编辑提供商 ")
-        } else {
-            language.pick(" Add provider ", " 新建提供商 ")
-        })
+        .title(Span::styled(
+            if form.previous_id.is_some() {
+                language.pick(" Edit provider ", " 编辑提供商 ")
+            } else {
+                language.pick(" Add provider ", " 新建提供商 ")
+            },
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.accent));
+        .border_style(Style::default().fg(theme.accent))
+        .style(theme.surface_style());
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     let rows = Layout::vertical([
@@ -1428,7 +1485,13 @@ fn render_form(
         let label = Line::from(vec![
             Span::styled(
                 format!(" {}", pad_width(labels[index], 24)),
-                Style::default().fg(if active { theme.accent } else { theme.muted }),
+                if active {
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    theme.label()
+                },
             ),
             Span::styled(
                 if active && !matches!(index, 2 | 4 | 5 | 6) {
@@ -1436,11 +1499,11 @@ fn render_form(
                 } else {
                     values[index].clone()
                 },
-                Style::default().add_modifier(if active {
-                    Modifier::BOLD
+                if active {
+                    theme.value().add_modifier(Modifier::BOLD)
                 } else {
-                    Modifier::empty()
-                }),
+                    theme.value()
+                },
             ),
         ]);
         let lines = if index == 5
@@ -1454,7 +1517,7 @@ fn render_form(
                         "  Enter to configure User-Agent or other headers",
                         "  Enter 编辑 User-Agent 或其他请求头",
                     ),
-                    Style::default().fg(theme.muted),
+                    theme.dim_text(),
                 )),
             ]
         } else {
@@ -1471,32 +1534,20 @@ fn render_form(
                 " Ctrl+S ",
                 Style::default()
                     .fg(theme.success)
+                    .bg(theme.surface)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                language.pick("save  ", "保存  "),
-                Style::default().fg(theme.muted),
-            ),
-            Span::styled(
-                " Tab ",
-                Style::default()
-                    .fg(theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                language.pick("next field  ", "下一字段  "),
-                Style::default().fg(theme.muted),
-            ),
+            Span::styled(language.pick("save  ", "保存  "), theme.label()),
+            Span::styled(" Tab ", theme.keycap()),
+            Span::styled(language.pick("next field  ", "下一字段  "), theme.label()),
             Span::styled(
                 " Esc ",
                 Style::default()
                     .fg(theme.warning)
+                    .bg(theme.surface)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                language.pick("cancel", "取消"),
-                Style::default().fg(theme.muted),
-            ),
+            Span::styled(language.pick("cancel", "取消"), theme.label()),
         ])),
         rows[8],
     );
@@ -1648,9 +1699,15 @@ fn render_provider_headers_form(
     let rect = modal_rect(area, 82, 12);
     clear_area(frame, rect, theme);
     let block = Block::default()
-        .title(language.pick(" Provider headers ", " 提供商请求头 "))
+        .title(Span::styled(
+            language.pick(" Provider headers ", " 提供商请求头 "),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.accent));
+        .border_style(Style::default().fg(theme.accent))
+        .style(theme.surface_style());
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     let [user_agent, headers_json, hint] = Layout::vertical([
@@ -1666,31 +1723,41 @@ fn render_provider_headers_form(
         form.user_agent.clone()
     };
     let user_agent_block = Block::default()
-        .title(format!(" {} ", language.pick("User-Agent", "User-Agent")))
+        .title(Span::styled(
+            format!(" {} ", language.pick("User-Agent", "User-Agent")),
+            if user_agent_active {
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                theme.label()
+            },
+        ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(if user_agent_active {
-            theme.accent
-        } else {
-            theme.border
-        }));
+        .border_style(theme.panel(user_agent_active));
     let user_agent_inner = user_agent_block.inner(user_agent);
     frame.render_widget(user_agent_block, user_agent);
     frame.render_widget(
-        Paragraph::new(user_agent_value).style(Style::default().bg(theme.surface)),
+        Paragraph::new(user_agent_value).style(Style::default().bg(theme.surface_hi)),
         user_agent_inner,
     );
     let headers_active = form.headers_field == 1;
     let headers_block = Block::default()
-        .title(format!(
-            " {} ",
-            language.pick("Other headers JSON", "其他请求头 JSON")
+        .title(Span::styled(
+            format!(
+                " {} ",
+                language.pick("Other headers JSON", "其他请求头 JSON")
+            ),
+            if headers_active {
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                theme.label()
+            },
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(if headers_active {
-            theme.accent
-        } else {
-            theme.border
-        }));
+        .border_style(theme.panel(headers_active));
     let headers_inner = headers_block.inner(headers_json);
     frame.render_widget(headers_block, headers_json);
     frame.render_widget(
@@ -1699,7 +1766,7 @@ fn render_provider_headers_form(
         } else {
             form.headers_json.clone()
         })
-        .style(Style::default().bg(theme.surface))
+        .style(Style::default().bg(theme.surface_hi))
         .wrap(Wrap { trim: false }),
         headers_inner,
     );
@@ -1730,9 +1797,15 @@ fn render_model_form(
     };
     clear_area(frame, rect, theme);
     let block = Block::default()
-        .title(format!("{title} {} ", form.provider_id))
+        .title(Span::styled(
+            format!("{title} {} ", form.provider_id),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.accent));
+        .border_style(Style::default().fg(theme.accent))
+        .style(theme.surface_style());
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     let rows = Layout::vertical([
@@ -1791,7 +1864,13 @@ fn render_model_form(
             Paragraph::new(Line::from(vec![
                 Span::styled(
                     format!(" {}", pad_width(labels[index], 22)),
-                    Style::default().fg(if active { theme.accent } else { theme.muted }),
+                    if active {
+                        Style::default()
+                            .fg(theme.accent)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        theme.label()
+                    },
                 ),
                 Span::styled(
                     if active && !matches!(index, 2..=4) {
@@ -1799,11 +1878,11 @@ fn render_model_form(
                     } else {
                         values[index].clone()
                     },
-                    Style::default().add_modifier(if active {
-                        Modifier::BOLD
+                    if active {
+                        theme.value().add_modifier(Modifier::BOLD)
                     } else {
-                        Modifier::empty()
-                    }),
+                        theme.value()
+                    },
                 ),
             ])),
             rows[index],
@@ -1815,22 +1894,18 @@ fn render_model_form(
                 " Ctrl+S ",
                 Style::default()
                     .fg(theme.success)
+                    .bg(theme.surface)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                language.pick("save  ", "保存  "),
-                Style::default().fg(theme.muted),
-            ),
+            Span::styled(language.pick("save  ", "保存  "), theme.label()),
             Span::styled(
                 " Esc ",
                 Style::default()
                     .fg(theme.warning)
+                    .bg(theme.surface)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                language.pick("cancel", "取消"),
-                Style::default().fg(theme.muted),
-            ),
+            Span::styled(language.pick("cancel", "取消"), theme.label()),
         ])),
         rows[7],
     );
@@ -1896,22 +1971,18 @@ fn render_model_defaults_form(
             " Ctrl+S ",
             Style::default()
                 .fg(theme.success)
+                .bg(theme.surface)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            language.pick("save  ", "保存  "),
-            Style::default().fg(theme.muted),
-        ),
+        Span::styled(language.pick("save  ", "保存  "), theme.label()),
         Span::styled(
             " Esc ",
             Style::default()
                 .fg(theme.warning)
+                .bg(theme.surface)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            language.pick("cancel", "取消"),
-            Style::default().fg(theme.muted),
-        ),
+        Span::styled(language.pick("cancel", "取消"), theme.label()),
     ]));
     render_modal(
         frame,
@@ -1934,11 +2005,17 @@ fn model_default_field(
 ) -> Line<'static> {
     let label_padding = label_width.saturating_sub(UnicodeWidthStr::width(label));
     let border = Style::default().fg(if active { theme.accent } else { theme.border });
-    let input = Style::default().bg(theme.surface);
+    let input = Style::default().bg(theme.surface_hi);
     let mut spans = vec![
         Span::styled(
             format!(" {label}{}  ", " ".repeat(label_padding)),
-            Style::default().fg(if active { theme.accent } else { theme.muted }),
+            if active {
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                theme.label()
+            },
         ),
         Span::styled("[", border),
         Span::styled(" ", input),
@@ -1991,9 +2068,13 @@ fn render_modal<'a>(
     frame.render_widget(
         body.block(
             Block::default()
-                .title(title)
+                .title(Span::styled(
+                    title,
+                    Style::default().fg(border).add_modifier(Modifier::BOLD),
+                ))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(border)),
+                .border_style(Style::default().fg(border))
+                .style(theme.surface_style()),
         ),
         rect,
     );
@@ -2006,7 +2087,7 @@ fn clear_area(frame: &mut Frame<'_>, area: Rect, theme: Theme) {
     let right = area.right().saturating_add(1).min(bounds.right());
     let clear = Rect::new(x, area.y, right.saturating_sub(x), area.height);
     frame.render_widget(Clear, clear);
-    frame.render_widget(Block::default().style(theme.base()), clear);
+    frame.render_widget(Block::default().style(theme.surface_style()), clear);
 }
 
 fn catalog_summary(model: &CatalogModel, language: Language) -> String {

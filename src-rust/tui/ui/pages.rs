@@ -13,13 +13,29 @@ use super::Theme;
 pub(super) fn render_menu(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
     let items = Page::ALL
         .iter()
-        .map(|page| ListItem::new(format!("  {}", page.label(app.language))))
+        .map(|page| {
+            let label = page.label(app.language);
+            ListItem::new(Line::from(Span::styled(
+                format!("  {label}"),
+                theme.value(),
+            )))
+        })
         .collect::<Vec<_>>();
     let active = app.focus == Focus::Menu;
     let block = Block::default()
-        .title(format!(" {} ", app.language.pick("Menu", "菜单")))
+        .title(Span::styled(
+            format!(" {} ", app.language.pick("Menu", "菜单")),
+            if active {
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                theme.label()
+            },
+        ))
         .borders(Borders::RIGHT)
-        .border_style(Style::default().fg(if active { theme.accent } else { theme.border }));
+        .border_style(theme.panel(active))
+        .style(theme.base());
     let list = List::new(items)
         .block(block)
         .highlight_symbol(if active { " > " } else { "   " })
@@ -37,9 +53,15 @@ pub(super) fn render_menu(frame: &mut Frame<'_>, app: &App, area: Rect, theme: T
 
 pub(super) fn render_home(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
     let block = Block::default()
-        .title(format!(" {} ", app.language.pick("Home", "主页")))
+        .title(Span::styled(
+            format!(" {} ", app.language.pick("Home", "主页")),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border));
+        .border_style(theme.panel(false))
+        .style(theme.base());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -58,16 +80,17 @@ pub(super) fn render_home(frame: &mut Frame<'_>, app: &App, area: Rect, theme: T
         .unwrap_or_else(|| app.language.pick("not set", "未设置").into());
     let overview = vec![
         Line::default(),
-        label_line(
+        metric_line(
             theme,
             app.language.pick("Providers", "提供商"),
             app.snapshot.providers.len().to_string(),
         ),
-        label_line(
+        metric_line(
             theme,
             app.language.pick("Models", "模型"),
             model_count.to_string(),
         ),
+        Line::default(),
         label_line(theme, app.language.pick("Default", "默认模型"), default),
     ];
     let paths = vec![
@@ -115,9 +138,15 @@ pub(super) fn render_home(frame: &mut Frame<'_>, app: &App, area: Rect, theme: T
 
 pub(super) fn render_settings(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
     let block = Block::default()
-        .title(format!(" {} ", app.language.pick("Settings", "设置")))
+        .title(Span::styled(
+            format!(" {} ", app.language.pick("Settings", "设置")),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border));
+        .border_style(theme.panel(app.focus == Focus::Content))
+        .style(theme.base());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -155,20 +184,16 @@ pub(super) fn render_settings(frame: &mut Frame<'_>, app: &App, area: Rect, them
         .map(|action| {
             let label = action.label(app.language);
             if action != SettingsAction::FetchMetadata {
-                return ListItem::new(label);
+                return ListItem::new(Line::from(Span::styled(label, theme.value())));
             }
             let enabled = app.snapshot.fetch_model_metadata;
             ListItem::new(Line::from(vec![
                 Span::styled(
                     if enabled { "●" } else { "○" },
-                    Style::default().fg(if enabled {
-                        theme.foreground
-                    } else {
-                        theme.muted
-                    }),
+                    Style::default().fg(if enabled { theme.accent } else { theme.muted }),
                 ),
                 Span::raw("  "),
-                Span::raw(label),
+                Span::styled(label, theme.value()),
             ]))
         })
         .collect::<Vec<_>>();
@@ -180,24 +205,38 @@ pub(super) fn render_settings(frame: &mut Frame<'_>, app: &App, area: Rect, them
         List::new(actions)
             .block(
                 Block::default()
-                    .title(app.language.pick("Actions", "操作"))
+                    .title(Span::styled(
+                        app.language.pick("Actions", "操作"),
+                        Style::default()
+                            .fg(theme.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ))
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.border)),
+                    .border_style(theme.panel(app.focus == Focus::Content)),
             )
             .highlight_symbol(" > ")
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD)),
+            .highlight_style(theme.selected()),
         sections[1],
         &mut state,
     );
 }
 
+fn metric_line(theme: Theme, label: &str, value: String) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("  {}", pad_width(label, 14)), theme.label()),
+        Span::styled(
+            value,
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
 fn label_line(theme: Theme, label: &str, value: String) -> Line<'static> {
     Line::from(vec![
-        Span::styled(
-            format!("  {}", pad_width(label, 14)),
-            Style::default().fg(theme.accent),
-        ),
-        Span::styled(value, Style::default().fg(theme.foreground)),
+        Span::styled(format!("  {}", pad_width(label, 14)), theme.label()),
+        Span::styled(value, theme.value()),
     ])
 }
 
@@ -212,9 +251,15 @@ fn render_section(
         Paragraph::new(lines)
             .block(
                 Block::default()
-                    .title(title)
+                    .title(Span::styled(
+                        title.to_owned(),
+                        Style::default()
+                            .fg(theme.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ))
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.border)),
+                    .border_style(Style::default().fg(theme.border))
+                    .style(theme.base()),
             )
             .wrap(Wrap { trim: false }),
         area,
