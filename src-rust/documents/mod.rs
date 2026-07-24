@@ -1,6 +1,7 @@
 mod network;
 mod opencode;
 mod schema;
+mod sessions;
 mod storage;
 
 use std::path::{Path, PathBuf};
@@ -19,6 +20,10 @@ use storage::{
 
 pub use network::fetch_models;
 pub use opencode::{apply_opencode_import, list_opencode_providers, prepare_opencode_import};
+pub use sessions::{
+    delete_session, format_session_time, list_sessions, load_preview, session_display_title,
+    session_matches, DeleteMethod, PreviewMessage, SessionSummary,
+};
 pub use storage::{list_backups, restore_backup};
 
 pub const API_TYPES: [&str; 4] = [

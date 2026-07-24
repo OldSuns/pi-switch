@@ -19,7 +19,7 @@ use super::{
     keys::{all_shortcuts, shortcut, Command},
     COMPACT_WIDTH, WIDE_WIDTH,
 };
-use pages::{render_home, render_menu, render_settings};
+use pages::{render_home, render_menu, render_sessions, render_settings};
 
 const MENU_WIDTH: u16 = 18;
 const SHELL_WIDE_WIDTH: u16 = MENU_WIDTH + WIDE_WIDTH;
@@ -85,12 +85,18 @@ impl Theme {
     pub(super) fn selected(self) -> Style {
         Style::default()
             .fg(self.foreground)
-            .bg(self.surface_hi)
+            .bg(self.accent_dim)
             .add_modifier(Modifier::BOLD)
     }
 
     pub(super) fn panel(self, active: bool) -> Style {
-        Style::default().fg(if active { self.accent } else { self.accent_dim })
+        if active {
+            Style::default()
+                .fg(self.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(self.border)
+        }
     }
 
     pub(super) fn keycap(self) -> Style {
@@ -159,6 +165,10 @@ fn render_page(frame: &mut Frame<'_>, app: &mut App, area: Rect, theme: Theme) {
     match app.page {
         Page::Home => render_home(frame, app, area, theme),
         Page::Profiles => render_profiles_page(frame, app, area, theme),
+        Page::Sessions => {
+            app.ensure_sessions_loaded();
+            render_sessions(frame, app, area, theme);
+        }
         Page::Settings => render_settings(frame, app, area, theme),
     }
 }
@@ -730,6 +740,42 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
             ][..]
         };
         commands.iter().map(|command| binding(*command)).collect()
+    } else if app.page == Page::Sessions {
+        if app.session_filtering {
+            vec![
+                ("Enter", app.language.pick("apply", "应用")),
+                ("Esc", app.language.pick("clear", "清除")),
+            ]
+        } else if app.focus == Focus::SessionPreview {
+            vec![
+                ("Up/Down", app.language.pick("messages", "消息")),
+                ("Ctrl+C", app.language.pick("copy", "复制")),
+                ("u", app.language.pick("user-only", "仅用户")),
+                ("Left", app.language.pick("back", "返回")),
+                ("q", app.language.pick("quit", "退出")),
+            ]
+        } else if compact {
+            vec![
+                ("/", app.language.pick("filter", "筛选")),
+                ("Enter", app.language.pick("open", "进入")),
+                ("d", app.language.pick("delete", "删除")),
+                ("r", app.language.pick("reload", "刷新")),
+                ("n", app.language.pick("named", "命名")),
+                ("u", app.language.pick("user", "用户")),
+                ("q", app.language.pick("quit", "退出")),
+            ]
+        } else {
+            vec![
+                ("Up/Down", app.language.pick("select", "选择")),
+                ("Enter/Right", app.language.pick("browse", "浏览消息")),
+                ("/", app.language.pick("filter", "筛选")),
+                ("n", app.language.pick("named only", "仅命名")),
+                ("u", app.language.pick("user-only", "仅用户")),
+                ("d", app.language.pick("delete", "删除")),
+                ("r", app.language.pick("reload", "刷新")),
+                ("q", app.language.pick("quit", "退出")),
+            ]
+        }
     } else if app.page == Page::Settings {
         vec![
             ("Up/Down", app.language.pick("select", "选择")),
@@ -741,12 +787,18 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
             ("Left", app.language.pick("menu", "菜单")),
         ]
     };
-    if !compact && !app.filtering && app.focus != Focus::Menu {
+    if !compact && !app.filtering && !app.session_filtering && app.focus != Focus::Menu {
         if app.page == Page::Profiles {
             if app.in_model_context() {
                 keys.push(("Left", app.language.pick("providers", "提供商")));
             } else {
                 keys.push(("Enter", app.language.pick("models", "模型")));
+                keys.push(("Left", app.language.pick("menu", "菜单")));
+            }
+        } else if app.page == Page::Sessions {
+            if app.focus == Focus::SessionPreview {
+                keys.push(("Left", app.language.pick("list", "列表")));
+            } else {
                 keys.push(("Left", app.language.pick("menu", "菜单")));
             }
         } else if app.page != Page::Home {
@@ -969,6 +1021,40 @@ fn render_overlay(
                 frame,
                 rect,
                 language.pick(" Confirm model delete ", " 确认删除模型 "),
+                body,
+                theme.error,
+                theme,
+            );
+        }
+        Overlay::ConfirmDeleteSession { path, label } => {
+            let rect = modal_rect(area, 68, 9);
+            let body = Paragraph::new(vec![
+                Line::from(format!(
+                    "{} '{label}'?",
+                    language.pick("Delete session", "删除会话")
+                )),
+                Line::from(Span::styled(
+                    truncate_width(path, 60),
+                    Style::default().fg(theme.muted),
+                )),
+                Line::from(language.pick(
+                    "Prefers trash, then permanent delete.",
+                    "优先移到回收站，失败则永久删除。",
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    language.pick(
+                        "Enter/y confirm   Esc/n cancel",
+                        "Enter/y 确认   Esc/n 取消",
+                    ),
+                    Style::default().fg(theme.muted),
+                )),
+            ])
+            .wrap(Wrap { trim: true });
+            render_modal(
+                frame,
+                rect,
+                language.pick(" Confirm session delete ", " 确认删除会话 "),
                 body,
                 theme.error,
                 theme,

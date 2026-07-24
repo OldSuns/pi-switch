@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::documents::{
     self, Backup, CatalogAmbiguity, CatalogFetch, CatalogModel, DoctorCheck, ImportSummary,
-    OpenCodeImportPlan, Paths, ProviderView, RatioCost, Snapshot,
+    OpenCodeImportPlan, Paths, PreviewMessage, ProviderView, RatioCost, SessionSummary, Snapshot,
 };
 
 use super::{
@@ -16,18 +16,125 @@ use super::{
     API_TYPES, COMPACT_WIDTH,
 };
 
+/// Copy text to the system clipboard using the platform's native CLI.
+/// Falls back gracefully when no clipboard tool is available.
+fn copy_text_to_clipboard(text: &str) -> std::result::Result<(), String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    // On Windows, use `clip`; on macOS, `pbcopy`; on Linux, `xclip` / `xsel` / `wl-copy`.
+    #[cfg(target_os = "windows")]
+    let (program, args): (&str, Vec<&str>) = ("clip", vec![]);
+    #[cfg(target_os = "macos")]
+    let (program, args): (&str, Vec<&str>) = ("pbcopy", vec![]);
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let (program, args): (&str, Vec<&str>) = {
+        if std::process::Command::new("which")
+            .arg("wl-copy")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+        {
+            ("wl-copy", vec!["--"])
+        } else if std::process::Command::new("which")
+            .arg("xclip")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+        {
+            ("xclip", vec!["-selection", "clipboard"])
+        } else if std::process::Command::new("which")
+            .arg("xsel")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+        {
+            ("xsel", vec!["--clipboard", "--input"])
+        } else {
+            return Err("no clipboard tool found (install xclip, xsel, or wl-copy)".into());
+        }
+    };
+
+    let mut child = Command::new(program)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("failed to launch {program}: {e}"))?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|e| format!("failed to write to {program}: {e}"))?;
+    }
+    let status = child
+        .wait()
+        .map_err(|e| format!("failed to wait for {program}: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{program} exited with {status}"))
+    }
+}
+
+pub(super) fn wrap_preview_text(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    for raw in text.split('\n') {
+        // Session text may contain invisible trailing whitespace. Rendering it with the selected
+        // background creates apparently random highlighted cells, so trim it for display only.
+        let raw = raw.trim_end();
+        if raw.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let mut current = String::new();
+        let mut current_width = 0usize;
+        let mut wrapped = false;
+        for ch in raw.chars() {
+            let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
+            if current_width + ch_width > width && !current.is_empty() {
+                lines.push(std::mem::take(&mut current).trim_end().to_owned());
+                current_width = 0;
+                wrapped = true;
+            }
+            if wrapped && current.is_empty() && ch.is_whitespace() {
+                continue;
+            }
+            current.push(ch);
+            current_width += ch_width;
+            wrapped = false;
+        }
+        lines.push(current.trim_end().to_owned());
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+/// Count rendered lines for a preview message (role header + wrapped body + blank separator).
+pub(super) fn preview_message_line_count(message: &PreviewMessage, wrap_width: usize) -> usize {
+    1 + wrap_preview_text(&message.text, wrap_width).len() + 1
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
     Menu,
     Content,
     Providers,
     Models,
+    SessionPreview,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Page {
     Home,
     Profiles,
+    Sessions,
     Settings,
 }
 
@@ -82,13 +189,14 @@ impl SettingsAction {
 }
 
 impl Page {
-    pub(super) const ALL: [Self; 3] = [Self::Home, Self::Profiles, Self::Settings];
+    pub(super) const ALL: [Self; 4] = [Self::Home, Self::Profiles, Self::Sessions, Self::Settings];
 
     pub(super) fn index(self) -> usize {
         match self {
             Self::Home => 0,
             Self::Profiles => 1,
-            Self::Settings => 2,
+            Self::Sessions => 2,
+            Self::Settings => 3,
         }
     }
 
@@ -96,6 +204,7 @@ impl Page {
         match self {
             Self::Home => language.pick("Home", "主页"),
             Self::Profiles => language.pick("Profiles", "配置"),
+            Self::Sessions => language.pick("Sessions", "会话"),
             Self::Settings => language.pick("Settings", "设置"),
         }
     }
@@ -123,6 +232,10 @@ pub(super) enum Overlay {
     ConfirmDeleteModel {
         provider_id: String,
         model_id: String,
+    },
+    ConfirmDeleteSession {
+        path: String,
+        label: String,
     },
     Backups {
         items: Vec<Backup>,
@@ -182,6 +295,19 @@ pub(super) struct App {
     pub(super) provider_cursor: usize,
     pub(super) model_cursor: usize,
     pub(super) settings_cursor: usize,
+    pub(super) session_cursor: usize,
+    pub(super) sessions: Vec<SessionSummary>,
+    pub(super) sessions_loaded: bool,
+    pub(super) session_filter: String,
+    pub(super) session_filtering: bool,
+    pub(super) named_only: bool,
+    pub(super) user_only_preview: bool,
+    pub(super) preview: Option<Vec<PreviewMessage>>,
+    pub(super) preview_scroll: u16,
+    pub(super) preview_path: Option<String>,
+    pub(super) preview_message_cursor: usize,
+    pub(super) preview_wrap_width: usize,
+    pub(super) preview_viewport_height: u16,
     pub(super) focus: Focus,
     pub(super) filter: String,
     pub(super) filtering: bool,
@@ -226,6 +352,19 @@ impl App {
             provider_cursor: 0,
             model_cursor: 0,
             settings_cursor: 0,
+            session_cursor: 0,
+            sessions: Vec::new(),
+            sessions_loaded: false,
+            session_filter: String::new(),
+            session_filtering: false,
+            named_only: false,
+            user_only_preview: false,
+            preview: None,
+            preview_scroll: 0,
+            preview_path: None,
+            preview_message_cursor: 0,
+            preview_wrap_width: 40,
+            preview_viewport_height: 10,
             focus: Focus::Menu,
             filter: String::new(),
             filtering: false,
@@ -236,6 +375,331 @@ impl App {
             task: None,
             tick_count: 0,
             quit: false,
+        }
+    }
+
+    pub(super) fn visible_sessions(&self) -> Vec<usize> {
+        self.sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, session)| {
+                documents::session_matches(session, &self.session_filter, self.named_only)
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    pub(super) fn selected_session(&self) -> Option<&SessionSummary> {
+        let visible = self.visible_sessions();
+        visible
+            .get(self.session_cursor)
+            .and_then(|index| self.sessions.get(*index))
+    }
+
+    pub(super) fn ensure_sessions_loaded(&mut self) {
+        if self.sessions_loaded {
+            return;
+        }
+        self.reload_sessions(None);
+    }
+
+    pub(super) fn reload_sessions(&mut self, message: Option<&str>) {
+        let selected_path = self
+            .selected_session()
+            .map(|session| session.path.display().to_string());
+        match documents::list_sessions() {
+            Ok(sessions) => {
+                self.sessions = sessions;
+                self.sessions_loaded = true;
+                self.session_cursor = selected_path
+                    .and_then(|path| {
+                        self.visible_sessions().into_iter().position(|index| {
+                            self.sessions[index].path.display().to_string() == path
+                        })
+                    })
+                    .unwrap_or(0);
+                self.clamp_session_selection();
+                self.refresh_preview();
+                if let Some(message) = message {
+                    self.notice(NoticeKind::Success, message);
+                }
+            }
+            Err(error) => {
+                self.sessions_loaded = true;
+                self.overlay = Some(Overlay::Error(error.to_string()));
+            }
+        }
+    }
+
+    pub(super) fn clamp_session_selection(&mut self) {
+        let count = self.visible_sessions().len();
+        self.session_cursor = if count == 0 {
+            0
+        } else {
+            self.session_cursor.min(count - 1)
+        };
+    }
+
+    pub(super) fn refresh_preview(&mut self) {
+        let Some(session) = self.selected_session() else {
+            self.preview = None;
+            self.preview_path = None;
+            self.preview_scroll = 0;
+            self.preview_message_cursor = 0;
+            if self.focus == Focus::SessionPreview {
+                self.focus = Focus::Content;
+            }
+            return;
+        };
+        let path = session.path.display().to_string();
+        match documents::load_preview(&session.path, self.user_only_preview) {
+            Ok(messages) => {
+                self.preview = Some(messages);
+                self.preview_path = Some(path);
+                self.preview_scroll = 0;
+                self.preview_message_cursor = 0;
+            }
+            Err(error) => {
+                self.preview = None;
+                self.preview_path = Some(path);
+                self.preview_message_cursor = 0;
+                if self.focus == Focus::SessionPreview {
+                    self.focus = Focus::Content;
+                }
+                self.notice(NoticeKind::Warning, error.to_string());
+            }
+        }
+    }
+
+    pub(super) fn in_sessions(&self) -> bool {
+        self.page == Page::Sessions && self.focus == Focus::Content
+    }
+
+    pub(super) fn in_session_list(&self) -> bool {
+        self.page == Page::Sessions && self.focus == Focus::Content
+    }
+
+    pub(super) fn in_session_preview(&self) -> bool {
+        self.page == Page::Sessions && self.focus == Focus::SessionPreview
+    }
+
+    pub(super) fn preview_message_count(&self) -> usize {
+        self.preview
+            .as_ref()
+            .map(|messages| messages.len())
+            .unwrap_or(0)
+    }
+
+    pub(super) fn selected_preview_message(&self) -> Option<&PreviewMessage> {
+        let messages = self.preview.as_ref()?;
+        messages.get(self.preview_message_cursor)
+    }
+
+    pub(super) fn clamp_preview_message_cursor(&mut self) {
+        let count = self.preview_message_count();
+        self.preview_message_cursor = if count == 0 {
+            0
+        } else {
+            self.preview_message_cursor.min(count - 1)
+        };
+    }
+
+    pub(super) fn ensure_preview_message_visible(&mut self) {
+        let Some(messages) = self.preview.as_ref() else {
+            self.preview_scroll = 0;
+            return;
+        };
+        if messages.is_empty() {
+            self.preview_scroll = 0;
+            return;
+        }
+        let header_lines = self.preview_header_line_count();
+        let wrap_width = self.preview_wrap_width.max(8);
+        let mut offset = header_lines;
+        for (index, message) in messages.iter().enumerate() {
+            let block_lines = preview_message_line_count(message, wrap_width);
+            if index == self.preview_message_cursor {
+                let viewport = self.preview_viewport_height.max(1) as usize;
+                let start = self.preview_scroll as usize;
+                let end = start + viewport;
+                let message_end = offset + block_lines;
+                if offset < start {
+                    self.preview_scroll = offset.min(u16::MAX as usize) as u16;
+                } else if block_lines >= viewport {
+                    if offset >= end {
+                        self.preview_scroll = offset.min(u16::MAX as usize) as u16;
+                    }
+                } else if message_end > end {
+                    self.preview_scroll =
+                        message_end.saturating_sub(viewport).min(u16::MAX as usize) as u16;
+                }
+                return;
+            }
+            offset += block_lines;
+        }
+    }
+
+    fn preview_header_line_count(&self) -> usize {
+        let mut lines = 0;
+        if self.selected_session().is_some() {
+            lines += 1; // id
+            if self
+                .selected_session()
+                .is_some_and(|session| !session.cwd.is_empty())
+            {
+                lines += 1;
+            }
+            lines += 1; // blank
+        }
+        lines
+    }
+
+    pub(super) fn focus_session_preview(&mut self) {
+        if self.preview_message_count() == 0 {
+            self.notice(
+                NoticeKind::Warning,
+                self.language
+                    .pick("No messages to browse", "没有可浏览的消息"),
+            );
+            return;
+        }
+        self.focus = Focus::SessionPreview;
+        self.clamp_preview_message_cursor();
+        self.ensure_preview_message_visible();
+    }
+
+    pub(super) fn move_preview_message(&mut self, delta: isize) {
+        let count = self.preview_message_count() as isize;
+        if count == 0 {
+            self.preview_message_cursor = 0;
+            return;
+        }
+        let next = (self.preview_message_cursor as isize + delta).clamp(0, count - 1);
+        self.preview_message_cursor = next as usize;
+        self.ensure_preview_message_visible();
+    }
+
+    pub(super) fn scroll_preview_lines(&mut self, delta: isize) {
+        let max_scroll = self
+            .preview_total_line_count()
+            .saturating_sub(self.preview_viewport_height.max(1) as usize);
+        let current = self.preview_scroll as usize;
+        let next = if delta < 0 {
+            current.saturating_sub(delta.unsigned_abs())
+        } else {
+            current.saturating_add(delta as usize).min(max_scroll)
+        };
+        self.preview_scroll = next.min(u16::MAX as usize) as u16;
+        if let Some(cursor) = self.preview_message_cursor_at_line(next) {
+            self.preview_message_cursor = cursor;
+        }
+    }
+
+    fn preview_total_line_count(&self) -> usize {
+        let mut lines = self.preview_header_line_count();
+        match self.preview.as_ref() {
+            Some(messages) if !messages.is_empty() => {
+                let wrap_width = self.preview_wrap_width.max(8);
+                lines += messages
+                    .iter()
+                    .map(|message| preview_message_line_count(message, wrap_width))
+                    .sum::<usize>();
+            }
+            _ => lines += 1,
+        }
+        lines
+    }
+
+    fn preview_message_cursor_at_line(&self, line: usize) -> Option<usize> {
+        let messages = self.preview.as_ref()?;
+        if messages.is_empty() {
+            return None;
+        }
+        let wrap_width = self.preview_wrap_width.max(8);
+        let mut offset = self.preview_header_line_count();
+        for (index, message) in messages.iter().enumerate() {
+            let block_lines = preview_message_line_count(message, wrap_width);
+            if line < offset + block_lines {
+                return Some(index);
+            }
+            offset += block_lines;
+        }
+        Some(messages.len() - 1)
+    }
+
+    pub(super) fn copy_selected_preview_message(&mut self) {
+        let Some(message) = self.selected_preview_message().cloned() else {
+            self.notice(
+                NoticeKind::Warning,
+                self.language
+                    .pick("Select a message to copy", "请选择要复制的消息"),
+            );
+            return;
+        };
+        match copy_text_to_clipboard(&message.text) {
+            Ok(()) => self.notice(
+                NoticeKind::Success,
+                self.language.pick("Copied message", "已复制消息"),
+            ),
+            Err(error) => self.overlay = Some(Overlay::Error(error)),
+        }
+    }
+
+    pub(super) fn on_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        if self.overlay.is_some() || self.filtering || self.session_filtering {
+            return;
+        }
+        if self.page != Page::Sessions || self.focus == Focus::Menu {
+            return;
+        }
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                if self.in_session_preview() {
+                    self.scroll_preview_lines(-3);
+                } else if self.in_session_list() {
+                    self.move_session_selection(-1);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if self.in_session_preview() {
+                    self.scroll_preview_lines(3);
+                } else if self.in_session_list() {
+                    self.move_session_selection(1);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) if self.in_session_list() => {
+                // click stays on list; right key enters preview
+            }
+            _ => {}
+        }
+    }
+
+    fn on_session_preview_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('q') => self.quit = true,
+            KeyCode::Up | KeyCode::Char('k') => self.move_preview_message(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_preview_message(1),
+            KeyCode::PageUp => {
+                self.move_preview_message(-5);
+            }
+            KeyCode::PageDown => {
+                self.move_preview_message(5);
+            }
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc | KeyCode::Tab => {
+                self.focus = Focus::Content;
+            }
+            KeyCode::Char('u') => {
+                self.user_only_preview = !self.user_only_preview;
+                self.refresh_preview();
+            }
+            KeyCode::Char('r') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.reload_sessions(Some(
+                    self.language.pick("Reloaded sessions", "会话列表已刷新"),
+                ));
+                self.focus_session_preview();
+            }
+            _ => {}
         }
     }
 
@@ -391,12 +855,29 @@ impl App {
     }
 
     pub(super) fn on_key(&mut self, key: KeyEvent) {
-        if self.filtering {
+        // Ctrl+C inside session preview copies the selected message instead of quitting.
+        if self.in_session_preview()
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('c')
+        {
+            self.copy_selected_preview_message();
+            return;
+        }
+        // Session preview has its own key handling, separate from the command dispatch.
+        if self.in_session_preview() && self.overlay.is_none() && !self.session_filtering {
+            self.on_session_preview_key(key);
+            return;
+        }
+        if self.filtering || self.session_filtering {
             if command_for(key) == Some(Command::Quit) {
                 self.quit = true;
                 return;
             }
-            self.on_filter_key(key);
+            if self.session_filtering {
+                self.on_session_filter_key(key);
+            } else {
+                self.on_filter_key(key);
+            }
             return;
         }
         if self.overlay.is_some() {
@@ -421,9 +902,17 @@ impl App {
                 Command::Quit => self.quit = true,
                 Command::Help => self.overlay = Some(Overlay::Help),
                 Command::Filter if self.in_profiles() => self.filtering = true,
+                Command::Filter if self.in_sessions() => self.session_filtering = true,
                 Command::New if self.in_profiles() => self.open_add(),
+                Command::New if self.in_sessions() => {
+                    self.named_only = !self.named_only;
+                    self.session_cursor = 0;
+                    self.clamp_session_selection();
+                    self.refresh_preview();
+                }
                 Command::Edit if self.in_profiles() => self.open_edit(),
                 Command::Delete if self.in_profiles() => self.open_delete(),
+                Command::Delete if self.in_sessions() => self.open_delete_session(),
                 Command::Copy if self.in_profiles() => self.duplicate_selected(),
                 Command::Import if self.in_profiles() => self.start_fetch(),
                 Command::SetDefault if self.in_profiles() && self.in_model_context() => {
@@ -433,6 +922,9 @@ impl App {
                 Command::Doctor => {
                     self.overlay = Some(Overlay::Doctor(documents::doctor(&self.paths)))
                 }
+                Command::Reload if self.in_sessions() => self.reload_sessions(Some(
+                    self.language.pick("Reloaded sessions", "会话列表已刷新"),
+                )),
                 Command::Reload => self.reload(Some(
                     self.language
                         .pick("Reloaded Pi configuration", "Pi 配置已重载"),
@@ -456,6 +948,9 @@ impl App {
                     } else {
                         Focus::Content
                     };
+                    if self.page == Page::Sessions {
+                        self.ensure_sessions_loaded();
+                    }
                 }
                 _ => {}
             }
@@ -474,6 +969,36 @@ impl App {
                     self.settings_cursor = (self.settings_cursor + 1).min(last)
                 }
                 KeyCode::Enter => self.run_settings_action(),
+                KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc | KeyCode::Tab => {
+                    self.focus = Focus::Menu
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        if self.page == Page::Sessions {
+            self.ensure_sessions_loaded();
+            if self.focus == Focus::SessionPreview {
+                self.on_session_preview_key(key);
+                return;
+            }
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => self.move_session_selection(-1),
+                KeyCode::Down | KeyCode::Char('j') => self.move_session_selection(1),
+                KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => {
+                    self.focus_session_preview();
+                }
+                KeyCode::PageUp => {
+                    self.preview_scroll = self.preview_scroll.saturating_sub(5);
+                }
+                KeyCode::PageDown => {
+                    self.preview_scroll = self.preview_scroll.saturating_add(5);
+                }
+                KeyCode::Char('u') => {
+                    self.user_only_preview = !self.user_only_preview;
+                    self.refresh_preview();
+                }
                 KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc | KeyCode::Tab => {
                     self.focus = Focus::Menu
                 }
@@ -535,6 +1060,64 @@ impl App {
         }
     }
 
+    pub(super) fn on_session_filter_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.session_filter.clear();
+                self.session_filtering = false;
+                self.session_cursor = 0;
+                self.clamp_session_selection();
+                self.refresh_preview();
+            }
+            KeyCode::Enter => {
+                self.session_filtering = false;
+                self.clamp_session_selection();
+                self.refresh_preview();
+            }
+            KeyCode::Backspace => {
+                self.session_filter.pop();
+                self.session_cursor = 0;
+                self.clamp_session_selection();
+                self.refresh_preview();
+            }
+            KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.session_filter.push(character);
+                self.session_cursor = 0;
+                self.clamp_session_selection();
+                self.refresh_preview();
+            }
+            _ => {}
+        }
+    }
+
+    fn move_session_selection(&mut self, delta: isize) {
+        let count = self.visible_sessions().len() as isize;
+        if count == 0 {
+            self.session_cursor = 0;
+            self.preview = None;
+            return;
+        }
+        let next = (self.session_cursor as isize + delta).clamp(0, count - 1);
+        self.session_cursor = next as usize;
+        self.refresh_preview();
+    }
+
+    pub(super) fn open_delete_session(&mut self) {
+        let Some(session) = self.selected_session() else {
+            self.notice(
+                NoticeKind::Warning,
+                self.language
+                    .pick("Select a session to delete", "请选择要删除的会话"),
+            );
+            return;
+        };
+        let label = documents::session_display_title(session).to_owned();
+        self.overlay = Some(Overlay::ConfirmDeleteSession {
+            path: session.path.display().to_string(),
+            label,
+        });
+    }
+
     pub(super) fn on_overlay_key(&mut self, key: KeyEvent) {
         let Some(mut overlay) = self.overlay.take() else {
             return;
@@ -590,6 +1173,32 @@ impl App {
                     match documents::remove_model(&self.paths, provider_id, model_id) {
                         Ok(()) => {
                             self.reload(Some(self.language.pick("Model deleted", "模型已删除")))
+                        }
+                        Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
+                    }
+                    return;
+                }
+                KeyCode::Esc | KeyCode::Char('n') => return,
+                _ => {}
+            },
+            Overlay::ConfirmDeleteSession { path, .. } => match key.code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    let path = std::path::PathBuf::from(path.clone());
+                    match documents::delete_session(&path) {
+                        Ok(method) => {
+                            let message = match method {
+                                documents::DeleteMethod::Trash => self
+                                    .language
+                                    .pick("Session moved to trash", "会话已移到回收站"),
+                                documents::DeleteMethod::Unlink => {
+                                    self.language.pick("Session deleted", "会话已删除")
+                                }
+                            };
+                            self.sessions.retain(|session| session.path != path);
+                            self.clamp_session_selection();
+                            self.preview_path = None;
+                            self.refresh_preview();
+                            self.notice(NoticeKind::Success, message);
                         }
                         Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
                     }
@@ -982,8 +1591,12 @@ impl App {
     fn select_page(&mut self, page: Page) {
         self.page = page;
         self.filtering = false;
+        self.session_filtering = false;
         self.narrow_detail = false;
         self.settings_cursor = 0;
+        if page == Page::Sessions {
+            self.ensure_sessions_loaded();
+        }
     }
 
     fn focus_models(&mut self) {

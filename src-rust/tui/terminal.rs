@@ -4,7 +4,9 @@ use std::{
 };
 
 use crossterm::{
-    cursor, execute,
+    cursor,
+    event::{DisableMouseCapture, EnableMouseCapture},
+    execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Frame, Terminal};
@@ -44,7 +46,13 @@ impl Drop for PanicRestoreHookGuard {
 
 fn restore_stdout(stdout: &mut Stdout) -> Result<(), String> {
     let raw = disable_raw_mode().map_err(terminal_error);
-    let screen = execute!(stdout, cursor::Show, LeaveAlternateScreen).map_err(terminal_error);
+    let screen = execute!(
+        stdout,
+        cursor::Show,
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )
+    .map_err(terminal_error);
     raw.and(screen)
 }
 
@@ -57,7 +65,12 @@ impl TuiTerminal {
     pub(super) fn new() -> Result<Self, String> {
         let mut stdout = io::stdout();
         enable_raw_mode().map_err(terminal_error)?;
-        if let Err(error) = execute!(stdout, EnterAlternateScreen, cursor::Hide) {
+        if let Err(error) = execute!(
+            stdout,
+            EnterAlternateScreen,
+            cursor::Hide,
+            EnableMouseCapture
+        ) {
             let _ = restore_stdout(&mut stdout);
             return Err(terminal_error(error));
         }
@@ -86,7 +99,8 @@ impl TuiTerminal {
         let screen = execute!(
             self.terminal.backend_mut(),
             cursor::Show,
-            LeaveAlternateScreen
+            LeaveAlternateScreen,
+            DisableMouseCapture
         )
         .map_err(terminal_error);
         let _ = self.terminal.show_cursor();

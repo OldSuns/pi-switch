@@ -1,6 +1,6 @@
 {
   "name": "pi-switch-tui",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A focused terminal UI for Pi provider and model configuration",
   "type": "module",
   "bin": {
