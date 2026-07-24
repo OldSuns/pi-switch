@@ -843,9 +843,10 @@ mod tests {
                 ref providers,
                 ref selected,
                 ..
-            }) if providers.len() == 2 && selected.len() == 2
+            }) if providers.len() == 2 && selected.is_empty()
         ));
         app.notice = None;
+        app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(app.overlay, Some(Overlay::Loading { .. })));
         let mut imported = false;
@@ -948,7 +949,7 @@ mod tests {
     #[test]
     fn interactive_overlays_show_their_key_hints() {
         let (root, mut app) = app();
-        let mut terminal = Terminal::new(TestBackend::new(48, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
 
         app.overlay = Some(Overlay::Fetched {
             provider_id: "custom".into(),
@@ -970,6 +971,8 @@ mod tests {
             .collect::<String>();
         assert!(fetched.contains("Space toggle"));
         assert!(fetched.contains("a all"));
+        assert!(fetched.contains("n none"));
+        assert!(fetched.contains("i invert"));
         assert!(fetched.contains("/ filter"));
         assert!(fetched.contains("Enter/s import"));
         assert!(fetched.contains("Esc cancel"));
@@ -989,6 +992,8 @@ mod tests {
             .collect::<String>();
         assert!(opencode.contains("Space toggle"));
         assert!(opencode.contains("a all"));
+        assert!(opencode.contains("n none"));
+        assert!(opencode.contains("i invert"));
         assert!(opencode.contains("Enter import"));
         assert!(opencode.contains("Esc cancel"));
 
@@ -1030,12 +1035,22 @@ mod tests {
         assert!(app.notice.is_some());
         app.notice = None;
 
-        // 'a' selects every model; 'a' again deselects them all.
+        // 'a' selects every model; 'n' clears them all.
         app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         if let Some(Overlay::Fetched { ref selected, .. }) = app.overlay {
             assert_eq!(selected.len(), 3);
         }
-        app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        if let Some(Overlay::Fetched { ref selected, .. }) = app.overlay {
+            assert!(selected.is_empty());
+        }
+
+        // 'i' inverts the selection: nothing → all, all → nothing.
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        if let Some(Overlay::Fetched { ref selected, .. }) = app.overlay {
+            assert_eq!(selected.len(), 3);
+        }
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
         if let Some(Overlay::Fetched { ref selected, .. }) = app.overlay {
             assert!(selected.is_empty());
         }
@@ -1091,5 +1106,50 @@ mod tests {
         app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.overlay.is_none());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn opencode_provider_selector_all_none_and_invert() {
+        let (root, mut app) = app();
+        app.overlay = Some(Overlay::OpenCodeProviders {
+            providers: vec!["one".into(), "two".into(), "three".into()],
+            selected: std::collections::BTreeSet::new(),
+            cursor: 0,
+        });
+
+        // 'a' selects all.
+        app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        if let Some(Overlay::OpenCodeProviders { ref selected, .. }) = app.overlay {
+            assert_eq!(selected.len(), 3);
+        }
+
+        // 'n' clears all.
+        app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        if let Some(Overlay::OpenCodeProviders { ref selected, .. }) = app.overlay {
+            assert!(selected.is_empty());
+        }
+
+        // 'i' inverts empty → all, then all → empty.
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        if let Some(Overlay::OpenCodeProviders { ref selected, .. }) = app.overlay {
+            assert_eq!(selected.len(), 3);
+        }
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        if let Some(Overlay::OpenCodeProviders { ref selected, .. }) = app.overlay {
+            assert!(selected.is_empty());
+        }
+
+        // 'i' with a partial selection toggles only the missing/extra items.
+        app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        if let Some(Overlay::OpenCodeProviders { ref selected, .. }) = app.overlay {
+            assert_eq!(selected.len(), 2);
+        }
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        if let Some(Overlay::OpenCodeProviders { ref selected, .. }) = app.overlay {
+            assert_eq!(selected.len(), 1);
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 }

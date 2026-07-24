@@ -677,14 +677,19 @@ impl App {
                             }
                         }
                         KeyCode::Char('a') => {
-                            if !visible.is_empty() {
-                                let all_selected = visible.iter().all(|&i| selected.contains(&i));
-                                for &original in &visible {
-                                    if all_selected {
-                                        selected.remove(&original);
-                                    } else {
-                                        selected.insert(original);
-                                    }
+                            for &original in &visible {
+                                selected.insert(original);
+                            }
+                        }
+                        KeyCode::Char('n') => {
+                            for &original in &visible {
+                                selected.remove(&original);
+                            }
+                        }
+                        KeyCode::Char('i') => {
+                            for &original in &visible {
+                                if !selected.remove(&original) {
+                                    selected.insert(original);
                                 }
                             }
                         }
@@ -768,6 +773,16 @@ impl App {
                 }
                 KeyCode::Char('a') => {
                     *selected = (0..providers.len()).collect();
+                }
+                KeyCode::Char('n') => {
+                    selected.clear();
+                }
+                KeyCode::Char('i') => {
+                    for index in 0..providers.len() {
+                        if !selected.remove(&index) {
+                            selected.insert(index);
+                        }
+                    }
                 }
                 KeyCode::Enter if !selected.is_empty() => {
                     let chosen = selected
@@ -1243,7 +1258,8 @@ impl App {
     fn open_opencode_providers(&mut self) {
         match documents::list_opencode_providers(&self.paths) {
             Ok(providers) => {
-                let selected = (0..providers.len()).collect();
+                // Default to nothing selected — the user chooses what to import.
+                let selected = BTreeSet::new();
                 self.overlay = Some(Overlay::OpenCodeProviders {
                     providers,
                     selected,

@@ -215,6 +215,44 @@ impl ModelCatalog {
     fn insert(&mut self, provider_id: String, models: Vec<CatalogModel>) {
         self.providers.insert(provider_id, models);
     }
+
+    // thinkingLevelMap is a model capability, not a per-listing value. Each
+    // provider listing exposes a different (often incomplete) reasoning_options;
+    // the model's real thinking capability is the most detailed one. After
+    // parsing, unify every listing of a model to the most detailed thinkingLevelMap
+    // found across its siblings, so imports don't depend on which listing is chosen.
+    fn enrich_reasoning(&mut self) {
+        let mut best: std::collections::BTreeMap<String, (usize, Value)> =
+            std::collections::BTreeMap::new();
+        for models in self.providers.values() {
+            for model in models {
+                if model.config.get("reasoning").and_then(Value::as_bool) != Some(true) {
+                    continue;
+                }
+                if let Some(map) = model.config.get("thinkingLevelMap") {
+                    let score = map
+                        .as_object()
+                        .map(|object| object.values().filter(|value| value.is_string()).count())
+                        .unwrap_or(0);
+                    if best.get(&model.id).map(|(score, _)| *score).unwrap_or(0) < score {
+                        best.insert(model.id.clone(), (score, map.clone()));
+                    }
+                }
+            }
+        }
+        for models in self.providers.values_mut() {
+            for model in models {
+                if model.config.get("reasoning").and_then(Value::as_bool) != Some(true) {
+                    continue;
+                }
+                if let Some((_, map)) = best.get(&model.id).cloned() {
+                    if let Some(object) = model.config.as_object_mut() {
+                        object.insert("thinkingLevelMap".into(), map);
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

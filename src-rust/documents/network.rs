@@ -5,7 +5,7 @@ use std::{
 };
 
 use reqwest::{blocking::Client, Url};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use super::{
     schema::{model_view, validate_model_id, validate_provider_view, validate_url},
@@ -462,6 +462,7 @@ pub(super) fn parse_models_dev_catalog(body: &Value) -> Result<ModelCatalog> {
             "models.dev catalog contains no providers".into(),
         ));
     }
+    catalog.enrich_reasoning();
     Ok(catalog)
 }
 
@@ -549,7 +550,7 @@ fn catalog_model(value: &Value) -> Result<Option<CatalogModel>> {
         }
     };
     let cost_value = |field| nonnegative_f64(cost.and_then(|value| value.get(field)), id, field);
-    let config = json!({
+    let mut config = json!({
         "id": id,
         "name": name,
         "reasoning": reasoning,
@@ -563,11 +564,52 @@ fn catalog_model(value: &Value) -> Result<Option<CatalogModel>> {
         "contextWindow": context_window,
         "maxTokens": max_tokens
     });
+    if let Some(thinking_level_map) = thinking_level_map(source, reasoning) {
+        config["thinkingLevelMap"] = thinking_level_map;
+    }
     model_view("models.dev", 0, &config)?;
     Ok(Some(CatalogModel {
         id: id.into(),
         config,
     }))
+}
+
+fn thinking_level_map(source: &Map<String, Value>, reasoning: bool) -> Option<Value> {
+    if !reasoning {
+        return None;
+    }
+    let options = source.get("reasoning_options")?.as_array()?;
+    let effort_values = options.iter().find_map(|option| {
+        let object = option.as_object()?;
+        if object.get("type").and_then(Value::as_str) != Some("effort") {
+            return None;
+        }
+        object.get("values")?.as_array()
+    })?;
+    let graded = ["minimal", "low", "medium", "high", "xhigh", "max"];
+    let contains = |name: &str| {
+        effort_values
+            .iter()
+            .any(|value| value.as_str() == Some(name))
+    };
+    if !graded.iter().any(|level| contains(level)) {
+        return None;
+    }
+    let mut map = Map::new();
+    if contains("none") {
+        map.insert("off".into(), Value::String("none".into()));
+    }
+    for level in graded {
+        map.insert(
+            level.into(),
+            if contains(level) {
+                Value::String(level.into())
+            } else {
+                Value::Null
+            },
+        );
+    }
+    Some(Value::Object(map))
 }
 
 fn positive_u64(value: Option<&Value>, id: &str, field: &str) -> Result<Option<u64>> {

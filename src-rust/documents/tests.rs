@@ -381,6 +381,8 @@ fn models_dev_catalog_parser_maps_supported_fields_and_skips_unusable_models() {
     let mut shared_a = models_dev_model("shared", 100_000, 10_000, 1.0);
     shared_a["reasoning"] = json!(true);
     shared_a["modalities"]["input"] = json!(["text", "image", "pdf"]);
+    shared_a["reasoning_options"] =
+        json!([{"type":"effort","values":["low","medium","high","xhigh","max"]}]);
     let shared_b = models_dev_model("shared", 200_000, 20_000, 2.0);
     let mut unique = models_dev_model("unique", 300_000, 30_000, 3.0);
     unique.as_object_mut().unwrap().remove("cost");
@@ -421,6 +423,13 @@ fn models_dev_catalog_parser_maps_supported_fields_and_skips_unusable_models() {
     assert_eq!(shared["maxTokens"], 10_000);
     assert_eq!(shared["input"], json!(["text", "image"]));
     assert_eq!(shared["reasoning"], true);
+    assert_eq!(
+        shared["thinkingLevelMap"],
+        json!({
+            "minimal": null, "low": "low", "medium": "medium",
+            "high": "high", "xhigh": "xhigh", "max": "max"
+        })
+    );
     assert_eq!(shared["cost"]["cacheRead"], 0.1);
     assert_eq!(shared["cost"]["cacheWrite"], 0.0);
     assert!(catalog.resolve("custom", "shared").is_none());
@@ -445,8 +454,172 @@ fn models_dev_catalog_parser_maps_supported_fields_and_skips_unusable_models() {
             "cacheWrite": 0.0
         })
     );
+    assert!(unique.config.get("thinkingLevelMap").is_none());
     assert!(catalog.resolve("one", "no-output").is_none());
     assert!(catalog.resolve("one", "audio-only").is_none());
+}
+
+#[test]
+fn thinking_level_map_maps_effort_values_and_omits_unsupported() {
+    // reasoning:false (helper default) → no map
+    let no_reasoning = parse_models_dev_catalog(&json!({
+        "p": {"id":"p","name":"P","env":[],"models":{
+            "m": models_dev_model("m", 128_000, 16_384, 0.0)
+        }}
+    }))
+    .unwrap();
+    assert!(no_reasoning
+        .resolve("p", "m")
+        .unwrap()
+        .config
+        .get("thinkingLevelMap")
+        .is_none());
+
+    // effort values with "none" → off:"none", unsupported graded levels → null
+    let with_none = parse_models_dev_catalog(&json!({
+        "p": {"id":"p","name":"P","env":[],"models":{
+            "m": {
+                "id": "m", "name": "m", "reasoning": true,
+                "modalities": {"input": ["text"], "output": ["text"]},
+                "limit": {"context": 128_000, "output": 16_384},
+                "reasoning_options": [{"type":"effort","values":["none","low","medium","high"]}]
+            }
+        }}
+    }))
+    .unwrap();
+    assert_eq!(
+        with_none.resolve("p", "m").unwrap().config["thinkingLevelMap"],
+        json!({"off":"none","minimal":null,"low":"low","medium":"medium","high":"high","xhigh":null,"max":null})
+    );
+
+    // anthropic-style: no "none" → off omitted (pi closes thinking by omitting the param)
+    let anthropic_style = parse_models_dev_catalog(&json!({
+        "p": {"id":"p","name":"P","env":[],"models":{
+            "m": {
+                "id": "m", "name": "m", "reasoning": true,
+                "modalities": {"input": ["text"], "output": ["text"]},
+                "limit": {"context": 128_000, "output": 16_384},
+                "reasoning_options": [{"type":"effort","values":["low","medium","high","xhigh","max"]}]
+            }
+        }}
+    }))
+    .unwrap();
+    assert!(
+        anthropic_style.resolve("p", "m").unwrap().config["thinkingLevelMap"]
+            .as_object()
+            .unwrap()
+            .get("off")
+            .is_none()
+    );
+
+    // toggle-only → no map
+    let toggle_only = parse_models_dev_catalog(&json!({
+        "p": {"id":"p","name":"P","env":[],"models":{
+            "m": {
+                "id": "m", "name": "m", "reasoning": true,
+                "modalities": {"input": ["text"], "output": ["text"]},
+                "limit": {"context": 128_000, "output": 16_384},
+                "reasoning_options": [{"type":"toggle"}]
+            }
+        }}
+    }))
+    .unwrap();
+    assert!(toggle_only
+        .resolve("p", "m")
+        .unwrap()
+        .config
+        .get("thinkingLevelMap")
+        .is_none());
+
+    // effort with only "none" (no graded level) → no map
+    let only_none = parse_models_dev_catalog(&json!({
+        "p": {"id":"p","name":"P","env":[],"models":{
+            "m": {
+                "id": "m", "name": "m", "reasoning": true,
+                "modalities": {"input": ["text"], "output": ["text"]},
+                "limit": {"context": 128_000, "output": 16_384},
+                "reasoning_options": [{"type":"effort","values":["none"]}]
+            }
+        }}
+    }))
+    .unwrap();
+    assert!(only_none
+        .resolve("p", "m")
+        .unwrap()
+        .config
+        .get("thinkingLevelMap")
+        .is_none());
+
+    // missing reasoning_options on a reasoning model → no map
+    let missing = parse_models_dev_catalog(&json!({
+        "p": {"id":"p","name":"P","env":[],"models":{
+            "m": {
+                "id": "m", "name": "m", "reasoning": true,
+                "modalities": {"input": ["text"], "output": ["text"]},
+                "limit": {"context": 128_000, "output": 16_384}
+            }
+        }}
+    }))
+    .unwrap();
+    assert!(missing
+        .resolve("p", "m")
+        .unwrap()
+        .config
+        .get("thinkingLevelMap")
+        .is_none());
+}
+
+#[test]
+fn reasoning_models_use_most_detailed_thinking_level_map() {
+    // Same model under two providers: one lists 4 effort levels, one lists 2.
+    // Both listings unify to the more detailed (4-level) map.
+    let catalog = parse_models_dev_catalog(&json!({
+        "rich": {"id":"rich","name":"Rich","env":[],"models":{
+            "glm": {
+                "id": "glm", "name": "glm", "reasoning": true,
+                "modalities": {"input": ["text"], "output": ["text"]},
+                "limit": {"context": 128_000, "output": 16_384},
+                "reasoning_options": [{"type":"effort","values":["none","low","medium","high"]}]
+            }
+        }},
+        "thin": {"id":"thin","name":"Thin","env":[],"models":{
+            "glm": {
+                "id": "glm", "name": "glm", "reasoning": true,
+                "modalities": {"input": ["text"], "output": ["text"]},
+                "limit": {"context": 128_000, "output": 16_384},
+                "reasoning_options": [{"type":"effort","values":["high","max"]}]
+            }
+        }}
+    }))
+    .unwrap();
+    let rich = catalog.resolve("rich", "glm").unwrap();
+    let thin = catalog.resolve("thin", "glm").unwrap();
+    // Both carry the richer map: off→none, low/medium/high set, max null.
+    assert_eq!(rich.config["thinkingLevelMap"]["off"], "none");
+    assert_eq!(rich.config["thinkingLevelMap"]["low"], "low");
+    assert_eq!(thin.config["thinkingLevelMap"]["off"], "none");
+    assert_eq!(thin.config["thinkingLevelMap"]["low"], "low");
+    assert_eq!(thin.config["thinkingLevelMap"]["high"], "high");
+    // thin's own ["max"] is dropped — the unified map reflects the richer source.
+    assert_eq!(thin.config["thinkingLevelMap"]["max"], Value::Null);
+
+    // A reasoning model with no sibling carrying effort stays unmapped.
+    let lonely = parse_models_dev_catalog(&json!({
+        "only": {"id":"only","name":"Only","env":[],"models":{
+            "solo": {
+                "id": "solo", "name": "solo", "reasoning": true,
+                "modalities": {"input": ["text"], "output": ["text"]},
+                "limit": {"context": 128_000, "output": 16_384}
+            }
+        }}
+    }))
+    .unwrap();
+    assert!(lonely
+        .resolve("only", "solo")
+        .unwrap()
+        .config
+        .get("thinkingLevelMap")
+        .is_none());
 }
 
 #[test]
@@ -464,7 +637,10 @@ fn opencode_import_uses_live_catalog_metadata_when_unambiguous() {
             }
         }),
     );
-    let source = models_dev_model("unique-live", 262_144, 65_536, 0.6);
+    let mut source = models_dev_model("unique-live", 262_144, 65_536, 0.6);
+    source["reasoning"] = json!(true);
+    source["reasoning_options"] =
+        json!([{"type":"effort","values":["none","low","medium","high","xhigh","max"]}]);
     let catalog = parse_models_dev_catalog(&json!({
         "upstream": {
             "id": "upstream",
@@ -481,9 +657,12 @@ fn opencode_import_uses_live_catalog_metadata_when_unambiguous() {
     let models: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
     let model = &models["providers"]["custom"]["models"][0];
     assert_eq!(model["name"], "Local display name");
+    assert_eq!(model["reasoning"], true);
     assert_eq!(model["contextWindow"], 262_144);
     assert_eq!(model["maxTokens"], 65_536);
     assert_eq!(model["cost"]["input"], 0.6);
+    assert_eq!(model["thinkingLevelMap"]["off"], "none");
+    assert_eq!(model["thinkingLevelMap"]["max"], "max");
     fs::remove_dir_all(root).unwrap();
 }
 

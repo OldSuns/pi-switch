@@ -709,6 +709,20 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+fn checkbox_span(checked: bool, theme: Theme) -> Span<'static> {
+    let (glyph, style) = if checked {
+        (
+            "[✓] ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        ("[ ] ", Style::default().fg(theme.muted))
+    };
+    Span::styled(glyph, style)
+}
+
 fn render_key_hints(frame: &mut Frame<'_>, area: Rect, hints: &[(&str, &str)], theme: Theme) {
     let mut lines = Vec::new();
     let mut spans = Vec::new();
@@ -1121,17 +1135,12 @@ fn render_overlay(
                 .map(|&original| {
                     let model = &models[original];
                     ListItem::new(Text::from(vec![
-                        Line::from(format!(
-                            "{} {}",
-                            if selected.contains(&original) {
-                                "[x]"
-                            } else {
-                                "[ ]"
-                            },
-                            model.id
-                        )),
+                        Line::from(vec![
+                            checkbox_span(selected.contains(&original), theme),
+                            Span::raw(model.id.clone()),
+                        ]),
                         Line::from(Span::styled(
-                            format!("    {}", catalog_summary(model, language)),
+                            format!("   {}", catalog_summary(model, language)),
                             Style::default().fg(theme.muted),
                         )),
                     ]))
@@ -1164,6 +1173,8 @@ fn render_overlay(
                 &[
                     ("Space", language.pick("toggle", "切换")),
                     ("a", language.pick("all", "全选")),
+                    ("n", language.pick("none", "全不选")),
+                    ("i", language.pick("invert", "反选")),
                     ("/", language.pick("filter", "筛选")),
                     ("Enter/s", language.pick("import", "导入")),
                     ("Esc", language.pick("cancel", "取消")),
@@ -1281,14 +1292,10 @@ fn render_overlay(
                 .iter()
                 .enumerate()
                 .map(|(index, provider)| {
-                    ListItem::new(format!(
-                        "{} {provider}",
-                        if selected.contains(&index) {
-                            "[x]"
-                        } else {
-                            "[ ]"
-                        }
-                    ))
+                    ListItem::new(Line::from(vec![
+                        checkbox_span(selected.contains(&index), theme),
+                        Span::raw(provider.as_str()),
+                    ]))
                 })
                 .collect::<Vec<_>>();
             let mut state = ListState::default().with_selected(Some(*cursor));
@@ -1307,6 +1314,8 @@ fn render_overlay(
                 &[
                     ("Space", language.pick("toggle", "切换")),
                     ("a", language.pick("all", "全选")),
+                    ("n", language.pick("none", "全不选")),
+                    ("i", language.pick("invert", "反选")),
                     ("Enter", language.pick("import", "导入")),
                     ("Esc", language.pick("cancel", "取消")),
                 ],
