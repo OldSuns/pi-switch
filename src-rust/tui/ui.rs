@@ -1088,6 +1088,8 @@ fn render_overlay(
             cursor,
             unavailable,
             ratio_config_used,
+            overwrite,
+            existing,
             filter,
             filtering,
             ..
@@ -1104,14 +1106,20 @@ fn render_overlay(
             } else {
                 String::new()
             };
+            let overwrite_label = if *overwrite {
+                language.pick("overwrite: on", "覆盖: 开")
+            } else {
+                language.pick("overwrite: off", "覆盖: 关")
+            };
             let block = Block::default()
                 .title(format!(
-                    " {}  {}/{} {}  {}{}{} ",
+                    " {}  {}/{} {}  {}  {}{}{} ",
                     language.pick("Model catalog", "模型目录"),
                     selected.len(),
                     models.len(),
                     language.pick("selected", "已选择"),
                     price_source,
+                    overwrite_label,
                     if *unavailable > 0 {
                         format!(
                             "  {} {}",
@@ -1134,11 +1142,18 @@ fn render_overlay(
                 .iter()
                 .map(|&original| {
                     let model = &models[original];
+                    let mut first_line = vec![
+                        checkbox_span(selected.contains(&original), theme),
+                        Span::raw(model.id.clone()),
+                    ];
+                    if existing.contains(&model.id) {
+                        first_line.push(Span::styled(
+                            format!(" {}", language.pick("exists", "已存在")),
+                            Style::default().fg(theme.muted),
+                        ));
+                    }
                     ListItem::new(Text::from(vec![
-                        Line::from(vec![
-                            checkbox_span(selected.contains(&original), theme),
-                            Span::raw(model.id.clone()),
-                        ]),
+                        Line::from(first_line),
                         Line::from(Span::styled(
                             format!("   {}", catalog_summary(model, language)),
                             Style::default().fg(theme.muted),
@@ -1175,6 +1190,7 @@ fn render_overlay(
                     ("a", language.pick("all", "全选")),
                     ("n", language.pick("none", "全不选")),
                     ("i", language.pick("invert", "反选")),
+                    ("o", language.pick("overwrite", "覆盖")),
                     ("/", language.pick("filter", "筛选")),
                     ("Enter/s", language.pick("import", "导入")),
                     ("Esc", language.pick("cancel", "取消")),

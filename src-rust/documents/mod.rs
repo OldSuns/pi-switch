@@ -829,8 +829,8 @@ fn check(ok: bool, label: impl Into<String>, detail: impl Into<String>) -> Docto
 
 #[cfg(test)]
 use network::{
-    fetch_models_for_test, find_ratio, parse_models_dev_catalog, parse_provider_catalog,
-    parse_ratio_config, resolve_secret,
+    fetch_models_for_test, find_ratio, parse_models_dev_catalog, parse_pricing,
+    parse_provider_catalog, parse_ratio_config, resolve_secret,
 };
 #[cfg(test)]
 use opencode::{import_opencode_with_catalog, prepare_opencode_with_catalog};

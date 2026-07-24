@@ -137,9 +137,14 @@ fn http_client() -> Result<Client> {
 }
 
 // ---------------------------------------------------------------------------
-// NewAPI ratio_config — best-effort price source. NewAPI gateways expose
-// /api/ratio_config at the gateway root (i.e. baseUrl with any trailing /v1
-// stripped). Failure is silent: the caller falls back to models.dev prices.
+// NewAPI gateway pricing — best-effort price source. NewAPI gateways expose
+// two endpoints at the gateway root (baseUrl with any trailing /v1 stripped):
+//   /api/ratio_config — admin-only; maps of model_ratio/completion_ratio/
+//     cache_ratio/create_cache_ratio. Returns 403 with a regular user key.
+//   /api/pricing — works with regular user keys; same ratios as an array of
+//     { model_name, model_ratio, completion_ratio, cache_ratio }.
+// We try ratio_config first (it may include create_cache_ratio), then fall
+// back to /api/pricing. Any failure is silent: the caller uses models.dev.
 // ---------------------------------------------------------------------------
 
 #[derive(Default)]
@@ -158,13 +163,14 @@ fn gateway_root_url(base_url: &str) -> String {
         .unwrap_or_else(|| trimmed.to_owned())
 }
 
-/// Fetch /api/ratio_config from the gateway root. Any error (unreachable,
-/// non-2xx, malformed JSON) returns None so the caller falls back silently.
-fn fetch_ratio_config(client: &Client, provider: &ProviderView) -> Option<Ratios> {
-    let result = (|| -> Result<Option<Ratios>> {
+/// GET a JSON endpoint at the gateway root with the provider's auth. Returns
+/// None on any error (unreachable, non-2xx, malformed JSON) so callers fall
+/// back silently.
+fn get_gateway_json(client: &Client, provider: &ProviderView, path: &str) -> Option<Value> {
+    let result = (|| -> Result<Option<Value>> {
         let root = gateway_root_url(&provider.base_url);
-        let url = Url::parse(&format!("{root}/api/ratio_config"))
-            .map_err(|error| AppError::Http(format!("invalid ratio_config url: {error}")))?;
+        let url = Url::parse(&format!("{root}{path}"))
+            .map_err(|error| AppError::Http(format!("invalid gateway url: {error}")))?;
         let key = resolve_secret(&provider.api_key)?;
         let headers = provider_headers(provider)?;
         let mut request = client.get(url);
@@ -186,12 +192,31 @@ fn fetch_ratio_config(client: &Client, provider: &ProviderView) -> Option<Ratios
         if !response.status().is_success() {
             return Ok(None);
         }
-        let body: Value = response
-            .json()
-            .map_err(|error| AppError::Http(format!("invalid ratio_config JSON: {error}")))?;
-        Ok(Some(parse_ratio_config(&body)))
+        response
+            .json::<Value>()
+            .map(Some)
+            .map_err(|error| AppError::Http(format!("invalid gateway JSON: {error}")))
     })();
     result.ok().flatten()
+}
+
+/// Fetch gateway pricing. Tries /api/ratio_config first (admin-only, may have
+/// create_cache_ratio), then falls back to /api/pricing (regular user key).
+/// Returns None only if both fail, so the caller falls back to models.dev.
+fn fetch_ratio_config(client: &Client, provider: &ProviderView) -> Option<Ratios> {
+    if let Some(body) = get_gateway_json(client, provider, "/api/ratio_config") {
+        let ratios = parse_ratio_config(&body);
+        if !ratios.model_ratio.is_empty() {
+            return Some(ratios);
+        }
+    }
+    if let Some(body) = get_gateway_json(client, provider, "/api/pricing") {
+        let ratios = parse_pricing(&body);
+        if !ratios.model_ratio.is_empty() {
+            return Some(ratios);
+        }
+    }
+    None
 }
 
 /// Parse a /api/ratio_config payload defensively. Returns empty maps on any
@@ -211,6 +236,57 @@ pub(super) fn parse_ratio_config(body: &Value) -> Ratios {
         cache_ratio: as_ratio_map(data.get("cache_ratio")),
         create_cache_ratio: as_ratio_map(data.get("create_cache_ratio")),
     }
+}
+
+/// Parse a /api/pricing payload defensively. Same ratios as ratio_config but
+/// as an array of per-model objects: `{ success, data: [{ model_name,
+/// model_ratio, completion_ratio, cache_ratio }] }`. `create_cache_ratio` is
+/// usually absent, so cache_write defaults to 0.
+pub(super) fn parse_pricing(body: &Value) -> Ratios {
+    let Some(root) = body.as_object() else {
+        return Ratios::default();
+    };
+    if root.get("success").and_then(Value::as_bool) == Some(false) {
+        return Ratios::default();
+    }
+    let Some(entries) = root.get("data").and_then(Value::as_array) else {
+        return Ratios::default();
+    };
+    let mut ratios = Ratios::default();
+    for entry in entries {
+        let Some(name) = entry.get("model_name").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some(value) = entry
+            .get("model_ratio")
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite())
+        {
+            ratios.model_ratio.insert(name.into(), value);
+        }
+        if let Some(value) = entry
+            .get("completion_ratio")
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite())
+        {
+            ratios.completion_ratio.insert(name.into(), value);
+        }
+        if let Some(value) = entry
+            .get("cache_ratio")
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite())
+        {
+            ratios.cache_ratio.insert(name.into(), value);
+        }
+        if let Some(value) = entry
+            .get("create_cache_ratio")
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite())
+        {
+            ratios.create_cache_ratio.insert(name.into(), value);
+        }
+    }
+    ratios
 }
 
 fn as_ratio_map(value: Option<&Value>) -> BTreeMap<String, f64> {

@@ -140,6 +140,8 @@ pub(super) enum Overlay {
         selected: BTreeSet<usize>,
         cursor: usize,
         ratio_config_used: bool,
+        overwrite: bool,
+        existing: BTreeSet<String>,
         filter: String,
         filtering: bool,
     },
@@ -629,6 +631,8 @@ impl App {
                 selected,
                 cursor,
                 ratio_config_used: _,
+                overwrite,
+                existing: _,
                 filter,
                 filtering,
             } => {
@@ -693,6 +697,9 @@ impl App {
                                 }
                             }
                         }
+                        KeyCode::Char('o') => {
+                            *overwrite = !*overwrite;
+                        }
                         KeyCode::Enter | KeyCode::Char('s') => {
                             if selected.is_empty() {
                                 self.notice(
@@ -707,7 +714,7 @@ impl App {
                                     .filter_map(|index| models.get(*index))
                                     .cloned()
                                     .collect::<Vec<_>>();
-                                self.import_fetched(&id, chosen);
+                                self.import_fetched(&id, chosen, *overwrite);
                                 return;
                             }
                         }
@@ -1207,13 +1214,13 @@ impl App {
         });
     }
 
-    pub(super) fn import_fetched(&mut self, provider_id: &str, models: Vec<CatalogModel>) {
-        match documents::import_models(
-            &self.paths,
-            provider_id,
-            &models,
-            self.snapshot.fetch_model_metadata,
-        ) {
+    pub(super) fn import_fetched(
+        &mut self,
+        provider_id: &str,
+        models: Vec<CatalogModel>,
+        overwrite: bool,
+    ) {
+        match documents::import_models(&self.paths, provider_id, &models, overwrite) {
             Ok(summary) => self.reload(Some(&format!(
                 "{} {}, {} {}",
                 self.language.pick("Added", "新增"),
@@ -1241,8 +1248,25 @@ impl App {
                 }
             }
         }
-        // Default to nothing selected — the user chooses what to import.
-        let selected = BTreeSet::new();
+        // Models that already exist in the provider are pre-checked (so the
+        // user can see them at a glance) and tracked for an "exists" tag in
+        // the list. Default is to skip them on import unless `o` is toggled.
+        let existing: BTreeSet<String> = self
+            .snapshot
+            .providers
+            .iter()
+            .find(|provider| provider.id == provider_id)
+            .map(|provider| {
+                provider
+                    .models
+                    .iter()
+                    .map(|model| model.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let selected = (0..models.len())
+            .filter(|&index| existing.contains(&models[index].id))
+            .collect();
         self.overlay = Some(Overlay::Fetched {
             provider_id,
             models,
@@ -1250,6 +1274,8 @@ impl App {
             selected,
             cursor: 0,
             ratio_config_used,
+            overwrite: false,
+            existing,
             filter: String::new(),
             filtering: false,
         });

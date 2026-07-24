@@ -890,13 +890,15 @@ fn fetch_models_uses_the_explicit_catalog_endpoint() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
-        for _ in 0..2 {
+        for _ in 0..3 {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = [0_u8; 2048];
             let size = stream.read(&mut request).unwrap();
             let request = String::from_utf8_lossy(&request[..size]).to_ascii_lowercase();
-            if request.starts_with("get /api/ratio_config ") {
-                // No ratio_config endpoint on this gateway.
+            if request.starts_with("get /api/ratio_config ")
+                || request.starts_with("get /api/pricing ")
+            {
+                // No gateway pricing endpoints on this gateway.
                 write!(
                     stream,
                     "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
@@ -1152,6 +1154,47 @@ fn parse_ratio_config_handles_envelope_and_failure() {
     let ratios = parse_ratio_config(&json!({"model_ratio": {"ok": 1.0, "bad": "x", "nan": null}}));
     assert_eq!(ratios.model_ratio.len(), 1);
     assert_eq!(ratios.model_ratio.get("ok"), Some(&1.0));
+}
+
+#[test]
+fn parse_pricing_converts_array_format_to_ratios() {
+    // /api/pricing returns an array of per-model objects.
+    let body = json!({
+        "success": true,
+        "data": [
+            {"model_name": "glm-5.2", "model_ratio": 0.4, "completion_ratio": 3.75, "cache_ratio": 0.25},
+            {"model_name": "deepseek-v4-pro", "model_ratio": 0.175, "completion_ratio": 2.0, "cache_ratio": 0.571428571429}
+        ]
+    });
+    let ratios = parse_pricing(&body);
+    assert_eq!(ratios.model_ratio.get("glm-5.2"), Some(&0.4));
+    assert_eq!(ratios.completion_ratio.get("glm-5.2"), Some(&3.75));
+    assert_eq!(ratios.cache_ratio.get("glm-5.2"), Some(&0.25));
+    // create_cache_ratio is absent in /api/pricing → not populated.
+    assert!(ratios.create_cache_ratio.is_empty());
+    assert_eq!(ratios.model_ratio.get("deepseek-v4-pro"), Some(&0.175));
+
+    // success:false → empty
+    let ratios = parse_pricing(
+        &json!({"success": false, "data": [{"model_name": "x", "model_ratio": 1.0}]}),
+    );
+    assert!(ratios.model_ratio.is_empty());
+
+    // non-object / non-array data → empty
+    assert!(parse_pricing(&json!("nope")).model_ratio.is_empty());
+    assert!(parse_pricing(&json!(null)).model_ratio.is_empty());
+    assert!(parse_pricing(&json!({})).model_ratio.is_empty());
+
+    // entries missing model_name or non-numeric ratios are skipped
+    let ratios = parse_pricing(&json!({
+        "data": [
+            {"model_ratio": 1.0},
+            {"model_name": "ok", "model_ratio": 2.0, "completion_ratio": "bad"}
+        ]
+    }));
+    assert_eq!(ratios.model_ratio.len(), 1);
+    assert_eq!(ratios.model_ratio.get("ok"), Some(&2.0));
+    assert!(ratios.completion_ratio.is_empty());
 }
 
 #[test]

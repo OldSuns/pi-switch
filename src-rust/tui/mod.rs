@@ -761,6 +761,8 @@ mod tests {
             selected: std::collections::BTreeSet::new(),
             cursor: 0,
             ratio_config_used: true,
+            overwrite: false,
+            existing: std::collections::BTreeSet::new(),
             filter: String::new(),
             filtering: false,
         });
@@ -958,6 +960,8 @@ mod tests {
             selected: [0].into_iter().collect(),
             cursor: 0,
             ratio_config_used: false,
+            overwrite: false,
+            existing: std::collections::BTreeSet::new(),
             filter: String::new(),
             filtering: false,
         });
@@ -973,6 +977,7 @@ mod tests {
         assert!(fetched.contains("a all"));
         assert!(fetched.contains("n none"));
         assert!(fetched.contains("i invert"));
+        assert!(fetched.contains("o overwrite"));
         assert!(fetched.contains("/ filter"));
         assert!(fetched.contains("Enter/s import"));
         assert!(fetched.contains("Esc cancel"));
@@ -1025,6 +1030,8 @@ mod tests {
             selected: std::collections::BTreeSet::new(),
             cursor: 0,
             ratio_config_used: true,
+            overwrite: false,
+            existing: std::collections::BTreeSet::new(),
             filter: String::new(),
             filtering: false,
         });
@@ -1105,6 +1112,45 @@ mod tests {
         // Esc cancels and closes the overlay.
         app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.overlay.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn fetched_existing_models_show_tag_and_overwrite_toggles() {
+        let (root, mut app) = app();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        app.overlay = Some(Overlay::Fetched {
+            provider_id: "示例-provider".into(),
+            models: vec![
+                catalog_model("model-a", 128_000, 16_384, 1.0),
+                catalog_model("model-c", 200_000, 8_192, 2.0),
+            ],
+            unavailable: 0,
+            selected: [0].into_iter().collect(),
+            cursor: 0,
+            ratio_config_used: false,
+            overwrite: false,
+            existing: ["model-a".into()].into_iter().collect(),
+            filter: String::new(),
+            filtering: false,
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let content = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        // model-a is existing → tagged "exists"; model-c is not.
+        assert!(content.contains("exists"));
+        // Title shows the overwrite state (off by default).
+        assert!(content.contains("overwrite: off"));
+        // 'o' toggles overwrite on.
+        app.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+        if let Some(Overlay::Fetched { overwrite, .. }) = app.overlay {
+            assert!(overwrite);
+        }
         let _ = fs::remove_dir_all(root);
     }
 
