@@ -131,6 +131,7 @@ fn provider_updates_preserve_unknown_data_and_create_backup() {
         Some("old"),
         &ProviderDraft {
             id: "new".into(),
+            in_pi: true,
             base_url: "https://new.test/v1".into(),
             api: Some("openai-responses".into()),
             api_key: "$KEY".into(),
@@ -184,7 +185,7 @@ fn provider_updates_preserve_unknown_data_and_create_backup() {
 #[test]
 fn full_backups_are_coalesced_capped_and_restored() {
     let (root, paths) = fixture();
-    let original_models = json!({"providers":{"old":{"models":[]}},"future":true});
+    let original_models = json!({"providers":{"old":{"models":[{"id":"keep"}]}},"future":true});
     let original_settings = json!({"defaultProvider":"old","defaultModel":"keep","theme":"dark"});
     fs::write(&paths.models, serde_json::to_vec(&original_models).unwrap()).unwrap();
     fs::write(
@@ -195,6 +196,7 @@ fn full_backups_are_coalesced_capped_and_restored() {
 
     let draft = ProviderDraft {
         id: "new".into(),
+        in_pi: true,
         base_url: "https://new.test/v1".into(),
         api: Some("openai-completions".into()),
         api_key: String::new(),
@@ -207,6 +209,8 @@ fn full_backups_are_coalesced_capped_and_restored() {
     assert_eq!(backups.len(), 1);
     assert!(backups[0].name.starts_with("backup-"));
     let first_backup: Value = serde_json::from_slice(&fs::read(&backups[0].path).unwrap()).unwrap();
+    assert_eq!(first_backup["version"], 2);
+    assert_eq!(first_backup["providers"]["providers"], original_models["providers"]);
     assert_eq!(first_backup["models"], original_models);
     assert_eq!(first_backup["settings"], original_settings);
 
@@ -223,9 +227,12 @@ fn full_backups_are_coalesced_capped_and_restored() {
 
     restore_backup(&paths, &backups[0]).unwrap();
     let restored_models: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
+    let restored_providers: Value =
+        serde_json::from_slice(&fs::read(&paths.providers).unwrap()).unwrap();
     let restored_settings: Value =
         serde_json::from_slice(&fs::read(&paths.settings).unwrap()).unwrap();
     assert_eq!(restored_models, original_models);
+    assert_eq!(restored_providers, first_backup["providers"]);
     assert_eq!(restored_settings, original_settings);
     assert!(list_backups(&paths).unwrap().iter().any(|backup| {
         let value: Value = serde_json::from_slice(&fs::read(&backup.path).unwrap()).unwrap();
@@ -253,6 +260,7 @@ fn malformed_json_stops_without_overwriting() {
         None,
         &ProviderDraft {
             id: "x".into(),
+            in_pi: true,
             base_url: "https://example.test/v1".into(),
             api: Some("openai-completions".into()),
             api_key: String::new(),
@@ -290,6 +298,185 @@ fn language_setting_is_persisted_without_losing_pi_settings() {
     assert!(set_language(&paths, "invalid").is_err());
     fs::write(&paths.settings, r#"{"piSwitch":{"language":"invalid"}}"#).unwrap();
     assert!(load_snapshot(&paths).is_err());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn provider_library_migrates_and_reconciles_pi_without_deleting_local_entries() {
+    let (root, paths) = fixture();
+    fs::write(
+        &paths.models,
+        r#"{"providers":{"pi":{"api":"openai-completions","models":[{"id":"one"}]}}}"#,
+    )
+    .unwrap();
+
+    let snapshot = load_snapshot(&paths).unwrap();
+    assert_eq!(snapshot.providers.len(), 1);
+    assert!(snapshot.providers[0].in_pi);
+    let mut library: Value = serde_json::from_slice(&fs::read(&paths.providers).unwrap()).unwrap();
+    assert_eq!(library["version"], 1);
+    library["providers"]["local"] = json!({
+        "api": "openai-completions",
+        "future": true,
+        "models": [{"id":"draft"}]
+    });
+    fs::write(&paths.providers, serde_json::to_vec_pretty(&library).unwrap()).unwrap();
+    fs::write(
+        &paths.models,
+        r#"{"providers":{"pi":{"api":"openai-responses","models":[{"id":"two"}]},"added":{"models":[]}}}"#,
+    )
+    .unwrap();
+
+    let snapshot = load_snapshot(&paths).unwrap();
+    assert_eq!(snapshot.providers.len(), 3);
+    assert!(snapshot
+        .providers
+        .iter()
+        .find(|provider| provider.id == "pi")
+        .is_some_and(|provider| provider.in_pi && provider.api == "openai-responses"));
+    assert!(snapshot
+        .providers
+        .iter()
+        .find(|provider| provider.id == "local")
+        .is_some_and(|provider| !provider.in_pi && provider.raw["future"] == true));
+
+    fs::write(&paths.models, r#"{"providers":{}}"#).unwrap();
+    let snapshot = load_snapshot(&paths).unwrap();
+    assert_eq!(snapshot.providers.len(), 3);
+    assert!(snapshot.providers.iter().all(|provider| !provider.in_pi));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn local_provider_models_stay_out_of_pi_until_enabled() {
+    let (root, paths) = fixture();
+    load_snapshot(&paths).unwrap();
+    save_provider(
+        &paths,
+        None,
+        &ProviderDraft {
+            id: "local".into(),
+            in_pi: false,
+            base_url: "https://example.test/v1".into(),
+            api: Some("openai-completions".into()),
+            api_key: "$KEY".into(),
+            auth_header: true,
+            headers: None,
+            compat: None,
+        },
+    )
+    .unwrap();
+    save_model(&paths, "local", None, &model_draft("draft-model")).unwrap();
+
+    let library: Value = serde_json::from_slice(&fs::read(&paths.providers).unwrap()).unwrap();
+    let models: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
+    assert_eq!(library["providers"]["local"]["models"][0]["id"], "draft-model");
+    assert!(models["providers"].get("local").is_none());
+    assert!(set_default(&paths, "local", "draft-model").is_err());
+
+    set_provider_in_pi(&paths, "local", true).unwrap();
+    set_default(&paths, "local", "draft-model").unwrap();
+    set_provider_in_pi(&paths, "local", false).unwrap();
+    let models: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
+    let settings: Value = serde_json::from_slice(&fs::read(&paths.settings).unwrap()).unwrap();
+    assert!(models["providers"].get("local").is_none());
+    assert!(settings.get("defaultProvider").is_none());
+    assert!(settings.get("defaultModel").is_none());
+    assert!(load_snapshot(&paths)
+        .unwrap()
+        .providers
+        .iter()
+        .any(|provider| provider.id == "local" && !provider.in_pi));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn corrupt_provider_library_is_archived_and_rebuilt_from_pi() {
+    let (root, paths) = fixture();
+    fs::create_dir_all(paths.providers.parent().unwrap()).unwrap();
+    fs::write(&paths.providers, "{broken").unwrap();
+    fs::write(
+        &paths.models,
+        r#"{"providers":{"pi":{"models":[{"id":"one"}]}}}"#,
+    )
+    .unwrap();
+
+    let snapshot = load_snapshot(&paths).unwrap();
+    let warning = snapshot.warning.expect("rebuild warning");
+    assert!(warning.contains("archived"));
+    assert_eq!(snapshot.providers[0].id, "pi");
+    let archived = fs::read_dir(&paths.backups)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("corrupt-providers-")
+        })
+        .expect("corrupt archive");
+    assert_eq!(fs::read_to_string(archived.path()).unwrap(), "{broken");
+    assert!(load_snapshot(&paths).unwrap().warning.is_none());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn invalid_version_two_backup_is_rejected_before_any_write() {
+    let (root, paths) = fixture();
+    fs::write(
+        &paths.models,
+        r#"{"providers":{"pi":{"models":[{"id":"one"}]}}}"#,
+    )
+    .unwrap();
+    load_snapshot(&paths).unwrap();
+    fs::write(&paths.settings, r#"{"theme":"keep"}"#).unwrap();
+    fs::create_dir_all(&paths.backups).unwrap();
+    let path = paths.backups.join("backup-invalid-v2.json");
+    fs::write(
+        &path,
+        r#"{"version":2,"providers":{"version":1,"providers":{"local":{"models":"broken"}}},"models":{"providers":{}},"settings":{}}"#,
+    )
+    .unwrap();
+    let before_providers = fs::read(&paths.providers).unwrap();
+    let before_models = fs::read(&paths.models).unwrap();
+    let before_settings = fs::read(&paths.settings).unwrap();
+    assert!(list_backups(&paths).unwrap().is_empty());
+    assert!(restore_backup(
+        &paths,
+        &Backup {
+            path: path.display().to_string(),
+            name: "backup-invalid-v2.json".into(),
+        },
+    )
+    .is_err());
+    assert_eq!(fs::read(&paths.providers).unwrap(), before_providers);
+    assert_eq!(fs::read(&paths.models).unwrap(), before_models);
+    assert_eq!(fs::read(&paths.settings).unwrap(), before_settings);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn legacy_backup_is_rejected_without_changing_documents() {
+    let (root, paths) = fixture();
+    load_snapshot(&paths).unwrap();
+    fs::create_dir_all(&paths.backups).unwrap();
+    let path = paths.backups.join("backup-legacy.json");
+    fs::write(
+        &path,
+        r#"{"version":1,"models":{"providers":{}},"settings":{}}"#,
+    )
+    .unwrap();
+    let before = fs::read(&paths.providers).unwrap();
+    let error = restore_backup(
+        &paths,
+        &Backup {
+            path: path.display().to_string(),
+            name: "backup-legacy.json".into(),
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("legacy backups"));
+    assert_eq!(fs::read(&paths.providers).unwrap(), before);
     fs::remove_dir_all(root).unwrap();
 }
 

@@ -36,6 +36,7 @@
                 .map(|cell| cell.symbol())
                 .collect::<String>();
             assert!(profiles.contains("Providers"));
+            assert!(profiles.contains("[x]"));
             assert!(profiles.contains("openai-completions"));
             assert!(profiles.contains("new"));
 
@@ -207,7 +208,7 @@
         form.compat_json = "%".into();
         form.field = 2;
         app.overlay = Some(Overlay::Form(form));
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 26)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let symbols = terminal.backend().buffer().content();
         let value_x = |row: u16, value: &str| {
@@ -226,6 +227,11 @@
             columns.iter().all(|column| *column == columns[0]),
             "{columns:?}"
         );
+        let content = symbols
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(content.contains("Pi"));
         let _ = fs::remove_dir_all(root);
     }
 

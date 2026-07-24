@@ -28,6 +28,7 @@
 
         let mut provider = ProviderView {
             id: "custom".into(),
+            in_pi: true,
             base_url: "https://example.test/v1".into(),
             api: "openai-completions".into(),
             api_key: "$KEY".into(),

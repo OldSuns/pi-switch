@@ -83,6 +83,23 @@
     }
 
     #[test]
+    fn corrupt_provider_library_opens_a_blocking_warning_once() {
+        let (root, app) = app();
+        fs::create_dir_all(app.paths.providers.parent().unwrap()).unwrap();
+        fs::create_dir_all(app.paths.models.parent().unwrap()).unwrap();
+        fs::write(&app.paths.providers, "{broken").unwrap();
+        fs::write(&app.paths.models, r#"{"providers":{}}"#).unwrap();
+
+        let mut rebuilt = App::new(app.paths.clone());
+        assert!(matches!(rebuilt.overlay, Some(Overlay::Warning(_))));
+        rebuilt.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(rebuilt.overlay.is_none());
+        let reloaded = App::new(rebuilt.paths.clone());
+        assert!(reloaded.overlay.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn text_editing_keeps_unicode_cursor_boundaries() {
         let mut value = "中a".to_owned();
         let mut cursor = 2;
@@ -130,6 +147,73 @@
     }
 
     #[test]
+    fn provider_and_model_space_actions_are_scoped_by_focus() {
+        let (root, mut app) = app();
+        fs::create_dir_all(app.paths.providers.parent().unwrap()).unwrap();
+        fs::create_dir_all(app.paths.models.parent().unwrap()).unwrap();
+        let provider = json!({
+            "baseUrl": "https://example.test/v1",
+            "api": "openai-completions",
+            "models": [{"id":"model-a","name":"model-a display"}]
+        });
+        fs::write(
+            &app.paths.providers,
+            serde_json::to_vec_pretty(&json!({
+                "version": 1,
+                "providers": {"示例-provider": provider.clone()}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &app.paths.models,
+            serde_json::to_vec_pretty(&json!({"providers":{"示例-provider":provider}})).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &app.paths.settings,
+            r#"{"defaultProvider":"示例-provider","defaultModel":"model-a"}"#,
+        )
+        .unwrap();
+        app.reload(None);
+        app.page = Page::Profiles;
+        app.focus = Focus::Providers;
+
+        app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::ConfirmRemoveProviderFromPi(ref id)) if id == "示例-provider"
+        ));
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.snapshot.providers[0].in_pi);
+
+        app.focus = Focus::Models;
+        app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        let settings: serde_json::Value =
+            serde_json::from_slice(&fs::read(&app.paths.settings).unwrap()).unwrap();
+        assert_eq!(settings["defaultProvider"], "示例-provider");
+        assert_eq!(settings["defaultModel"], "model-a");
+
+        app.focus = Focus::Providers;
+        app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::ConfirmRemoveProviderFromPi(_))
+        ));
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!app.snapshot.providers[0].in_pi);
+        let models: serde_json::Value =
+            serde_json::from_slice(&fs::read(&app.paths.models).unwrap()).unwrap();
+        assert!(models["providers"].get("示例-provider").is_none());
+
+        app.focus = Focus::Models;
+        app.notice = None;
+        app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(app.notice.is_some());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn profile_footer_shows_only_the_current_left_action() {
         let (root, mut app) = app();
         app.page = Page::Profiles;
@@ -158,6 +242,7 @@
             .collect::<String>();
         assert!(providers_footer.contains("Left menu"));
         assert!(providers_footer.contains("Enter models"));
+        assert!(providers_footer.contains("Space add/remove"));
         assert!(!providers_footer.contains("Left providers"));
         let _ = fs::remove_dir_all(root);
     }

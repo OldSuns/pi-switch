@@ -11,7 +11,7 @@ pub(super) fn render_form(
         render_provider_headers_form(frame, form, language, area, theme);
         return;
     }
-    let rect = modal_rect(area, 88, 22);
+    let rect = modal_rect(area, 88, 24);
     clear_area(frame, rect, theme);
     let block = Block::default()
         .title(Span::styled(
@@ -30,6 +30,7 @@ pub(super) fn render_form(
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     let rows = Layout::vertical([
+        Constraint::Length(2),
         Constraint::Length(2),
         Constraint::Length(2),
         Constraint::Length(2),
@@ -77,6 +78,14 @@ pub(super) fn render_form(
             }
         ),
         form.compat_json.clone(),
+        format!(
+            "< {} >",
+            if form.in_pi {
+                language.pick("added", "已加入")
+            } else {
+                language.pick("local only", "仅本地")
+            }
+        ),
     ];
     let labels = [
         language.pick("Provider ID", "提供商 ID"),
@@ -87,8 +96,9 @@ pub(super) fn render_form(
         language.pick("Headers", "请求头"),
         language.pick("Session affinity", "会话亲和"),
         language.pick("Other compat JSON", "其他兼容 JSON"),
+        language.pick("Add to Pi", "加入 Pi"),
     ];
-    for index in 0..8 {
+    for index in 0..9 {
         let active = form.field == index;
         let label = Line::from(vec![
             Span::styled(
@@ -102,7 +112,7 @@ pub(super) fn render_form(
                 },
             ),
             Span::styled(
-                if active && !matches!(index, 2 | 4 | 5 | 6) {
+                if active && !matches!(index, 2 | 4 | 5 | 6 | 8) {
                     with_cursor(&values[index], form.cursor)
                 } else {
                     values[index].clone()
@@ -157,7 +167,7 @@ pub(super) fn render_form(
             ),
             Span::styled(language.pick("cancel", "取消"), theme.label()),
         ])),
-        rows[8],
+        rows[9],
     );
     if form.show_help {
         render_provider_field_help(frame, form, language, area, theme);
@@ -203,7 +213,7 @@ pub(super) fn provider_field_help(
     };
     let body = |text: &'static str| Line::from(Span::styled(text, Style::default()));
     let blank = || Line::from("");
-    let field = if form.editing_headers { 8 } else { form.field };
+    let field = if form.editing_headers { 9 } else { form.field };
     match field {
         0 => vec![
             title(language.pick("Provider ID", "提供商 ID")),
@@ -277,6 +287,13 @@ pub(super) fn provider_field_help(
             )),
         ],
         8 => vec![
+            title(language.pick("Add to Pi", "加入 Pi")),
+            body(language.pick(
+                "Added providers are written to Pi models.json; local-only providers stay in the pi-switch library.",
+                "已加入的提供商会写入 Pi models.json；仅本地项只保存在 pi-switch 库中。",
+            )),
+        ],
+        9 => vec![
             title(language.pick("Headers", "请求头")),
             body(language.pick(
                 "User-Agent and other HTTP headers sent on every request.",

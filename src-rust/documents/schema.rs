@@ -48,6 +48,7 @@ pub(super) fn provider_view(id: &str, value: &Value) -> Result<ProviderView> {
     };
     Ok(ProviderView {
         id: id.into(),
+        in_pi: false,
         base_url: provider_string(object, id, "baseUrl")?,
         api: provider_string(object, id, "api")?,
         api_key: provider_string(object, id, "apiKey")?,

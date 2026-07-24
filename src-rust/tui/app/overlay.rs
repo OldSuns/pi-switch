@@ -6,7 +6,7 @@ impl App {
             return;
         };
         match &mut overlay {
-            Overlay::Help | Overlay::Error(_) | Overlay::Doctor(_) => {
+            Overlay::Help | Overlay::Error(_) | Overlay::Warning(_) | Overlay::Doctor(_) => {
                 if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
                     return;
                 }
@@ -35,7 +35,7 @@ impl App {
                     return;
                 }
             }
-            Overlay::ConfirmDeleteProvider(id) => match key.code {
+            Overlay::ConfirmDeleteProvider { id, .. } => match key.code {
                 KeyCode::Char('y') | KeyCode::Enter => {
                     let id = id.clone();
                     match documents::remove_provider(&self.paths, &id) {
@@ -46,6 +46,38 @@ impl App {
                     return;
                 }
                 KeyCode::Esc | KeyCode::Char('n') => return,
+                _ => {}
+            },
+            Overlay::ConfirmRemoveProviderFromPi(id) => match key.code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    let id = id.clone();
+                    match documents::set_provider_in_pi(&self.paths, &id, false) {
+                        Ok(()) => self.reload(Some(
+                            self.language
+                                .pick("Provider removed from Pi", "提供商已从 Pi 移除"),
+                        )),
+                        Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
+                    }
+                    return;
+                }
+                KeyCode::Esc | KeyCode::Char('n') => return,
+                _ => {}
+            },
+            Overlay::ConfirmSaveProviderWithoutPi { form, draft } => match key.code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    match documents::save_provider(&self.paths, form.previous_id.as_deref(), draft)
+                    {
+                        Ok(()) => {
+                            self.reload(Some(self.language.pick("Provider saved", "提供商已保存")))
+                        }
+                        Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
+                    }
+                    return;
+                }
+                KeyCode::Esc | KeyCode::Char('n') => {
+                    self.overlay = Some(Overlay::Form(form.clone()));
+                    return;
+                }
                 _ => {}
             },
             Overlay::ConfirmDeleteModel {

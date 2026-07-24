@@ -3,12 +3,27 @@ use super::*;
 impl App {
     pub(in crate::tui) fn on_form_key(&mut self, form: &mut FormState, key: KeyEvent) -> bool {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
-            let result = form.draft().and_then(|draft| {
-                documents::save_provider(&self.paths, form.previous_id.as_deref(), &draft)
-            });
-            match result {
-                Ok(()) => self.reload(Some(self.language.pick("Provider saved", "提供商已保存"))),
-                Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
+            let draft = match form.draft() {
+                Ok(draft) => draft,
+                Err(error) => {
+                    self.overlay = Some(Overlay::Error(error.to_string()));
+                    return true;
+                }
+            };
+            let removes_default = !draft.in_pi
+                && form.previous_id.as_deref() == self.snapshot.default_provider.as_deref();
+            if removes_default {
+                self.overlay = Some(Overlay::ConfirmSaveProviderWithoutPi {
+                    form: form.clone(),
+                    draft,
+                });
+            } else {
+                match documents::save_provider(&self.paths, form.previous_id.as_deref(), &draft) {
+                    Ok(()) => {
+                        self.reload(Some(self.language.pick("Provider saved", "提供商已保存")))
+                    }
+                    Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
+                }
             }
             return true;
         }
@@ -54,7 +69,7 @@ impl App {
                 form.cursor = char_len(&form.user_agent);
             }
             KeyCode::Tab | KeyCode::Down => form.select_field(form.field + 1),
-            KeyCode::BackTab | KeyCode::Up => form.select_field((form.field + 7) % 8),
+            KeyCode::BackTab | KeyCode::Up => form.select_field((form.field + 8) % 9),
             KeyCode::Left if form.field == 2 => {
                 form.api = (form.api + API_TYPES.len()) % (API_TYPES.len() + 1)
             }
@@ -64,6 +79,9 @@ impl App {
             }
             KeyCode::Left | KeyCode::Right if form.field == 6 => {
                 form.send_session_affinity_headers = !form.send_session_affinity_headers
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if form.field == 8 => {
+                form.in_pi = !form.in_pi
             }
             _ => {
                 let mut cursor = form.cursor;

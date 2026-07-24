@@ -88,10 +88,12 @@ mod tests {
             max_tokens: Some(16_384),
         };
         let snapshot = Snapshot {
+            providers_path: paths.providers.display().to_string(),
             models_path: paths.models.display().to_string(),
             settings_path: paths.settings.display().to_string(),
             providers: vec![ProviderView {
                 id: "示例-provider".into(),
+                in_pi: true,
                 base_url: "https://example.test/v1".into(),
                 api: "openai-completions".into(),
                 api_key: "$EXAMPLE_KEY".into(),
@@ -104,6 +106,7 @@ mod tests {
             language: "en".into(),
             fetch_model_metadata: true,
             model_defaults: Default::default(),
+            warning: None,
         };
         (root, App::from_snapshot(paths, snapshot))
     }

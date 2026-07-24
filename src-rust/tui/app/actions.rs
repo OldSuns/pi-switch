@@ -65,6 +65,33 @@ impl App {
         }
     }
 
+    pub(super) fn toggle_selected_provider_in_pi(&mut self) {
+        let Some(provider) = self.selected_provider() else {
+            return;
+        };
+        let id = provider.id.clone();
+        if provider.in_pi && self.snapshot.default_provider.as_deref() == Some(&id) {
+            self.overlay = Some(Overlay::ConfirmRemoveProviderFromPi(id));
+            return;
+        }
+        let in_pi = !provider.in_pi;
+        match documents::set_provider_in_pi(&self.paths, &id, in_pi) {
+            Ok(()) => self.reload(Some(self.language.pick(
+                if in_pi {
+                    "Provider added to Pi"
+                } else {
+                    "Provider removed from Pi"
+                },
+                if in_pi {
+                    "提供商已加入 Pi"
+                } else {
+                    "提供商已从 Pi 移除"
+                },
+            ))),
+            Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
+        }
+    }
+
     pub(super) fn toggle_fetch_metadata(&mut self) {
         let enabled = !self.snapshot.fetch_model_metadata;
         match documents::set_fetch_model_metadata(&self.paths, enabled) {
@@ -148,7 +175,10 @@ impl App {
                 model_id: model_id.id.clone(),
             });
         } else {
-            self.overlay = Some(Overlay::ConfirmDeleteProvider(provider.id.clone()));
+            self.overlay = Some(Overlay::ConfirmDeleteProvider {
+                id: provider.id.clone(),
+                in_pi: provider.in_pi,
+            });
         }
     }
 
@@ -195,6 +225,16 @@ impl App {
         let Some(provider) = self.selected_provider() else {
             return;
         };
+        if !provider.in_pi {
+            self.notice(
+                NoticeKind::Warning,
+                self.language.pick(
+                    "Add this provider to Pi before setting a default model",
+                    "请先将此提供商加入 Pi，再设置默认模型",
+                ),
+            );
+            return;
+        }
         let Some(model) = provider.models.get(self.model_cursor) else {
             self.notice(
                 NoticeKind::Warning,

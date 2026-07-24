@@ -13,7 +13,10 @@ use serde_json::{json, Map, Value};
 #[cfg(not(windows))]
 use std::fs::File;
 
-use super::{AppError, Backup, Paths, Result};
+use super::{
+    validate_local_library, validate_provider_document, validate_settings_document, AppError,
+    Backup, Paths, Result,
+};
 
 const BACKUP_LIMIT: usize = 10;
 
@@ -29,7 +32,22 @@ pub fn list_backups(paths: &Paths) -> Result<Vec<Backup>> {
             if !name.starts_with("backup-") || !name.ends_with(".json") {
                 return None;
             }
-            Some(Backup {
+            let value: Value = serde_json::from_slice(&fs::read(entry.path()).ok()?).ok()?;
+            let object = value.as_object()?;
+            let restorable = object.get("version").and_then(Value::as_u64) == Some(2)
+                && object.get("providers").is_some_and(Value::is_object)
+                && object.get("models").is_some_and(Value::is_object)
+                && object.get("settings").is_some_and(Value::is_object);
+            if !restorable {
+                return None;
+            }
+            let providers = object.get("providers")?;
+            let models = object.get("models")?;
+            let settings = object.get("settings")?;
+            (validate_local_library(providers).is_ok()
+                && validate_provider_document(models).is_ok()
+                && validate_settings_document(settings, models).is_ok())
+            .then(|| Backup {
                 path: entry.path().display().to_string(),
                 name,
             })
@@ -53,6 +71,14 @@ pub fn restore_backup(paths: &Paths, backup: &Backup) -> Result<()> {
             backup_path.display()
         ))
     })?;
+    if object.get("version").and_then(Value::as_u64) != Some(2) {
+        return Err(AppError::Invalid(
+            "legacy backups without the local provider library are not supported".into(),
+        ));
+    }
+    let providers = object.get("providers").cloned().ok_or_else(|| {
+        AppError::Invalid(format!("{} is missing providers", backup_path.display()))
+    })?;
     let models = object
         .get("models")
         .cloned()
@@ -60,58 +86,32 @@ pub fn restore_backup(paths: &Paths, backup: &Backup) -> Result<()> {
     let settings = object.get("settings").cloned().ok_or_else(|| {
         AppError::Invalid(format!("{} is missing settings", backup_path.display()))
     })?;
-    validate_root(&models, &backup_path)?;
-    validate_root(&settings, &backup_path)?;
-    providers_object(&models)?;
-    let _lock = WriteLock::acquire(paths)?;
-    let models_changed = write_document(paths, &_lock, &paths.models, &models)?;
-    write_document(paths, &_lock, &paths.settings, &settings)
+    validate_local_library(&providers)?;
+    validate_provider_document(&models)?;
+    validate_settings_document(&settings, &models)?;
+    let lock = WriteLock::acquire(paths)?;
+    let models_changed = write_document(paths, &lock, &paths.models, &models)?;
+    let settings_changed =
+        write_document(paths, &lock, &paths.settings, &settings).map_err(|error| {
+            if models_changed {
+                AppError::Partial(format!(
+                    "models.json restored; settings.json failed: {error}"
+                ))
+            } else {
+                error
+            }
+        })?;
+    write_document(paths, &lock, &paths.providers, &providers)
         .map(|_| ())
         .map_err(|error| {
-            if models_changed {
-                AppError::Partial(error.to_string())
+            if models_changed || settings_changed {
+                AppError::Partial(format!(
+                    "Pi configuration restored; providers.json failed: {error}"
+                ))
             } else {
                 error
             }
         })
-}
-
-pub(super) fn rename_default_provider(
-    paths: &Paths,
-    lock: &WriteLock,
-    old: &str,
-    new: &str,
-) -> Result<()> {
-    let mut settings = read_document(&paths.settings, json!({}))?;
-    if string_field(&settings, "defaultProvider")?.as_deref() != Some(old) {
-        return Ok(());
-    }
-    root_object_mut(&mut settings, &paths.settings)?
-        .insert("defaultProvider".into(), Value::String(new.into()));
-    write_document(paths, lock, &paths.settings, &settings).map(|_| ())
-}
-
-pub(super) fn update_default_model(
-    paths: &Paths,
-    lock: &WriteLock,
-    provider_id: &str,
-    old_model_id: &str,
-    new_model_id: Option<&str>,
-) -> Result<()> {
-    let mut settings = read_document(&paths.settings, json!({}))?;
-    let is_selected = string_field(&settings, "defaultProvider")?.as_deref() == Some(provider_id)
-        && string_field(&settings, "defaultModel")?.as_deref() == Some(old_model_id);
-    if !is_selected {
-        return Ok(());
-    }
-    let object = root_object_mut(&mut settings, &paths.settings)?;
-    if let Some(model_id) = new_model_id {
-        object.insert("defaultModel".into(), Value::String(model_id.into()));
-    } else {
-        object.remove("defaultProvider");
-        object.remove("defaultModel");
-    }
-    write_document(paths, lock, &paths.settings, &settings).map(|_| ())
 }
 
 pub(super) fn read_document(path: &Path, missing: Value) -> Result<Value> {
@@ -211,51 +211,82 @@ pub(super) fn write_document(
         create_backup(paths)?;
         lock.backed_up.set(true);
     }
+    write_json(target, value)?;
+    Ok(true)
+}
+
+pub(super) fn write_initial_document(target: &Path, value: &Value) -> Result<()> {
+    if target.exists() {
+        return Err(AppError::Invalid(format!(
+            "{} already exists",
+            target.display()
+        )));
+    }
+    write_json(target, value)
+}
+
+fn write_json(target: &Path, value: &Value) -> Result<()> {
     let mut bytes = serde_json::to_vec_pretty(value).map_err(|source| AppError::Json {
         path: target.into(),
         source,
     })?;
     bytes.push(b'\n');
-    atomic_write(target, &bytes)?;
-    Ok(true)
+    atomic_write(target, &bytes)
 }
 
 pub(super) fn create_backup(paths: &Paths) -> Result<()> {
-    if !paths.models.exists() && !paths.settings.exists() {
+    if !paths.providers.exists() && !paths.models.exists() && !paths.settings.exists() {
         return Ok(());
     }
     fs::create_dir_all(&paths.backups).map_err(|source| io_error(&paths.backups, source))?;
-    let (timestamp, backup) = loop {
-        let timestamp = Local::now();
-        let name = timestamp
-            .format("backup-%Y-%m-%d_%H-%M-%S-%3f.json")
-            .to_string();
-        let backup = paths.backups.join(name);
-        if !backup.exists() {
-            break (timestamp, backup);
-        }
-        thread::sleep(Duration::from_millis(1));
-    };
+    let (timestamp, backup) = unique_backup_path(paths, "backup");
     let snapshot = json!({
-        "version": 1,
+        "version": 2,
         "createdAt": timestamp.to_rfc3339(),
+        "providers": read_document(&paths.providers, json!({ "version": 1, "providers": {} }))?,
         "models": read_document(&paths.models, json!({ "providers": {} }))?,
         "settings": read_document(&paths.settings, json!({}))?,
     });
-    let mut bytes = serde_json::to_vec_pretty(&snapshot).map_err(|source| AppError::Json {
-        path: backup.clone(),
-        source,
-    })?;
-    bytes.push(b'\n');
-    atomic_write(&backup, &bytes)?;
+    write_json(&backup, &snapshot)?;
     prune_backups(paths)
 }
 
+pub(super) fn archive_corrupt_provider_store(paths: &Paths) -> Result<PathBuf> {
+    fs::create_dir_all(&paths.backups).map_err(|source| io_error(&paths.backups, source))?;
+    let (_, backup) = unique_backup_path(paths, "corrupt-providers");
+    fs::rename(&paths.providers, &backup).map_err(|source| io_error(&paths.providers, source))?;
+    prune_backups(paths)?;
+    Ok(backup)
+}
+
+fn unique_backup_path(paths: &Paths, prefix: &str) -> (chrono::DateTime<Local>, PathBuf) {
+    loop {
+        let timestamp = Local::now();
+        let name = format!(
+            "{}-{}.json",
+            prefix,
+            timestamp.format("%Y-%m-%d_%H-%M-%S-%3f")
+        );
+        let backup = paths.backups.join(name);
+        if !backup.exists() {
+            return (timestamp, backup);
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
 pub(super) fn prune_backups(paths: &Paths) -> Result<()> {
-    let mut files = list_backups(paths)?;
-    files.sort_by(|a, b| b.name.cmp(&a.name));
+    if !paths.backups.exists() {
+        return Ok(());
+    }
+    let mut files = fs::read_dir(&paths.backups)
+        .map_err(|source| io_error(&paths.backups, source))?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".json"))
+        .collect::<Vec<_>>();
+    files.sort_by_key(|entry| std::cmp::Reverse(entry.file_name()));
     for old in files.into_iter().skip(BACKUP_LIMIT) {
-        fs::remove_file(&old.path).map_err(|source| io_error(Path::new(&old.path), source))?;
+        fs::remove_file(old.path()).map_err(|source| io_error(&old.path(), source))?;
     }
     Ok(())
 }

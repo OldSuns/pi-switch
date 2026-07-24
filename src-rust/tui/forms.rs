@@ -11,6 +11,7 @@ use super::{
     API_TYPES,
 };
 
+#[derive(Clone)]
 pub(super) struct FormState {
     pub(super) previous_id: Option<String>,
     pub(super) id: String,
@@ -18,6 +19,7 @@ pub(super) struct FormState {
     pub(super) api: usize,
     pub(super) api_key: String,
     pub(super) auth_header: bool,
+    pub(super) in_pi: bool,
     pub(super) user_agent: String,
     pub(super) headers_json: String,
     pub(super) send_session_affinity_headers: bool,
@@ -38,6 +40,7 @@ impl FormState {
             api: 1,
             api_key: "$OPENAI_API_KEY".into(),
             auth_header: true,
+            in_pi: true,
             user_agent: String::new(),
             headers_json: String::new(),
             send_session_affinity_headers: true,
@@ -64,6 +67,7 @@ impl FormState {
                 .unwrap_or_default(),
             api_key: provider.api_key.clone(),
             auth_header: provider.auth_header,
+            in_pi: provider.in_pi,
             user_agent,
             headers_json,
             send_session_affinity_headers,
@@ -105,7 +109,7 @@ impl FormState {
     }
 
     pub(super) fn select_field(&mut self, next: usize) {
-        self.field = next % 8;
+        self.field = next % 9;
         self.cursor = self.current_len();
     }
 
@@ -144,6 +148,7 @@ impl FormState {
         )?;
         Ok(ProviderDraft {
             id: self.id.trim().into(),
+            in_pi: self.in_pi,
             base_url: self.base_url.trim().into(),
             api: api_from_index(self.api),
             api_key: self.api_key.trim().into(),

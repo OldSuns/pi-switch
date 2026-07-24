@@ -25,6 +25,10 @@ pub(super) fn render_overlay(
                     "Enter/Esc       open / go back",
                     "Enter/Esc       打开 / 返回",
                 )),
+                Line::from(language.pick(
+                    "Space           providers: add/remove Pi; models: set default",
+                    "Space           提供商：添加/移除 Pi；模型：设为默认",
+                )),
             ];
             lines.extend(
                 all_shortcuts()
@@ -53,6 +57,33 @@ pub(super) fn render_overlay(
                 language.pick(" Help ", " 帮助 "),
                 Paragraph::new(lines),
                 theme.accent,
+                theme,
+            );
+        }
+        Overlay::Warning(message) => {
+            let rect = modal_rect(area, 72, 10);
+            let body = Paragraph::new(vec![
+                Line::from(Span::styled(
+                    language.pick("Provider library rebuilt", "提供商库已重建"),
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(message.as_str()),
+                Line::from(""),
+                Line::from(Span::styled(
+                    language.pick("Esc or Enter to continue", "按 Esc 或 Enter 继续"),
+                    Style::default().fg(theme.muted),
+                )),
+            ])
+            .wrap(Wrap { trim: false });
+            render_modal(
+                frame,
+                rect,
+                language.pick(" Warning ", " 警告 "),
+                body,
+                theme.warning,
                 theme,
             );
         }
@@ -88,17 +119,24 @@ pub(super) fn render_overlay(
         Overlay::ModelDefaultsForm(form) => {
             render_model_defaults_form(frame, form, language, area, theme)
         }
-        Overlay::ConfirmDeleteProvider(id) => {
-            let rect = modal_rect(area, 56, 8);
+        Overlay::ConfirmDeleteProvider { id, in_pi } => {
+            let rect = modal_rect(area, 64, 9);
             let body = Paragraph::new(vec![
                 Line::from(format!(
                     "{} '{id}'?",
-                    language.pick("Delete provider", "删除提供商")
+                    language.pick("Permanently delete provider", "永久删除提供商")
                 )),
-                Line::from(language.pick(
-                    "Its default selection will also be cleared.",
-                    "关联的默认选择也会被清除。",
-                )),
+                Line::from(if *in_pi {
+                    language.pick(
+                        "It will be deleted locally and removed from Pi. Any default selection is cleared.",
+                        "它将从本地库和 Pi 中删除，关联的默认选择也会被清除。",
+                    )
+                } else {
+                    language.pick(
+                        "It will be deleted from the local provider library.",
+                        "它将从本地提供商库中删除。",
+                    )
+                }),
                 Line::from(""),
                 Line::from(Span::styled(
                     language.pick(
@@ -115,6 +153,68 @@ pub(super) fn render_overlay(
                 language.pick(" Confirm delete ", " 确认删除 "),
                 body,
                 theme.error,
+                theme,
+            );
+        }
+        Overlay::ConfirmRemoveProviderFromPi(id) => {
+            let rect = modal_rect(area, 64, 9);
+            let body = Paragraph::new(vec![
+                Line::from(format!(
+                    "{} '{id}'?",
+                    language.pick("Remove provider from Pi", "从 Pi 移除提供商")
+                )),
+                Line::from(language.pick(
+                    "The local provider is kept. Its default model selection will be cleared.",
+                    "本地配置会保留，但关联的默认模型选择将被清除。",
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    language.pick(
+                        "Enter/y confirm   Esc/n cancel",
+                        "Enter/y 确认   Esc/n 取消",
+                    ),
+                    Style::default().fg(theme.muted),
+                )),
+            ])
+            .wrap(Wrap { trim: true });
+            render_modal(
+                frame,
+                rect,
+                language.pick(" Confirm removal ", " 确认移除 "),
+                body,
+                theme.warning,
+                theme,
+            );
+        }
+        Overlay::ConfirmSaveProviderWithoutPi { draft, .. } => {
+            let rect = modal_rect(area, 64, 9);
+            let body = Paragraph::new(vec![
+                Line::from(format!(
+                    "{} '{}' {}",
+                    language.pick("Save provider", "保存提供商"),
+                    draft.id,
+                    language.pick("as local only?", "为仅本地配置？")
+                )),
+                Line::from(language.pick(
+                    "It will be removed from Pi and its default model selection will be cleared.",
+                    "它将从 Pi 移除，关联的默认模型选择也会被清除。",
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    language.pick(
+                        "Enter/y confirm   Esc/n cancel",
+                        "Enter/y 确认   Esc/n 取消",
+                    ),
+                    Style::default().fg(theme.muted),
+                )),
+            ])
+            .wrap(Wrap { trim: true });
+            render_modal(
+                frame,
+                rect,
+                language.pick(" Confirm save ", " 确认保存 "),
+                body,
+                theme.warning,
                 theme,
             );
         }

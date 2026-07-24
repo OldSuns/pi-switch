@@ -3,11 +3,12 @@ use std::{collections::BTreeMap, fs};
 use serde_json::{json, Map, Value};
 
 use super::{
+    lock_provider_documents,
     network::fetch_catalog,
     schema::{minimal_model, provider_view, validate_draft, validate_model_id},
-    storage::{io_error, providers_object_mut, read_document, write_document, WriteLock},
-    AppError, CatalogAmbiguity, CatalogModel, ImportOptions, ImportSummary, ModelCatalog,
-    OpenCodeImportPlan, Paths, ProviderDraft, Result,
+    storage::{io_error, providers_object, providers_object_mut},
+    write_provider_changes, AppError, CatalogAmbiguity, CatalogModel, ImportOptions, ImportSummary,
+    ModelCatalog, OpenCodeImportPlan, Paths, ProviderDraft, Result,
 };
 
 pub fn list_opencode_providers(paths: &Paths) -> Result<Vec<String>> {
@@ -207,10 +208,10 @@ fn import_source(
     let source_providers = source_providers(source)?;
     validate_provider_ids(source, provider_ids)?;
 
-    let _lock = WriteLock::acquire(paths)?;
-    let mut root = read_document(&paths.models, json!({ "providers": {} }))?;
-    let before = root.clone();
-    let providers = providers_object_mut(&mut root)?;
+    let (lock, mut library, mut models) = lock_provider_documents(paths)?;
+    let before_library = library.clone();
+    let before_models = models.clone();
+    let providers = providers_object_mut(&mut library)?;
     let mut summary = ImportSummary {
         providers: 0,
         models: 0,
@@ -231,9 +232,14 @@ fn import_source(
         summary.providers += 1;
     }
 
-    summary.changed = root != before;
+    let local = providers_object(&library)?;
+    let enabled = providers_object_mut(&mut models)?;
+    for id in provider_ids {
+        enabled.insert(id.clone(), local[id].clone());
+    }
+    summary.changed = library != before_library || models != before_models;
     if summary.changed {
-        write_document(paths, &_lock, &paths.models, &root)?;
+        write_provider_changes(paths, &lock, Some(&models), None, &library)?;
     }
     Ok(summary)
 }
@@ -261,6 +267,7 @@ fn merge_provider(
         .transpose()?;
     validate_draft(&ProviderDraft {
         id: id.into(),
+        in_pi: true,
         base_url: base_url.unwrap_or_default().into(),
         api: Some(api.into()),
         api_key: api_key.clone().unwrap_or_default(),

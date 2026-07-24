@@ -234,11 +234,11 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
     let path_width = area.width.saturating_sub(4) as usize;
     let path = Line::from(vec![
         Span::styled(
-            app.language.pick(" models ", " 模型文件 "),
+            app.language.pick(" provider library ", " 提供商库 "),
             theme.dim_text(),
         ),
         Span::styled(
-            truncate_width(&app.snapshot.models_path, path_width.saturating_sub(8)),
+            truncate_width(&app.snapshot.providers_path, path_width.saturating_sub(8)),
             theme.label(),
         ),
     ]);
@@ -256,6 +256,10 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
 fn render_providers(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
     let visible = app.visible_providers();
     let content_width = area.width.saturating_sub(6) as usize;
+    let enabled = visible
+        .iter()
+        .filter(|index| app.snapshot.providers[**index].in_pi)
+        .count();
     let title = if app.filtering || !app.filter.is_empty() {
         format!(
             " {}  /{}{} ",
@@ -265,8 +269,9 @@ fn render_providers(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) 
         )
     } else {
         format!(
-            " {}  {} ",
+            " {}  {}/{} ",
             app.language.pick("Providers", "提供商"),
+            enabled,
             visible.len()
         )
     };
@@ -276,21 +281,28 @@ fn render_providers(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) 
             let provider = &app.snapshot.providers[*index];
             let default = app.snapshot.default_provider.as_deref() == Some(&provider.id);
             let marker = if default { "*" } else { " " };
-            let mut lines = wrap_width(&provider.id, content_width)
+            let prefix = if provider.in_pi { "[x]" } else { "[ ]" };
+            let row_style = if provider.in_pi {
+                Style::default().bg(theme.surface)
+            } else {
+                Style::default()
+            };
+            let mut lines = wrap_width(&provider.id, content_width.saturating_sub(5))
                 .into_iter()
                 .enumerate()
                 .map(|(line, id)| {
                     Line::from(vec![
                         Span::styled(
                             if line == 0 {
-                                format!("{marker} ")
+                                format!("{prefix}{marker} ")
                             } else {
-                                "  ".into()
+                                "     ".into()
                             },
                             Style::default().fg(theme.success),
                         ),
                         Span::styled(id, Style::default().add_modifier(Modifier::BOLD)),
                     ])
+                    .style(row_style)
                 })
                 .collect::<Vec<_>>();
             let api = if provider.api.is_empty() {
@@ -322,7 +334,7 @@ fn render_providers(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) 
                     Style::default().fg(theme.muted),
                 ),
             ]));
-            ListItem::new(Text::from(lines))
+            ListItem::new(Text::from(lines)).style(row_style)
         })
         .collect::<Vec<_>>();
     let active = app.focus == Focus::Providers || (app.width < COMPACT_WIDTH && !app.narrow_detail);
@@ -723,13 +735,7 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         commands.iter().map(|command| binding(*command)).collect()
     } else if app.page == Page::Profiles {
         let commands = if compact {
-            &[
-                Command::New,
-                Command::Edit,
-                Command::Delete,
-                Command::Import,
-                Command::Help,
-            ][..]
+            &[Command::New, Command::Edit, Command::Delete, Command::Help][..]
         } else {
             &[
                 Command::New,
@@ -741,7 +747,9 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
                 Command::Help,
             ][..]
         };
-        commands.iter().map(|command| binding(*command)).collect()
+        let mut keys = vec![("Space", app.language.pick("add/remove", "添加/移除"))];
+        keys.extend(commands.iter().map(|command| binding(*command)));
+        keys
     } else if app.page == Page::Sessions {
         if app.session_filtering {
             vec![

@@ -51,6 +51,7 @@ fn fetch_models_uses_the_explicit_catalog_endpoint() {
     });
     let provider = ProviderView {
         id: "local".into(),
+        in_pi: true,
         base_url: format!("http://{address}/v1"),
         api: "openai-completions".into(),
         api_key: "secret".into(),
@@ -118,6 +119,7 @@ fn fetch_models_uses_the_explicit_catalog_endpoint() {
     });
     let provider = ProviderView {
         id: "local".into(),
+        in_pi: true,
         base_url: format!("http://{address}/v1"),
         api: "openai-completions".into(),
         api_key: String::new(),
@@ -201,6 +203,7 @@ fn invalid_shapes_and_stale_edits_fail_explicitly() {
         Some("deleted-elsewhere"),
         &ProviderDraft {
             id: "deleted-elsewhere".into(),
+            in_pi: true,
             base_url: "https://example.test/v1".into(),
             api: Some("openai-completions".into()),
             api_key: String::new(),

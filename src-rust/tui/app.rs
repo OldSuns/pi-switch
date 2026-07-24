@@ -234,10 +234,19 @@ pub(super) struct Notice {
 pub(super) enum Overlay {
     Help,
     Error(String),
+    Warning(String),
     Form(FormState),
     ModelForm(ModelFormState),
     ModelDefaultsForm(ModelDefaultsFormState),
-    ConfirmDeleteProvider(String),
+    ConfirmDeleteProvider {
+        id: String,
+        in_pi: bool,
+    },
+    ConfirmRemoveProviderFromPi(String),
+    ConfirmSaveProviderWithoutPi {
+        form: FormState,
+        draft: documents::ProviderDraft,
+    },
     ConfirmDeleteModel {
         provider_id: String,
         model_id: String,
@@ -332,9 +341,17 @@ pub(super) struct App {
 impl App {
     pub(super) fn new(paths: Paths) -> Self {
         match documents::load_snapshot(&paths) {
-            Ok(snapshot) => Self::from_snapshot(paths, snapshot),
+            Ok(snapshot) => {
+                let warning = snapshot.warning.clone();
+                let mut app = Self::from_snapshot(paths, snapshot);
+                if let Some(warning) = warning {
+                    app.overlay = Some(Overlay::Warning(warning));
+                }
+                app
+            }
             Err(error) => {
                 let snapshot = Snapshot {
+                    providers_path: paths.providers.display().to_string(),
                     models_path: paths.models.display().to_string(),
                     settings_path: paths.settings.display().to_string(),
                     providers: Vec::new(),
@@ -343,6 +360,7 @@ impl App {
                     language: "en".into(),
                     fetch_model_metadata: true,
                     model_defaults: Default::default(),
+                    warning: None,
                 };
                 let mut app = Self::from_snapshot(paths, snapshot);
                 app.overlay = Some(Overlay::Error(error.to_string()));
@@ -579,6 +597,10 @@ impl App {
             && key.code == KeyCode::Char(' ')
         {
             self.run_settings_action();
+            return;
+        }
+        if self.in_profiles() && self.focus == Focus::Providers && key.code == KeyCode::Char(' ') {
+            self.toggle_selected_provider_in_pi();
             return;
         }
         if let Some(command) = command_for(key) {

@@ -14,8 +14,8 @@ use schema::{
     validate_draft, validate_model_draft, validate_model_id, validate_provider_view,
 };
 use storage::{
-    providers_object, providers_object_mut, read_document, rename_default_provider,
-    root_object_mut, string_field, update_default_model, write_document, WriteLock,
+    archive_corrupt_provider_store, providers_object, providers_object_mut, read_document,
+    root_object_mut, string_field, write_document, write_initial_document, WriteLock,
 };
 
 pub use network::fetch_models;
@@ -65,6 +65,7 @@ pub enum AppError {
 
 #[derive(Clone, Debug)]
 pub struct Paths {
+    pub providers: PathBuf,
     pub models: PathBuf,
     pub settings: PathBuf,
     pub opencode: PathBuf,
@@ -81,6 +82,7 @@ impl Paths {
 
     pub(crate) fn from_home(home: &Path) -> Self {
         Self {
+            providers: home.join(".pi-switch/providers.json"),
             models: home.join(".pi/agent/models.json"),
             settings: home.join(".pi/agent/settings.json"),
             opencode: home.join(".config/opencode/opencode.json"),
@@ -92,6 +94,7 @@ impl Paths {
 
 #[derive(Clone, Debug)]
 pub struct Snapshot {
+    pub providers_path: String,
     pub models_path: String,
     pub settings_path: String,
     pub providers: Vec<ProviderView>,
@@ -100,11 +103,13 @@ pub struct Snapshot {
     pub language: String,
     pub fetch_model_metadata: bool,
     pub model_defaults: ModelDefaults,
+    pub warning: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub struct ProviderView {
     pub id: String,
+    pub in_pi: bool,
     pub base_url: String,
     pub api: String,
     pub api_key: String,
@@ -127,6 +132,7 @@ pub struct ModelView {
 #[derive(Clone, Debug)]
 pub struct ProviderDraft {
     pub id: String,
+    pub in_pi: bool,
     pub base_url: String,
     pub api: Option<String>,
     pub api_key: String,
@@ -360,17 +366,21 @@ pub struct DoctorCheck {
 }
 
 pub fn load_snapshot(paths: &Paths) -> Result<Snapshot> {
-    let models = read_document(&paths.models, json!({ "providers": {} }))?;
+    let (library, models, warning) = load_provider_documents(paths)?;
     let settings = read_document(&paths.settings, json!({}))?;
-    let providers = providers_object(&models)?;
-
-    let mut views = providers
+    let enabled = providers_object(&models)?;
+    let mut views = providers_object(&library)?
         .iter()
-        .map(|(id, value)| provider_view(id, value))
+        .map(|(id, value)| {
+            let mut view = provider_view(id, value)?;
+            view.in_pi = enabled.contains_key(id);
+            Ok(view)
+        })
         .collect::<Result<Vec<_>>>()?;
     views.sort_by(|a, b| a.id.to_lowercase().cmp(&b.id.to_lowercase()));
 
     Ok(Snapshot {
+        providers_path: paths.providers.display().to_string(),
         models_path: paths.models.display().to_string(),
         settings_path: paths.settings.display().to_string(),
         providers: views,
@@ -379,7 +389,197 @@ pub fn load_snapshot(paths: &Paths) -> Result<Snapshot> {
         language: language_field(&settings)?,
         fetch_model_metadata: fetch_model_metadata_field(&settings)?,
         model_defaults: model_defaults_field(&settings)?,
+        warning,
     })
+}
+
+fn load_provider_documents(paths: &Paths) -> Result<(Value, Value, Option<String>)> {
+    let models = read_document(&paths.models, json!({ "providers": {} }))?;
+    validate_provider_document(&models)?;
+    if !paths.providers.exists() {
+        let lock = WriteLock::acquire(paths)?;
+        if !paths.providers.exists() {
+            let models = read_document(&paths.models, json!({ "providers": {} }))?;
+            validate_provider_document(&models)?;
+            let library = local_library_from_models(&models);
+            write_initial_document(&paths.providers, &library)?;
+            return Ok((library, models, None));
+        }
+        drop(lock);
+        return load_provider_documents(paths);
+    }
+
+    let library = read_document(&paths.providers, json!({}));
+    let mut library = match library.and_then(|value| {
+        validate_local_library(&value)?;
+        Ok(value)
+    }) {
+        Ok(value) => value,
+        Err(error) => {
+            let lock = WriteLock::acquire(paths)?;
+            if read_document(&paths.providers, json!({}))
+                .and_then(|value| validate_local_library(&value))
+                .is_ok()
+            {
+                drop(lock);
+                return load_provider_documents(paths);
+            }
+            let models = read_document(&paths.models, json!({ "providers": {} }))?;
+            validate_provider_document(&models)?;
+            let archived = archive_corrupt_provider_store(paths)?;
+            let rebuilt = local_library_from_models(&models);
+            write_initial_document(&paths.providers, &rebuilt)?;
+            return Ok((
+                rebuilt,
+                models,
+                Some(format!(
+                    "Local provider library was invalid ({error}). The original was archived at {} and rebuilt from Pi.",
+                    archived.display()
+                )),
+            ));
+        }
+    };
+
+    let pi_providers = providers_object(&models)?;
+    let local_providers = providers_object_mut(&mut library)?;
+    let mut changed = false;
+    for (id, provider) in pi_providers {
+        if local_providers.get(id) != Some(provider) {
+            provider_view(id, provider)?;
+            local_providers.insert(id.clone(), provider.clone());
+            changed = true;
+        }
+    }
+    if changed {
+        let lock = WriteLock::acquire(paths)?;
+        let models = read_document(&paths.models, json!({ "providers": {} }))?;
+        let mut library = read_document(&paths.providers, json!({}))?;
+        validate_provider_document(&models)?;
+        validate_local_library(&library)?;
+        let local = providers_object_mut(&mut library)?;
+        for (id, provider) in providers_object(&models)? {
+            if local.get(id) != Some(provider) {
+                local.insert(id.clone(), provider.clone());
+            }
+        }
+        write_document(paths, &lock, &paths.providers, &library)?;
+        return Ok((library, models, None));
+    }
+    Ok((library, models, None))
+}
+
+fn local_library_from_models(models: &Value) -> Value {
+    json!({
+        "version": 1,
+        "providers": models.get("providers").cloned().unwrap_or_else(|| json!({}))
+    })
+}
+
+fn validate_local_library(value: &Value) -> Result<()> {
+    if value.get("version").and_then(Value::as_u64) != Some(1) {
+        return Err(AppError::Invalid("providers.json version must be 1".into()));
+    }
+    validate_provider_document(value)
+}
+
+fn validate_provider_document(value: &Value) -> Result<()> {
+    for (id, provider) in providers_object(value)? {
+        provider_view(id, provider)?;
+    }
+    Ok(())
+}
+
+fn validate_settings_document(settings: &Value, models: &Value) -> Result<()> {
+    language_field(settings)?;
+    fetch_model_metadata_field(settings)?;
+    model_defaults_field(settings)?;
+    let provider = string_field(settings, "defaultProvider")?;
+    let model = string_field(settings, "defaultModel")?;
+    match (provider, model) {
+        (None, None) => Ok(()),
+        (Some(provider_id), Some(model_id)) => {
+            let provider = providers_object(models)?.get(&provider_id).ok_or_else(|| {
+                AppError::Invalid(format!(
+                    "default provider '{provider_id}' is not present in models.json"
+                ))
+            })?;
+            let provider = provider_view(&provider_id, provider)?;
+            if provider.models.iter().any(|item| item.id == model_id) {
+                Ok(())
+            } else {
+                Err(AppError::Invalid(format!(
+                    "default model '{model_id}' is not present in provider '{provider_id}'"
+                )))
+            }
+        }
+        _ => Err(AppError::Invalid(
+            "defaultProvider and defaultModel must both be set or both be absent".into(),
+        )),
+    }
+}
+
+fn lock_provider_documents(paths: &Paths) -> Result<(WriteLock, Value, Value)> {
+    // Initialize or repair the library before taking the operation lock, then re-read while locked.
+    let _ = load_provider_documents(paths)?;
+    let lock = WriteLock::acquire(paths)?;
+    let mut library = read_document(&paths.providers, json!({}))?;
+    let models = read_document(&paths.models, json!({ "providers": {} }))?;
+    validate_local_library(&library)?;
+    validate_provider_document(&models)?;
+    let local = providers_object_mut(&mut library)?;
+    for (id, provider) in providers_object(&models)? {
+        if local.get(id) != Some(provider) {
+            local.insert(id.clone(), provider.clone());
+        }
+    }
+    Ok((lock, library, models))
+}
+
+fn clear_default_for_provider(settings: &mut Value, paths: &Paths, id: &str) -> Result<bool> {
+    if string_field(settings, "defaultProvider")?.as_deref() != Some(id) {
+        return Ok(false);
+    }
+    let object = root_object_mut(settings, &paths.settings)?;
+    object.remove("defaultProvider");
+    object.remove("defaultModel");
+    Ok(true)
+}
+
+fn write_provider_changes(
+    paths: &Paths,
+    lock: &WriteLock,
+    models: Option<&Value>,
+    settings: Option<&Value>,
+    library: &Value,
+) -> Result<()> {
+    let models_changed = models
+        .map(|value| write_document(paths, lock, &paths.models, value))
+        .transpose()?
+        .unwrap_or(false);
+    let settings_changed = settings
+        .map(|value| write_document(paths, lock, &paths.settings, value))
+        .transpose()
+        .map_err(|error| {
+            if models_changed {
+                AppError::Partial(format!(
+                    "models.json updated; settings.json failed: {error}"
+                ))
+            } else {
+                error
+            }
+        })?
+        .unwrap_or(false);
+    write_document(paths, lock, &paths.providers, library)
+        .map(|_| ())
+        .map_err(|error| {
+            if models_changed || settings_changed {
+                AppError::Partial(format!(
+                    "Pi configuration updated; providers.json failed: {error}"
+                ))
+            } else {
+                error
+            }
+        })
 }
 
 fn language_field(settings: &Value) -> Result<String> {
@@ -543,80 +743,119 @@ pub fn save_provider(
     draft: &ProviderDraft,
 ) -> Result<()> {
     validate_draft(draft)?;
-    let _lock = WriteLock::acquire(paths)?;
-    let mut models = read_document(&paths.models, json!({ "providers": {} }))?;
-    let providers = providers_object_mut(&mut models)?;
-
-    if let Some(old) = previous_id {
-        if !providers.contains_key(old) {
-            return Err(AppError::Invalid(format!(
-                "provider '{old}' no longer exists"
-            )));
-        }
+    let (lock, mut library, mut models) = lock_provider_documents(paths)?;
+    let local = providers_object_mut(&mut library)?;
+    if let Some(old) = previous_id.filter(|old| !local.contains_key(*old)) {
+        return Err(AppError::Invalid(format!(
+            "provider '{old}' no longer exists"
+        )));
     }
-
-    if previous_id != Some(draft.id.as_str()) && providers.contains_key(&draft.id) {
+    if previous_id != Some(draft.id.as_str()) && local.contains_key(&draft.id) {
         return Err(AppError::Invalid(format!(
             "provider '{}' already exists",
             draft.id
         )));
     }
-
     let mut provider = previous_id
-        .and_then(|id| providers.get(id).cloned())
+        .and_then(|id| local.get(id).cloned())
         .unwrap_or_else(|| json!({}));
     patch_provider(&mut provider, draft)?;
     provider_view(&draft.id, &provider)?;
     if let Some(old) = previous_id.filter(|old| *old != draft.id) {
-        if providers.remove(old).is_none() {
-            return Err(AppError::Invalid(format!(
-                "provider '{old}' no longer exists"
-            )));
+        local.remove(old);
+    }
+    local.insert(draft.id.clone(), provider.clone());
+
+    let enabled = providers_object_mut(&mut models)?;
+    let was_in_pi = previous_id.is_some_and(|id| enabled.contains_key(id));
+    if let Some(old) = previous_id.filter(|old| *old != draft.id) {
+        enabled.remove(old);
+    }
+    if draft.in_pi {
+        enabled.insert(draft.id.clone(), provider);
+    } else if let Some(old) = previous_id {
+        enabled.remove(old);
+    }
+
+    let mut settings = read_document(&paths.settings, json!({}))?;
+    let mut settings_changed = false;
+    if let Some(old) = previous_id {
+        if was_in_pi && !draft.in_pi {
+            settings_changed = clear_default_for_provider(&mut settings, paths, old)?;
+        } else if old != draft.id
+            && string_field(&settings, "defaultProvider")?.as_deref() == Some(old)
+        {
+            root_object_mut(&mut settings, &paths.settings)?
+                .insert("defaultProvider".into(), Value::String(draft.id.clone()));
+            settings_changed = true;
         }
     }
-    providers.insert(draft.id.clone(), provider);
-    write_document(paths, &_lock, &paths.models, &models)?;
+    write_provider_changes(
+        paths,
+        &lock,
+        Some(&models),
+        settings_changed.then_some(&settings),
+        &library,
+    )
+}
 
-    if let Some(old) = previous_id.filter(|old| *old != draft.id) {
-        rename_default_provider(paths, &_lock, old, &draft.id)
-            .map_err(|error| AppError::Partial(error.to_string()))?;
+pub fn set_provider_in_pi(paths: &Paths, id: &str, in_pi: bool) -> Result<()> {
+    let (lock, library, mut models) = lock_provider_documents(paths)?;
+    let provider = providers_object(&library)?
+        .get(id)
+        .cloned()
+        .ok_or_else(|| AppError::Invalid(format!("provider '{id}' no longer exists")))?;
+    let enabled = providers_object_mut(&mut models)?;
+    if in_pi {
+        enabled.insert(id.into(), provider);
+    } else {
+        enabled.remove(id);
     }
-    Ok(())
+    let mut settings = read_document(&paths.settings, json!({}))?;
+    let settings_changed = !in_pi && clear_default_for_provider(&mut settings, paths, id)?;
+    write_provider_changes(
+        paths,
+        &lock,
+        Some(&models),
+        settings_changed.then_some(&settings),
+        &library,
+    )
 }
 
 pub fn remove_provider(paths: &Paths, id: &str) -> Result<()> {
-    let _lock = WriteLock::acquire(paths)?;
-    let mut models = read_document(&paths.models, json!({ "providers": {} }))?;
-    if providers_object_mut(&mut models)?.remove(id).is_none() {
+    let (lock, mut library, mut models) = lock_provider_documents(paths)?;
+    if providers_object_mut(&mut library)?.remove(id).is_none() {
         return Err(AppError::Invalid(format!(
             "provider '{id}' no longer exists"
         )));
     }
-    write_document(paths, &_lock, &paths.models, &models)?;
-
+    providers_object_mut(&mut models)?.remove(id);
     let mut settings = read_document(&paths.settings, json!({}))?;
-    if string_field(&settings, "defaultProvider")?.as_deref() == Some(id) {
-        let object = root_object_mut(&mut settings, &paths.settings)?;
-        object.remove("defaultProvider");
-        object.remove("defaultModel");
-        write_document(paths, &_lock, &paths.settings, &settings)
-            .map_err(|error| AppError::Partial(error.to_string()))?;
-    }
-    Ok(())
+    let settings_changed = clear_default_for_provider(&mut settings, paths, id)?;
+    write_provider_changes(
+        paths,
+        &lock,
+        Some(&models),
+        settings_changed.then_some(&settings),
+        &library,
+    )
 }
 
 pub fn duplicate_provider(paths: &Paths, source_id: &str) -> Result<String> {
-    let _lock = WriteLock::acquire(paths)?;
-    let mut models = read_document(&paths.models, json!({ "providers": {} }))?;
-    let providers = providers_object_mut(&mut models)?;
-    let provider = providers
+    let (lock, mut library, mut models) = lock_provider_documents(paths)?;
+    let local = providers_object_mut(&mut library)?;
+    let provider = local
         .get(source_id)
         .cloned()
         .ok_or_else(|| AppError::Invalid(format!("provider '{source_id}' no longer exists")))?;
     provider_view(source_id, &provider)?;
-    let copy_id = unique_copy_id(source_id, |candidate| providers.contains_key(candidate));
-    providers.insert(copy_id.clone(), provider);
-    write_document(paths, &_lock, &paths.models, &models)?;
+    let copy_id = unique_copy_id(source_id, |candidate| local.contains_key(candidate));
+    local.insert(copy_id.clone(), provider.clone());
+    let enabled = providers_object_mut(&mut models)?;
+    if enabled.contains_key(source_id) {
+        enabled.insert(copy_id.clone(), provider);
+    }
+    write_provider_changes(paths, &lock, Some(&models), None, &library)?;
     Ok(copy_id)
 }
 
@@ -629,9 +868,8 @@ pub fn import_models(
     for model in catalog_models {
         validate_model_id(&model.id)?;
     }
-    let _lock = WriteLock::acquire(paths)?;
-    let mut root = read_document(&paths.models, json!({ "providers": {} }))?;
-    let models = provider_models_mut(&mut root, provider_id)?;
+    let (lock, mut library, mut pi_models) = lock_provider_documents(paths)?;
+    let models = provider_models_mut(&mut library, provider_id)?;
     let mut summary = ModelImportSummary {
         added: 0,
         updated: 0,
@@ -662,9 +900,28 @@ pub fn import_models(
         }
     }
     if summary.added + summary.updated > 0 {
-        write_document(paths, &_lock, &paths.models, &root)?;
+        sync_library_provider_to_pi(&library, &mut pi_models, provider_id)?;
+        write_provider_changes(paths, &lock, Some(&pi_models), None, &library)?;
     }
     Ok(summary)
+}
+
+fn sync_library_provider_to_pi(
+    library: &Value,
+    models: &mut Value,
+    provider_id: &str,
+) -> Result<()> {
+    let enabled = providers_object_mut(models)?;
+    if enabled.contains_key(provider_id) {
+        let provider = providers_object(library)?
+            .get(provider_id)
+            .cloned()
+            .ok_or_else(|| {
+                AppError::Invalid(format!("provider '{provider_id}' no longer exists"))
+            })?;
+        enabled.insert(provider_id.into(), provider);
+    }
+    Ok(())
 }
 
 pub fn save_model(
@@ -674,10 +931,8 @@ pub fn save_model(
     draft: &ModelDraft,
 ) -> Result<()> {
     validate_model_draft(draft)?;
-    let _lock = WriteLock::acquire(paths)?;
-    let mut root = read_document(&paths.models, json!({ "providers": {} }))?;
-    let models = provider_models_mut(&mut root, provider_id)?;
-
+    let (lock, mut library, mut pi_models) = lock_provider_documents(paths)?;
+    let models = provider_models_mut(&mut library, provider_id)?;
     if models.iter().any(|model| {
         model.get("id").and_then(Value::as_str) == Some(draft.id.as_str())
             && previous_id != Some(draft.id.as_str())
@@ -687,7 +942,6 @@ pub fn save_model(
             draft.id
         )));
     }
-
     if let Some(previous_id) = previous_id {
         let model = models
             .iter_mut()
@@ -697,28 +951,44 @@ pub fn save_model(
                     "model '{previous_id}' no longer exists in provider '{provider_id}'"
                 ))
             })?;
-        let object = model
-            .as_object_mut()
-            .ok_or_else(|| AppError::Invalid("model entry must be an object".into()))?;
-        patch_model(object, draft);
+        patch_model(
+            model
+                .as_object_mut()
+                .ok_or_else(|| AppError::Invalid("model entry must be an object".into()))?,
+            draft,
+        );
     } else {
         let mut model = Map::new();
         patch_model(&mut model, draft);
         models.push(Value::Object(model));
     }
-
-    write_document(paths, &_lock, &paths.models, &root)?;
-    if let Some(previous_id) = previous_id.filter(|previous_id| *previous_id != draft.id) {
-        update_default_model(paths, &_lock, provider_id, previous_id, Some(&draft.id))
-            .map_err(|error| AppError::Partial(error.to_string()))?;
-    }
-    Ok(())
+    sync_library_provider_to_pi(&library, &mut pi_models, provider_id)?;
+    let mut settings = read_document(&paths.settings, json!({}))?;
+    let settings_changed = if let Some(old) = previous_id.filter(|old| *old != draft.id) {
+        if string_field(&settings, "defaultProvider")?.as_deref() == Some(provider_id)
+            && string_field(&settings, "defaultModel")?.as_deref() == Some(old)
+        {
+            root_object_mut(&mut settings, &paths.settings)?
+                .insert("defaultModel".into(), Value::String(draft.id.clone()));
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    write_provider_changes(
+        paths,
+        &lock,
+        Some(&pi_models),
+        settings_changed.then_some(&settings),
+        &library,
+    )
 }
 
 pub fn remove_model(paths: &Paths, provider_id: &str, model_id: &str) -> Result<()> {
-    let _lock = WriteLock::acquire(paths)?;
-    let mut root = read_document(&paths.models, json!({ "providers": {} }))?;
-    let models = provider_models_mut(&mut root, provider_id)?;
+    let (lock, mut library, mut pi_models) = lock_provider_documents(paths)?;
+    let models = provider_models_mut(&mut library, provider_id)?;
     let index = models
         .iter()
         .position(|model| model.get("id").and_then(Value::as_str) == Some(model_id))
@@ -728,34 +998,50 @@ pub fn remove_model(paths: &Paths, provider_id: &str, model_id: &str) -> Result<
             ))
         })?;
     models.remove(index);
-    write_document(paths, &_lock, &paths.models, &root)?;
-    update_default_model(paths, &_lock, provider_id, model_id, None)
-        .map_err(|error| AppError::Partial(error.to_string()))
+    sync_library_provider_to_pi(&library, &mut pi_models, provider_id)?;
+    let mut settings = read_document(&paths.settings, json!({}))?;
+    let selected = string_field(&settings, "defaultProvider")?.as_deref() == Some(provider_id)
+        && string_field(&settings, "defaultModel")?.as_deref() == Some(model_id);
+    if selected {
+        let object = root_object_mut(&mut settings, &paths.settings)?;
+        object.remove("defaultProvider");
+        object.remove("defaultModel");
+    }
+    write_provider_changes(
+        paths,
+        &lock,
+        Some(&pi_models),
+        selected.then_some(&settings),
+        &library,
+    )
 }
 
 pub fn set_default(paths: &Paths, provider_id: &str, model_id: &str) -> Result<()> {
-    let _lock = WriteLock::acquire(paths)?;
-    let snapshot = load_snapshot(paths)?;
-    let provider = snapshot
-        .providers
-        .iter()
-        .find(|provider| provider.id == provider_id)
-        .ok_or_else(|| AppError::Invalid(format!("provider '{provider_id}' does not exist")))?;
+    let lock = WriteLock::acquire(paths)?;
+    let models = read_document(&paths.models, json!({ "providers": {} }))?;
+    let provider = providers_object(&models)?
+        .get(provider_id)
+        .ok_or_else(|| AppError::Invalid(format!("provider '{provider_id}' is not added to Pi")))?;
+    let provider = provider_view(provider_id, provider)?;
     if !provider.models.iter().any(|model| model.id == model_id) {
         return Err(AppError::Invalid(format!(
             "model '{model_id}' does not belong to provider '{provider_id}'"
         )));
     }
-
     let mut settings = read_document(&paths.settings, json!({}))?;
     let object = root_object_mut(&mut settings, &paths.settings)?;
     object.insert("defaultProvider".into(), Value::String(provider_id.into()));
     object.insert("defaultModel".into(), Value::String(model_id.into()));
-    write_document(paths, &_lock, &paths.settings, &settings).map(|_| ())
+    write_document(paths, &lock, &paths.settings, &settings).map(|_| ())
 }
 
 pub fn doctor(paths: &Paths) -> Vec<DoctorCheck> {
     let mut checks = Vec::new();
+    checks.push(check(
+        paths.providers.exists(),
+        "providers.json",
+        paths.providers.display().to_string(),
+    ));
     checks.push(check(
         paths.models.exists(),
         "models.json",
@@ -770,15 +1056,24 @@ pub fn doctor(paths: &Paths) -> Vec<DoctorCheck> {
     ));
     match load_snapshot(paths) {
         Ok(snapshot) => {
+            let enabled = snapshot
+                .providers
+                .iter()
+                .filter(|provider| provider.in_pi)
+                .count();
             checks.push(check(
                 true,
-                "Pi documents",
-                format!("{} provider(s), JSON is valid", snapshot.providers.len()),
+                "Provider library",
+                format!(
+                    "{} provider(s), {enabled} added to Pi; JSON and projection are valid",
+                    snapshot.providers.len()
+                ),
             ));
             let default_ok = match (&snapshot.default_provider, &snapshot.default_model) {
                 (None, None) => true,
                 (Some(provider), Some(model)) => snapshot.providers.iter().any(|item| {
-                    item.id == *provider
+                    item.in_pi
+                        && item.id == *provider
                         && item.models.iter().any(|candidate| candidate.id == *model)
                 }),
                 _ => false,
@@ -793,7 +1088,8 @@ pub fn doctor(paths: &Paths) -> Vec<DoctorCheck> {
                         .map(|(provider, model)| format!("{provider}/{model}"))
                         .unwrap_or_else(|| "not explicitly configured".into())
                 } else {
-                    "defaultProvider/defaultModel is incomplete or references missing data".into()
+                    "defaultProvider/defaultModel is incomplete or references a provider not added to Pi"
+                        .into()
                 },
             ));
             for provider in snapshot.providers {
@@ -802,13 +1098,35 @@ pub fn doctor(paths: &Paths) -> Vec<DoctorCheck> {
                     valid,
                     format!("Provider {}", provider.id),
                     validate_provider_view(&provider)
-                        .map(|_| format!("{} model(s), {}", provider.models.len(), provider.api))
+                        .map(|_| {
+                            format!(
+                                "{} model(s), {}, {}",
+                                provider.models.len(),
+                                provider.api,
+                                if provider.in_pi {
+                                    "added to Pi"
+                                } else {
+                                    "local only"
+                                }
+                            )
+                        })
                         .unwrap_or_else(|error| error.to_string()),
                 ));
             }
         }
-        Err(error) => checks.push(check(false, "Pi documents", error.to_string())),
+        Err(error) => checks.push(check(false, "Provider documents", error.to_string())),
     }
+    let (legacy, corrupt) = backup_diagnostics(paths);
+    checks.push(check(
+        legacy == 0,
+        "Legacy backups",
+        format!("{legacy} unsupported legacy backup(s)"),
+    ));
+    checks.push(check(
+        corrupt == 0,
+        "Corrupt provider archives",
+        format!("{corrupt} archived provider file(s)"),
+    ));
     checks.push(check(
         !paths.lock.exists(),
         "Write lock",
@@ -822,6 +1140,29 @@ pub fn doctor(paths: &Paths) -> Vec<DoctorCheck> {
         },
     ));
     checks
+}
+
+fn backup_diagnostics(paths: &Paths) -> (usize, usize) {
+    let Ok(entries) = std::fs::read_dir(&paths.backups) else {
+        return (0, 0);
+    };
+    let mut legacy = 0;
+    let mut corrupt = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with("corrupt-providers-") && name.ends_with(".json") {
+            corrupt += 1;
+        } else if name.starts_with("backup-") && name.ends_with(".json") {
+            let version = std::fs::read(entry.path())
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .and_then(|value| value.get("version").and_then(Value::as_u64));
+            if version != Some(2) {
+                legacy += 1;
+            }
+        }
+    }
+    (legacy, corrupt)
 }
 
 fn check(ok: bool, label: impl Into<String>, detail: impl Into<String>) -> DoctorCheck {
