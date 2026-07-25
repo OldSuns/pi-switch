@@ -36,9 +36,9 @@ impl FormState {
         Self {
             previous_id: None,
             id: String::new(),
-            base_url: "https://api.openai.com/v1".into(),
+            base_url: String::new(),
             api: 1,
-            api_key: "$OPENAI_API_KEY".into(),
+            api_key: String::new(),
             auth_header: true,
             in_pi: true,
             user_agent: String::new(),

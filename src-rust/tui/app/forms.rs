@@ -99,7 +99,7 @@ impl App {
         form: &mut ModelFormState,
         key: KeyEvent,
     ) -> bool {
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+        if key.code == KeyCode::Enter {
             let result = form.draft().and_then(|draft| {
                 documents::save_model(
                     &self.paths,
@@ -142,7 +142,7 @@ impl App {
         form: &mut ModelDefaultsFormState,
         key: KeyEvent,
     ) -> bool {
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+        if key.code == KeyCode::Enter {
             let result = form
                 .draft()
                 .and_then(|defaults| documents::set_model_defaults(&self.paths, &defaults));

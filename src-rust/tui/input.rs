@@ -169,6 +169,10 @@ pub(super) fn edit_text_key(value: &mut String, cursor: &mut usize, key: KeyEven
             insert_char(value, *cursor, character);
             *cursor += 1;
         }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            value.clear();
+            *cursor = 0;
+        }
         _ => {}
     }
 }

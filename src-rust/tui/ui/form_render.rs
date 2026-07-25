@@ -165,7 +165,9 @@ pub(super) fn render_form(
                     .bg(theme.surface)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(language.pick("cancel", "取消"), theme.label()),
+            Span::styled(language.pick("cancel  ", "取消  "), theme.label()),
+            Span::styled(" Ctrl+U ", theme.keycap()),
+            Span::styled(language.pick("clear", "清空"), theme.label()),
         ])),
         rows[9],
     );
@@ -406,6 +408,7 @@ pub(super) fn render_provider_headers_form(
             ("Ctrl+S", language.pick("save", "保存")),
             ("Tab", language.pick("next field", "下一字段")),
             ("Esc", language.pick("back", "返回")),
+            ("Ctrl+U", language.pick("clear", "清空")),
         ],
         theme,
     );
@@ -520,7 +523,7 @@ pub(super) fn render_model_form(
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                " Ctrl+S ",
+                " Enter ",
                 Style::default()
                     .fg(theme.success)
                     .bg(theme.surface)
@@ -534,7 +537,9 @@ pub(super) fn render_model_form(
                     .bg(theme.surface)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(language.pick("cancel", "取消"), theme.label()),
+            Span::styled(language.pick("cancel  ", "取消  "), theme.label()),
+            Span::styled(" Ctrl+U ", theme.keycap()),
+            Span::styled(language.pick("clear", "清空"), theme.label()),
         ])),
         rows[7],
     );
@@ -597,7 +602,7 @@ pub(super) fn render_model_defaults_form(
     }
     lines.push(Line::from(vec![
         Span::styled(
-            " Ctrl+S ",
+            " Enter ",
             Style::default()
                 .fg(theme.success)
                 .bg(theme.surface)
@@ -611,7 +616,9 @@ pub(super) fn render_model_defaults_form(
                 .bg(theme.surface)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(language.pick("cancel", "取消"), theme.label()),
+        Span::styled(language.pick("cancel  ", "取消  "), theme.label()),
+        Span::styled(" Ctrl+U ", theme.keycap()),
+        Span::styled(language.pick("clear", "清空"), theme.label()),
     ]));
     render_modal(
         frame,

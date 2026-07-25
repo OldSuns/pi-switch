@@ -129,6 +129,20 @@
     }
 
     #[test]
+    fn ctrl_u_clears_text_field_and_resets_cursor() {
+        let mut value = "https://api.openai.com/v1".to_owned();
+        let mut cursor = value.chars().count();
+
+        edit_text_key(
+            &mut value,
+            &mut cursor,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        );
+
+        assert_eq!((value.as_str(), cursor), ("", 0));
+    }
+
+    #[test]
     fn shortcuts_use_the_same_intuitive_commands_shown_in_the_ui() {
         assert!(matches!(
             command_for(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
