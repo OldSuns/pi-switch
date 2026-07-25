@@ -1,5 +1,5 @@
 {
-  "name": "pi-switch-tui",
+  "name": "@oldsuns/pi-switch",
   "version": "0.2.1",
   "description": "A focused terminal UI for Pi provider and model configuration",
   "type": "module",
@@ -44,5 +44,8 @@
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.7.1"
+  },
+  "dependencies": {
+    "@oldsuns/pi-switch": "^0.2.1"
   }
 }
