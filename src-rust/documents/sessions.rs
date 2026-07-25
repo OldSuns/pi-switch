@@ -70,7 +70,7 @@ pub fn list_sessions_in(root: &Path) -> Result<Vec<SessionSummary>> {
         .into_iter()
         .filter_map(|path| read_session_summary(&path).ok().flatten())
         .collect::<Vec<_>>();
-    sessions.sort_by(|a, b| b.modified.cmp(&a.modified));
+    sessions.sort_by_key(|b| std::cmp::Reverse(b.modified));
     Ok(sessions)
 }
 

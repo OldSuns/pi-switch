@@ -377,7 +377,7 @@ pub fn load_snapshot(paths: &Paths) -> Result<Snapshot> {
             Ok(view)
         })
         .collect::<Result<Vec<_>>>()?;
-    views.sort_by(|a, b| a.id.to_lowercase().cmp(&b.id.to_lowercase()));
+    views.sort_by_key(|a| a.id.to_lowercase());
 
     Ok(Snapshot {
         providers_path: paths.providers.display().to_string(),

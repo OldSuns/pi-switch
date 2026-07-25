@@ -264,7 +264,7 @@ impl App {
                 NoticeKind::Success,
                 self.language.pick("Copied message", "已复制消息"),
             ),
-            Err(error) => self.overlay = Some(Overlay::Error(error)),
+            Err(error) => self.notice(NoticeKind::Warning, error),
         }
     }
 

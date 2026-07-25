@@ -1,6 +1,6 @@
 {
   "name": "@oldsuns/pi-switch",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "A focused terminal UI for Pi provider and model configuration",
   "type": "module",
   "bin": {
@@ -38,9 +38,16 @@
     "provider",
     "models"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OldSuns/pi-switch.git"
+  },
   "license": "MIT",
   "engines": {
     "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.7.1"

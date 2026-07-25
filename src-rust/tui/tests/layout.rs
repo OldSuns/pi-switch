@@ -21,8 +21,8 @@
             assert!(menu.contains("Sessions"));
             assert!(menu.contains("Settings"));
             if width == 120 {
-                assert!(menu.contains("models.json"));
-                assert!(menu.contains("settings.json"));
+                assert!(menu.contains("Models file"));
+                assert!(menu.contains("Settings file"));
             }
 
             app.page = Page::Profiles;
