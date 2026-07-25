@@ -44,8 +44,5 @@
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.7.1"
-  },
-  "dependencies": {
-    "@oldsuns/pi-switch": "^0.2.1"
   }
 }

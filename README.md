@@ -15,16 +15,20 @@ CLI：`pi-switch` · npm 包：`@oldsuns/pi-switch` · Node 薄壳 + Rust/napi �
 ## 要求
 
 - Node.js `>= 20`
-- 本地构建原生模块需要 Rust 工具链与 `@napi-rs/cli`
-- 预构建目标：macOS (x64/arm64)、Linux (gnu/musl x64)、Windows (msvc x64)
+- 预构建原生模块当前仅覆盖 Windows (msvc x64)——直接 `npm install -g` 即装即用
+- 本地构建原生模块（仅开发者）需要 Rust 工具链与 `@napi-rs/cli`
 
-## 安装与运行
+## 快速开始
 
 ```bash
-npm install
-npm run build:native:debug
-node ./bin/pi-switch.js
+# 全局安装
+npm install -g @oldsuns/pi-switch
+
+# 打开 TUI
+pi-switch
 ```
+
+首次运行会自动把现有的 `~/.pi/agent/models.json` 全量导入本地库，**不修改** Pi 配置；随后即可在 Profiles 中勾选要加入 Pi 的 provider / model。
 
 CLI：
 
@@ -34,6 +38,18 @@ pi-switch tui
 pi-switch doctor         # 校验配置与默认模型
 pi-switch --version      # / -v
 pi-switch --help         # / -h / help
+```
+
+Windows 上无需 Rust：预构建原生模块随 npm 包分发，`pi-switch` 开箱即用。本地开发见下文「开发者」。
+
+## 开发者
+
+从源码构建：
+
+```bash
+npm install
+npm run build:native:debug
+node ./bin/pi-switch.js
 ```
 
 ## 界面与快捷键
