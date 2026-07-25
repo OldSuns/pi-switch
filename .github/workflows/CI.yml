@@ -10,6 +10,8 @@ on:
       - 'v*'
   pull_request:
 
+permissions: {}
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -19,9 +21,9 @@ jobs:
     name: Lint & Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
@@ -52,7 +54,7 @@ jobs:
             cross-flags: ''
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            cross-flags: --use-napi-cross
+            cross-flags: ''  # native target on x86_64 runner, no cross toolchain needed
           - host: ubuntu-latest
             target: x86_64-unknown-linux-musl
             cross-flags: -x
@@ -62,9 +64,9 @@ jobs:
     name: build - ${{ matrix.target }}
     runs-on: ${{ matrix.host }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
@@ -79,7 +81,7 @@ jobs:
         uses: mlugg/setup-zig@v2
         if: contains(matrix.target, 'musl')
         with:
-          version: 0.14.1
+          version: 0.15.2
       - name: Install cargo-zigbuild
         uses: taiki-e/install-action@v2
         if: contains(matrix.target, 'musl')
@@ -91,11 +93,15 @@ jobs:
         run: npx napi build --platform --release --dts native.d.ts --target ${{ matrix.target }} ${{ matrix.cross-flags }}
         shell: bash
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bindings-${{ matrix.target }}
           path: ${{ env.APP_NAME }}.*.node
           if-no-files-found: error
+      - name: Smoke test (native target)
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'x86_64-pc-windows-msvc' || matrix.target == 'aarch64-apple-darwin'
+        run: node -e "const b = require('./${{ env.APP_NAME }}.cjs'); if (typeof b.version !== 'function') throw new Error('binding broken'); console.log('ok', b.version());"
+        shell: bash
 
   publish:
     name: Publish
@@ -107,19 +113,25 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 20
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
       - name: Gather .node files
         run: |
           find artifacts -name '${{ env.APP_NAME }}.*.node' -exec mv {} . \;
           ls -la ${{ env.APP_NAME }}.*.node
+      - name: Verify version matches tag
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          echo "package: $PKG_VERSION, tag: $TAG_VERSION"
+          [ "$PKG_VERSION" = "$TAG_VERSION" ] || { echo "version mismatch"; exit 1; }
       - name: Publish
         run: |
           npm config set provenance true
