@@ -81,9 +81,9 @@ pub(super) fn render_form(
         format!(
             "< {} >",
             if form.in_pi {
-                language.pick("added", "已加入")
+                language.pick("synced to Pi", "同步到 Pi")
             } else {
-                language.pick("local only", "仅本地")
+                language.pick("not synced", "不同步")
             }
         ),
     ];
@@ -291,8 +291,8 @@ pub(super) fn provider_field_help(
         8 => vec![
             title(language.pick("Add to Pi", "加入 Pi")),
             body(language.pick(
-                "Added providers are written to Pi models.json; local-only providers stay in the pi-switch library.",
-                "已加入的提供商会写入 Pi models.json；仅本地项只保存在 pi-switch 库中。",
+                "Synced providers are written to Pi models.json; not-synced providers stay in the pi-switch library.",
+                "同步到 Pi 的提供商会写入 Pi models.json；不同步的提供商只保存在 pi-switch 库中。",
             )),
         ],
         9 => vec![

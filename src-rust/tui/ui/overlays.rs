@@ -128,8 +128,8 @@ pub(super) fn render_overlay(
                 )),
                 Line::from(if *in_pi {
                     language.pick(
-                        "It will be deleted locally and removed from Pi. Any default selection is cleared.",
-                        "它将从本地库和 Pi 中删除，关联的默认选择也会被清除。",
+                        "It will be deleted locally and unsynced from Pi. Any default selection is cleared.",
+                        "它将从本地库删除并取消同步到 Pi，关联的默认选择也会被清除。",
                     )
                 } else {
                     language.pick(
@@ -161,11 +161,11 @@ pub(super) fn render_overlay(
             let body = Paragraph::new(vec![
                 Line::from(format!(
                     "{} '{id}'?",
-                    language.pick("Remove provider from Pi", "从 Pi 移除提供商")
+                    language.pick("Stop syncing provider to Pi", "取消同步提供商到 Pi")
                 )),
                 Line::from(language.pick(
-                    "The local provider is kept. Its default model selection will be cleared.",
-                    "本地配置会保留，但关联的默认模型选择将被清除。",
+                    "The local provider is kept; it will no longer be synced to Pi. Its default model selection will be cleared.",
+                    "本地配置会保留，但不再同步到 Pi，关联的默认模型选择也将被清除。",
                 )),
                 Line::from(""),
                 Line::from(Span::styled(
@@ -193,11 +193,11 @@ pub(super) fn render_overlay(
                     "{} '{}' {}",
                     language.pick("Save provider", "保存提供商"),
                     draft.id,
-                    language.pick("as local only?", "为仅本地配置？")
+                    language.pick("as not synced?", "为不同步？")
                 )),
                 Line::from(language.pick(
-                    "It will be removed from Pi and its default model selection will be cleared.",
-                    "它将从 Pi 移除，关联的默认模型选择也会被清除。",
+                    "It will no longer be synced to Pi and its default model selection will be cleared.",
+                    "它将不再同步到 Pi，关联的默认模型选择也会被清除。",
                 )),
                 Line::from(""),
                 Line::from(Span::styled(

@@ -80,14 +80,14 @@ impl App {
         match documents::set_provider_in_pi(&self.paths, &id, in_pi) {
             Ok(()) => self.reload(Some(self.language.pick(
                 if in_pi {
-                    "Provider added to Pi"
+                    "Provider synced to Pi"
                 } else {
-                    "Provider removed from Pi"
+                    "Provider not synced"
                 },
                 if in_pi {
-                    "提供商已加入 Pi"
+                    "提供商已同步到 Pi"
                 } else {
-                    "提供商已从 Pi 移除"
+                    "提供商已设为不同步"
                 },
             ))),
             Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),

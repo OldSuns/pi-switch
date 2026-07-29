@@ -28,7 +28,7 @@ npm install -g @oldsuns/pi-switch
 pi-switch
 ```
 
-首次运行会自动把现有的 `~/.pi/agent/models.json` 全量导入本地库，**不修改** Pi 配置；随后即可在 Profiles 中勾选要加入 Pi 的 provider / model。
+首次运行会自动把现有的 `~/.pi/agent/models.json` 全量导入本地库，**不修改** Pi 配置；随后即可在 Profiles 中勾选要同步到 Pi 的 provider / model。
 
 CLI：
 
@@ -61,8 +61,8 @@ node ./bin/pi-switch.js
 | 键 | 作用 |
 |----|------|
 | `n` / `e` / `d` / `c` | 新建 / 编辑 / 删除 / 复制当前焦点（provider 或 model） |
-| `Space`（provider） | 加入 / 移出 Pi；`[x]` 已加入，`[ ]` 仅本地 |
-| `Space`（model） | 设为默认模型（仅已加入 Pi 的 provider） |
+| `Space`（provider） | 同步到 Pi / 取消同步；`[x]` 已同步，`[ ]` 不同步 |
+| `Space`（model） | 设为默认模型（仅已同步到 Pi 的 provider） |
 | `i` | 从当前 provider 在线导入模型 |
 | `/` | 筛选 provider |
 | `Enter` / `l` | 进入模型列表 |
@@ -71,7 +71,7 @@ node ./bin/pi-switch.js
 | `b` | 浏览备份 |
 | `v` | 校验配置（doctor） |
 
-新建 provider 默认加入 Pi，表单可关闭；复制继承源的加入状态。
+新建 provider 默认同步到 Pi，表单可关闭；复制继承源的同步状态。
 
 Provider 表单：`baseUrl`、`api`（`openai-completions` / `openai-responses` / `anthropic-messages` / `google-generative-ai`）、`apiKey`、`authHeader`、Headers（独立 `User-Agent` + 其余 JSON）、`compat`（含一等开关 Session affinity = `sendSessionAffinityHeaders`）。
 
@@ -115,11 +115,11 @@ Session 根目录优先级：`PI_CODING_AGENT_SESSION_DIR` → `PI_CODING_AGENT_
 
 ## Provider 库与 Pi 同步
 
-- `~/.pi-switch/providers.json` 是完整本地库；`~/.pi/agent/models.json` 只含当前加入 Pi 的子集。
+- `~/.pi-switch/providers.json` 是完整本地库；`~/.pi/agent/models.json` 只含当前已同步到 Pi 的子集。
 - 首次运行把现有 `models.json` 全量导入本地库，不修改 Pi 配置。
-- 已加入 provider 的编辑与 model 变更会同步两份文件；仅本地项只更新本地库。
-- 在线导入 model **不会**隐式加入 Pi。
-- 启动或手动重载时，以 `models.json` 中同 ID provider 为准回灌本地库；外部从 Pi 删除的 provider 仍作为仅本地项保留。
+- 已同步 provider 的编辑与 model 变更会同步两份文件；不同步项只更新本地库。
+- 在线导入 model **不会**隐式同步到 Pi。
+- 启动或手动重载时，以 `models.json` 中同 ID provider 为准回灌本地库；外部从 Pi 删除的 provider 仍作为不同步项保留。
 - 从 Pi 移除当前默认 provider 会先确认并清除默认模型；`d` 永久删除本地副本，必要时同时从 Pi 删除。
 
 ## 模型导入与价格
@@ -137,14 +137,14 @@ Session 根目录优先级：`PI_CODING_AGENT_SESSION_DIR` → `PI_CODING_AGENT_
    - 网关价格在 catalog 元数据之上叠加。
 4. 关闭实时元数据：使用 Settings 中的默认参数；空字段回落 Pi 官方默认（context window `128000`、max tokens `16384`、cost `0`）。
 
-**OpenCode 导入**（Settings）：只读 `~/.config/opencode/opencode.json`，可全选或勾选 provider；导入项默认加入 Pi。若 models.dev 仍有歧义，**需要用户选择候选**。OpenCode 配置本身不会被修改。
+**OpenCode 导入**（Settings）：只读 `~/.config/opencode/opencode.json`，可全选或勾选 provider；导入项默认同步到 Pi。若 models.dev 仍有歧义，**需要用户选择候选**。OpenCode 配置本身不会被修改。
 
 ## 配置路径与 Settings 字段
 
 | 路径 | 角色 |
 |------|------|
 | `~/.pi-switch/providers.json` | 完整本地 provider 库（`version: 1`） |
-| `~/.pi/agent/models.json` | 已加入 Pi 的 provider 子集 |
+| `~/.pi/agent/models.json` | 已同步到 Pi 的 provider 子集 |
 | `~/.pi/agent/settings.json` | 默认模型 + pi-switch 设置 |
 | `~/.config/opencode/opencode.json` | OpenCode 只读导入源 |
 | `~/.pi-switch/backups/` | version 2 备份（providers + models + settings），最多 10 份 |

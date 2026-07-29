@@ -1127,9 +1127,9 @@ pub fn doctor(paths: &Paths) -> Vec<DoctorCheck> {
                                 provider.models.len(),
                                 provider.api,
                                 if provider.in_pi {
-                                    "added to Pi"
+                                    "synced to Pi"
                                 } else {
-                                    "local only"
+                                    "not synced"
                                 }
                             )
                         })
