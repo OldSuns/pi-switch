@@ -292,3 +292,42 @@
         let _ = fs::remove_dir_all(root);
     }
 
+
+    #[test]
+    fn home_shows_update_banner_when_a_newer_version_is_available() {
+        let (root, mut app) = app();
+        app.page = Page::Home;
+        app.focus = Focus::Menu;
+        app.update_available = Some("9.9.9".into());
+
+        let backend = TestBackend::new(120, 36);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        // The header version becomes "current ↑ latest"…
+        assert!(buffer.contains("\u{2191} 9.9.9"));
+        // …and the home page shows a persistent banner with the install hint.
+        assert!(buffer.contains("Update available: 9.9.9"));
+        assert!(buffer.contains("npm i -g @oldsuns/pi-switch"));
+
+        // With no update available the banner and arrow are absent.
+        app.update_available = None;
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(!buffer.contains("Update available"));
+        assert!(!buffer.contains("npm i -g @oldsuns/pi-switch"));
+        let _ = fs::remove_dir_all(root);
+    }

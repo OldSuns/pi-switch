@@ -81,21 +81,47 @@ pub(super) fn render_home(frame: &mut Frame<'_>, app: &App, area: Rect, theme: T
         .zip(app.snapshot.default_model.as_deref())
         .map(|(provider, model)| format!("{provider}/{model}"))
         .unwrap_or_else(|| app.language.pick("not set", "未设置").into());
-    let overview = vec![
-        Line::default(),
-        metric_line(
+    let overview = {
+        let mut lines = Vec::new();
+        if let Some(latest) = &app.update_available {
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  {}{}",
+                    app.language.pick("Update available: ", "有新版本："),
+                    latest
+                ),
+                Style::default()
+                    .fg(theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  {}",
+                    app.language
+                        .pick("npm i -g @oldsuns/pi-switch", "npm i -g @oldsuns/pi-switch")
+                ),
+                theme.label(),
+            )));
+            lines.push(Line::default());
+        }
+        lines.push(metric_line(
             theme,
             app.language.pick("Providers", "提供商"),
             app.snapshot.providers.len().to_string(),
-        ),
-        metric_line(
+        ));
+        lines.push(metric_line(
             theme,
             app.language.pick("Models", "模型"),
             model_count.to_string(),
-        ),
-        Line::default(),
-        label_line(theme, app.language.pick("Default", "默认模型"), default),
-    ];
+        ));
+        lines.push(Line::default());
+        lines.push(label_line(
+            theme,
+            app.language.pick("Default", "默认模型"),
+            default,
+        ));
+        lines
+    };
     let paths = vec![
         Line::default(),
         label_line(
@@ -186,10 +212,14 @@ pub(super) fn render_settings(frame: &mut Frame<'_>, app: &App, area: Rect, them
     let actions = SettingsAction::visible(app.snapshot.fetch_model_metadata)
         .map(|action| {
             let label = action.label(app.language);
-            if action != SettingsAction::FetchMetadata {
+            if !action.is_toggle() {
                 return ListItem::new(Line::from(Span::styled(label, theme.value())));
             }
-            let enabled = app.snapshot.fetch_model_metadata;
+            let enabled = match action {
+                SettingsAction::FetchMetadata => app.snapshot.fetch_model_metadata,
+                SettingsAction::AutoCheckUpdates => app.snapshot.check_updates,
+                _ => false,
+            };
             ListItem::new(Line::from(vec![
                 Span::styled(
                     if enabled { "●" } else { "○" },

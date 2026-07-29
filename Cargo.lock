@@ -1379,7 +1379,7 @@ dependencies = [
 
 [[package]]
 name = "pi-switch-native"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "chrono",
  "crossterm",
@@ -1389,6 +1389,7 @@ dependencies = [
  "napi-derive",
  "ratatui",
  "reqwest",
+ "semver",
  "serde_json",
  "thiserror 2.0.19",
  "unicode-width",

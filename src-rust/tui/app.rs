@@ -156,10 +156,12 @@ pub(super) enum SettingsAction {
     Doctor,
     Backups,
     ImportOpenCode,
+    AutoCheckUpdates,
+    CheckUpdateNow,
 }
 
 impl SettingsAction {
-    pub(super) const ALL: [Self; 7] = [
+    pub(super) const ALL: [Self; 9] = [
         Self::Language,
         Self::FetchMetadata,
         Self::ModelDefaults,
@@ -167,12 +169,19 @@ impl SettingsAction {
         Self::Doctor,
         Self::Backups,
         Self::ImportOpenCode,
+        Self::AutoCheckUpdates,
+        Self::CheckUpdateNow,
     ];
 
     pub(super) fn visible(fetch_metadata: bool) -> impl Iterator<Item = Self> {
         Self::ALL
             .into_iter()
             .filter(move |action| !fetch_metadata || *action != Self::ModelDefaults)
+    }
+
+    /// Whether this action renders as a toggle with an on/off indicator dot.
+    pub(super) fn is_toggle(self) -> bool {
+        matches!(self, Self::FetchMetadata | Self::AutoCheckUpdates)
     }
 
     pub(super) fn label(self, language: Language) -> String {
@@ -190,6 +199,10 @@ impl SettingsAction {
             Self::Reload => language.pick("Reload configuration", "重载配置").into(),
             Self::Doctor => language.pick("Validate configuration", "验证配置").into(),
             Self::Backups => language.pick("Browse backups", "浏览备份").into(),
+            Self::CheckUpdateNow => language.pick("Check for updates now", "检查更新").into(),
+            Self::AutoCheckUpdates => language
+                .pick("Automatically check for updates", "自动检查更新")
+                .into(),
             Self::ImportOpenCode => language
                 .pick("Import from OpenCode", "从 OpenCode 导入")
                 .into(),
@@ -287,6 +300,9 @@ pub(super) enum Overlay {
         selected: BTreeSet<usize>,
         cursor: usize,
     },
+    ConfirmUpdate {
+        latest: String,
+    },
 }
 
 pub(super) enum CatalogContinuation {
@@ -334,6 +350,11 @@ pub(super) struct App {
     pub(super) overlay: Option<Overlay>,
     pub(super) notice: Option<Notice>,
     task: Option<mpsc::Receiver<documents::Result<BackgroundResult>>>,
+    pub(super) update_available: Option<String>,
+    update_check: Option<mpsc::Receiver<documents::Result<Option<String>>>>,
+    update_check_manual: bool,
+    install_task: Option<mpsc::Receiver<documents::Result<()>>>,
+    dismissed_update: Option<String>,
     pub(super) tick_count: usize,
     pub(super) quit: bool,
 }
@@ -343,10 +364,13 @@ impl App {
         match documents::load_snapshot(&paths) {
             Ok(snapshot) => {
                 let warning = snapshot.warning.clone();
-                let mut app = Self::from_snapshot(paths, snapshot);
+                let check_updates = snapshot.check_updates;
+                let mut app = Self::from_snapshot(paths.clone(), snapshot);
                 if let Some(warning) = warning {
                     app.overlay = Some(Overlay::Warning(warning));
                 }
+                app.dismissed_update = documents::read_dismissed_update(&paths.update);
+                app.spawn_update_check(&paths, check_updates);
                 app
             }
             Err(error) => {
@@ -359,6 +383,7 @@ impl App {
                     default_model: None,
                     language: "en".into(),
                     fetch_model_metadata: true,
+                    check_updates: true,
                     model_defaults: Default::default(),
                     warning: None,
                 };
@@ -400,9 +425,29 @@ impl App {
             overlay: None,
             notice: None,
             task: None,
+            update_available: None,
+            update_check: None,
+            update_check_manual: false,
+            install_task: None,
+            dismissed_update: None,
             tick_count: 0,
             quit: false,
         }
+    }
+
+    /// Launch the background npm update check on a worker thread. The result
+    /// is delivered through a dedicated channel polled in `tick`, independent
+    /// of the catalog-import `task` channel. No-op when `enabled` is false.
+    fn spawn_update_check(&mut self, paths: &Paths, enabled: bool) {
+        if !enabled {
+            return;
+        }
+        let cache_path = paths.update.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = sender.send(documents::check_npm_update(&cache_path));
+        });
+        self.update_check = Some(receiver);
     }
 
     pub(super) fn visible_providers(&self) -> Vec<usize> {
@@ -473,6 +518,78 @@ impl App {
                 self.notice = None;
             }
         }
+        if self.task.is_some() {
+            self.poll_task();
+        }
+
+        // The npm update check runs on its own channel so it never competes
+        // with the catalog-import `task`. A single result is expected, after
+        // which the receiver is dropped; failures are silent.
+        if let Some(receiver) = self.update_check.as_ref() {
+            match receiver.try_recv() {
+                Ok(Ok(Some(latest))) => {
+                    self.update_available = Some(latest.clone());
+                    // Manual checks always pop up the install dialog. Auto-checks
+                    // skip the dialog if the user previously dismissed this exact
+                    // version, leaving only the home-page banner.
+                    let show_dialog = self.update_check_manual
+                        || self.dismissed_update.as_deref() != Some(latest.as_str());
+                    if show_dialog && self.overlay.is_none() {
+                        self.overlay = Some(Overlay::ConfirmUpdate { latest });
+                    }
+                }
+                Ok(Ok(None)) | Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => {
+                    if self.update_check_manual {
+                        self.notice(
+                            NoticeKind::Success,
+                            self.language
+                                .pick("You're on the latest version", "已是最新版本")
+                                .to_owned(),
+                        );
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => return,
+            }
+            self.update_check = None;
+            self.update_check_manual = false;
+        }
+
+        // Poll the background install task. On success the user is told to
+        // restart; on failure the error is surfaced as a notice.
+        if let Some(receiver) = self.install_task.as_ref() {
+            match receiver.try_recv() {
+                Ok(Ok(())) => {
+                    self.overlay = None;
+                    self.notice(
+                        NoticeKind::Success,
+                        self.language
+                            .pick(
+                                "Update installed. Restart pi-switch to apply.",
+                                "更新已安装，请重启 pi-switch 生效。",
+                            )
+                            .to_owned(),
+                    );
+                }
+                Ok(Err(error)) => {
+                    self.overlay = None;
+                    self.notice(NoticeKind::Warning, error.to_string());
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.overlay = None;
+                    self.notice(
+                        NoticeKind::Warning,
+                        self.language
+                            .pick("Install task ended unexpectedly", "安装任务意外结束")
+                            .to_owned(),
+                    );
+                }
+                Err(mpsc::TryRecvError::Empty) => return,
+            }
+            self.install_task = None;
+        }
+    }
+
+    fn poll_task(&mut self) {
         let Some(receiver) = self.task.as_ref() else {
             return;
         };

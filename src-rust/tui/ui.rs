@@ -215,7 +215,7 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(env!("CARGO_PKG_VERSION"), theme.dim_text()),
+        Span::styled(version_label(app), version_style(app, theme)),
         Span::styled("  ·  ", theme.dim_text()),
         Span::styled(app.language.pick("default ", "默认 "), theme.label()),
         Span::styled(default, theme.value().add_modifier(Modifier::BOLD)),
@@ -251,6 +251,27 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         ),
         area,
     );
+}
+
+/// Version label for the header: the current version, or `current ↑ latest`
+/// when a newer npm version was detected by the background check.
+fn version_label(app: &App) -> String {
+    match &app.update_available {
+        Some(latest) => format!("{} \u{2191} {}", env!("CARGO_PKG_VERSION"), latest),
+        None => env!("CARGO_PKG_VERSION").to_owned(),
+    }
+}
+
+/// Style for the header version: highlighted in the warning accent when an
+/// update is available, otherwise the usual dimmed secondary text.
+fn version_style(app: &App, theme: Theme) -> Style {
+    if app.update_available.is_some() {
+        Style::default()
+            .fg(theme.warning)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        theme.dim_text()
+    }
 }
 
 fn render_providers(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {

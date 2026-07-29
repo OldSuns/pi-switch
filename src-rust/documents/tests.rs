@@ -66,3 +66,4 @@ fn write_opencode(paths: &Paths, value: Value) {
 include!("tests/import_storage.rs");
 include!("tests/catalog_import.rs");
 include!("tests/network_models.rs");
+include!("tests/update_check.rs");

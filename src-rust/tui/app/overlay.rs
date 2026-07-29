@@ -331,6 +331,18 @@ impl App {
                 ),
                 _ => {}
             },
+            Overlay::ConfirmUpdate { latest } => match key.code {
+                KeyCode::Enter | KeyCode::Char('y') => {
+                    self.start_install_update(latest.clone());
+                    return;
+                }
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
+                    self.dismissed_update = Some(latest.clone());
+                    documents::dismiss_update(&self.paths.update, latest);
+                    return;
+                }
+                _ => {}
+            },
         }
         self.overlay = Some(overlay);
     }

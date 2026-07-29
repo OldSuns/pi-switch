@@ -33,6 +33,8 @@ impl App {
         match action {
             SettingsAction::Language => self.switch_language(),
             SettingsAction::FetchMetadata => self.toggle_fetch_metadata(),
+            SettingsAction::AutoCheckUpdates => self.toggle_check_updates(),
+            SettingsAction::CheckUpdateNow => self.check_update_now(),
             SettingsAction::ModelDefaults => {
                 self.overlay = Some(Overlay::ModelDefaultsForm(ModelDefaultsFormState::new(
                     &self.snapshot.model_defaults,
@@ -115,6 +117,87 @@ impl App {
             }
             Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
         }
+    }
+
+    pub(super) fn toggle_check_updates(&mut self) {
+        let enabled = !self.snapshot.check_updates;
+        match documents::set_check_updates(&self.paths, enabled) {
+            Ok(()) => {
+                self.snapshot.check_updates = enabled;
+                self.notice(
+                    NoticeKind::Success,
+                    self.language.pick(
+                        if enabled {
+                            "Automatic update check enabled"
+                        } else {
+                            "Automatic update check disabled"
+                        },
+                        if enabled {
+                            "已启用自动检查更新"
+                        } else {
+                            "已关闭自动检查更新"
+                        },
+                    ),
+                );
+            }
+            Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
+        }
+    }
+
+    /// Trigger an immediate update check, bypassing the 24h cache so a fresh
+    /// network request is made. Runs regardless of the auto-check toggle; the
+    /// result is delivered through the same `update_check` channel and surfaced
+    /// with a notice on completion.
+    pub(super) fn check_update_now(&mut self) {
+        if self.update_check.is_some() {
+            self.notice(
+                NoticeKind::Warning,
+                self.language.pick("Already checking…", "正在检查…"),
+            );
+            return;
+        }
+        // Clear any prior result so the banner doesn't show a stale version
+        // while the fresh request is in flight.
+        self.update_available = None;
+        // Discard the cache so check_npm_update must hit the registry instead
+        // of returning a cached `latest`, and clear any prior dismissal so the
+        // confirmation dialog is shown again for the freshly checked version.
+        let _ = std::fs::remove_file(&self.paths.update);
+        self.dismissed_update = None;
+        let cache_path = self.paths.update.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = sender.send(documents::check_npm_update(&cache_path));
+        });
+        self.update_check = Some(receiver);
+        self.update_check_manual = true;
+        self.notice(
+            NoticeKind::Success,
+            self.language.pick("Checking for updates…", "正在检查更新…"),
+        );
+    }
+
+    /// Spawn a background `npm i -g @oldsuns/pi-switch` to install the latest
+    /// version. Shows a loading overlay while the install runs; the result is
+    /// polled in `tick()` and surfaced as a notice.
+    pub(super) fn start_install_update(&mut self, _latest: String) {
+        if self.install_task.is_some() {
+            return;
+        }
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = sender.send(documents::install_update());
+        });
+        self.install_task = Some(receiver);
+        self.overlay = Some(Overlay::Loading {
+            message: self
+                .language
+                .pick(
+                    "Installing @oldsuns/pi-switch…",
+                    "正在安装 @oldsuns/pi-switch…",
+                )
+                .to_string(),
+        });
     }
 
     pub(super) fn import_options(&self) -> documents::ImportOptions {

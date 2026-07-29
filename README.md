@@ -6,10 +6,10 @@ CLI：`pi-switch` · npm 包：`@oldsuns/pi-switch` · Node 薄壳 + Rust/napi �
 
 ## 功能
 
-- **主页**：provider / model 计数、默认模型、关键路径
+- **主页**：provider / model 计数、默认模型、关键路径；启动后台静默检查 npm 新版本，有更新时弹出确认对话框可一键安装
 - **配置 (Profiles)**：本地 provider 库与 Pi 启用子集；新建 / 编辑 / 删除 / 复制；在线导入模型
 - **会话 (Sessions)**：浏览 JSONL session、筛选、预览、复制消息、删除
-- **设置 (Settings)**：语言、models.dev 元数据、默认参数、重载、校验、备份、OpenCode 导入
+- **设置 (Settings)**：语言、models.dev 元数据、默认参数、重载、校验、备份、OpenCode 导入、自动检查更新、手动检查更新
 - 完整库保存在 `~/.pi-switch/providers.json`，只有已启用项写入 Pi 的 `models.json`
 
 ## 要求
@@ -103,6 +103,8 @@ Session 根目录优先级：`PI_CODING_AGENT_SESSION_DIR` → `PI_CODING_AGENT_
 |----|------|
 | 语言 | English / 中文（`en` / `zh-CN`） |
 | 从 models.dev 获取模型信息 | 开关实时元数据（默认开） |
+| 自动检查更新 | 启动时后台自动检查 npm `@oldsuns/pi-switch` 新版本（开关，默认开） |
+| 检查更新（手动） | 立即检查新版本（绕过 24h 缓存） |
 | 默认模型参数 | 仅关闭实时元数据时显示，用于导入缺省 |
 | 重载配置 | 从磁盘重读 |
 | 验证配置 | doctor |
@@ -147,6 +149,7 @@ Session 根目录优先级：`PI_CODING_AGENT_SESSION_DIR` → `PI_CODING_AGENT_
 | `~/.config/opencode/opencode.json` | OpenCode 只读导入源 |
 | `~/.pi-switch/backups/` | version 2 备份（providers + models + settings），最多 10 份 |
 | `~/.pi-switch/write.lock` | 写入互斥锁 |
+| `~/.pi-switch/update.json` | npm 新版本检查缓存（`lastCheck` + `latest` + `dismissed`，每 24h 最多联网一次） |
 
 `settings.json` 中与 pi-switch 相关的字段：
 
@@ -155,6 +158,7 @@ Session 根目录优先级：`PI_CODING_AGENT_SESSION_DIR` → `PI_CODING_AGENT_
 | `defaultProvider` + `defaultModel` | 默认模型（成对存在或同时缺省） |
 | `piSwitch.language` | `en` \| `zh-CN` |
 | `piSwitch.fetchModelMetadata` | 是否拉 models.dev（默认 `true`） |
+| `piSwitch.checkForUpdates` | 是否启动时检查 npm 新版本（默认 `true`） |
 | `piSwitch.modelDefaults` | 关闭实时元数据时的导入缺省（context / maxTokens / cost） |
 
 ## 数据安全
@@ -166,6 +170,22 @@ Session 根目录优先级：`PI_CODING_AGENT_SESSION_DIR` → `PI_CODING_AGENT_
 - 支持 Pi 的 `$ENV` / `${ENV}` 插值与 `$$` / `$!` 转义；`!command` 原样保存，在线拉取**不会**执行它。
 - Session 删除只作用于选中的 JSONL，并校验路径必须位于 session 根目录内；优先调用系统 `trash`，失败后再永久删除。
 - 正常退出、错误和 panic 都会恢复 raw mode、alternate screen 与光标。
+
+## 自动更新检查与安装
+
+启动时若 Settings 中「自动检查更新」开启（默认开），pi-switch 会在后台线程静默访问 npm registry 查询 `@oldsuns/pi-switch` 的 `latest` 版本，与当前版本对比：
+
+- 有新版本：弹出确认对话框（显示 `当前 → 最新`），用户可选择立即安装或跳过。跳过后同一版本不再弹窗，但主页仍显示横幅。手动检查（Settings 中「检查更新」）始终弹窗。
+- 无新版本、离线或请求失败：静默无提示，不打扰用户。
+
+安装流程：
+
+1. 用户在确认对话框按 `Enter/y` 确认 → 后台执行 `npm install -g @oldsuns/pi-switch`，显示加载动画。
+2. 安装成功 → 通知「更新已安装，请重启 pi-switch 生效」。
+3. 安装失败 → 弹出错误通知（如权限不足、网络问题）。
+4. 用户按 `Esc/n` 跳过 → 记录已跳过的版本到缓存，同一版本不再自动弹窗；主页横幅仍提示有新版本。
+
+检查结果缓存在 `~/.pi-switch/update.json`，自动检查每 24h 最多联网一次。后台线程独立于目录导入任务，不阻塞 UI。Settings 中可随时关闭「自动检查更新」。
 
 ## 验证
 

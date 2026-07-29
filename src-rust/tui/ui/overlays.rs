@@ -435,6 +435,36 @@ pub(super) fn render_overlay(
                 theme,
             );
         }
+        Overlay::ConfirmUpdate { latest } => {
+            let rect = modal_rect(area, 60, 10);
+            let body = Paragraph::new(vec![
+                Line::from(format!(
+                    "{} {} \u{2192} {}",
+                    language.pick("New version available:", "发现新版本："),
+                    env!("CARGO_PKG_VERSION"),
+                    latest
+                )),
+                Line::from(""),
+                Line::from(language.pick(
+                    "Install @oldsuns/pi-switch globally via npm?",
+                    "是否通过 npm 全局安装 @oldsuns/pi-switch？",
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    language.pick("Enter/y install   Esc/n skip", "Enter/y 安装   Esc/n 跳过"),
+                    Style::default().fg(theme.muted),
+                )),
+            ])
+            .wrap(Wrap { trim: true });
+            render_modal(
+                frame,
+                rect,
+                language.pick(" Update available ", " 有新版本 "),
+                body,
+                theme.warning,
+                theme,
+            );
+        }
         Overlay::Fetched {
             models,
             selected,

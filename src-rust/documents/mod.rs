@@ -18,7 +18,9 @@ use storage::{
     root_object_mut, string_field, write_document, write_initial_document, WriteLock,
 };
 
+pub use network::check_npm_update;
 pub use network::fetch_models;
+pub use network::{dismiss_update, install_update, read_dismissed_update};
 pub use opencode::{apply_opencode_import, list_opencode_providers, prepare_opencode_import};
 pub use sessions::{
     delete_session, format_session_time, list_sessions, load_preview, session_display_title,
@@ -70,6 +72,7 @@ pub struct Paths {
     pub settings: PathBuf,
     pub opencode: PathBuf,
     pub backups: PathBuf,
+    pub update: PathBuf,
     lock: PathBuf,
 }
 
@@ -87,6 +90,7 @@ impl Paths {
             settings: home.join(".pi/agent/settings.json"),
             opencode: home.join(".config/opencode/opencode.json"),
             backups: home.join(".pi-switch/backups"),
+            update: home.join(".pi-switch/update.json"),
             lock: home.join(".pi-switch/write.lock"),
         }
     }
@@ -102,6 +106,7 @@ pub struct Snapshot {
     pub default_model: Option<String>,
     pub language: String,
     pub fetch_model_metadata: bool,
+    pub check_updates: bool,
     pub model_defaults: ModelDefaults,
     pub warning: Option<String>,
 }
@@ -388,6 +393,7 @@ pub fn load_snapshot(paths: &Paths) -> Result<Snapshot> {
         default_model: string_field(&settings, "defaultModel")?,
         language: language_field(&settings)?,
         fetch_model_metadata: fetch_model_metadata_field(&settings)?,
+        check_updates: check_updates_field(&settings)?,
         model_defaults: model_defaults_field(&settings)?,
         warning,
     })
@@ -681,6 +687,23 @@ pub fn set_language(paths: &Paths, language: &str) -> Result<()> {
 pub fn set_fetch_model_metadata(paths: &Paths, enabled: bool) -> Result<()> {
     update_pi_switch(paths, |settings| {
         settings.insert("fetchModelMetadata".into(), Value::Bool(enabled));
+    })
+}
+
+/// Whether the background npm update check runs on launch. Defaults to `true`.
+fn check_updates_field(settings: &Value) -> Result<bool> {
+    match pi_switch_object(settings)?.and_then(|value| value.get("checkForUpdates")) {
+        None => Ok(true),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(AppError::Invalid(
+            "settings piSwitch.checkForUpdates must be a boolean".into(),
+        )),
+    }
+}
+
+pub fn set_check_updates(paths: &Paths, enabled: bool) -> Result<()> {
+    update_pi_switch(paths, |settings| {
+        settings.insert("checkForUpdates".into(), Value::Bool(enabled));
     })
 }
 
@@ -1175,7 +1198,7 @@ fn check(ok: bool, label: impl Into<String>, detail: impl Into<String>) -> Docto
 
 #[cfg(test)]
 use network::{
-    fetch_models_for_test, find_ratio, parse_models_dev_catalog, parse_pricing,
+    fetch_models_for_test, find_ratio, newer_version, parse_models_dev_catalog, parse_pricing,
     parse_provider_catalog, parse_ratio_config, resolve_secret,
 };
 #[cfg(test)]

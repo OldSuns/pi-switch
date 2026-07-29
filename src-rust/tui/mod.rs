@@ -105,6 +105,7 @@ mod tests {
             default_model: Some("model-a".into()),
             language: "en".into(),
             fetch_model_metadata: true,
+            check_updates: true,
             model_defaults: Default::default(),
             warning: None,
         };
