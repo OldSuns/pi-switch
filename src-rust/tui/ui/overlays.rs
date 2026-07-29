@@ -541,13 +541,7 @@ pub(super) fn render_overlay(
                             theme.label(),
                         ));
                     }
-                    ListItem::new(Text::from(vec![
-                        Line::from(first_line),
-                        Line::from(Span::styled(
-                            format!("   {}", catalog_summary(model, language)),
-                            theme.label(),
-                        )),
-                    ]))
+                    ListItem::new(Text::from(Line::from(first_line)))
                 })
                 .collect::<Vec<_>>();
             let mut state =

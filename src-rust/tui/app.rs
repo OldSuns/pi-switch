@@ -310,12 +310,23 @@ pub(super) enum CatalogContinuation {
         plan: OpenCodeImportPlan,
         candidate_indices: Vec<usize>,
     },
+    ProviderImport {
+        provider_id: String,
+        resolved_models: Vec<CatalogModel>,
+        candidate_indices: Vec<usize>,
+        overwrite: bool,
+    },
 }
 
 enum BackgroundResult {
+    ModelIds {
+        provider_id: String,
+        ids: Vec<String>,
+    },
     Catalog {
         provider_id: String,
         fetched: CatalogFetch,
+        overwrite: bool,
     },
     OpenCodePrepared(OpenCodeImportPlan),
     OpenCode(ImportSummary),
@@ -594,25 +605,57 @@ impl App {
             return;
         };
         match receiver.try_recv() {
+            Ok(Ok(BackgroundResult::ModelIds {
+                provider_id,
+                ids,
+            })) => {
+                self.task = None;
+                let defaults = self.import_options().defaults;
+                let models = ids.iter().map(|id| defaults.model(id)).collect();
+                let ratio_prices = std::collections::BTreeMap::new();
+                self.show_fetched(provider_id, models, 0, &ratio_prices, false);
+            }
             Ok(Ok(BackgroundResult::Catalog {
                 provider_id,
                 fetched,
+                overwrite,
             })) => {
                 let CatalogFetch {
                     mut models,
-                    ambiguous,
+                    mut ambiguous,
                     unavailable,
                     ratio_prices,
-                    ratio_config_used,
+                    ratio_config_used: _,
+                    catalog_unreachable,
                 } = fetched;
-                // Auto-resolve ambiguities with the first candidate so the model
-                // selection list shows every gateway model up front. Metadata is
-                // editable per-model after import, and ratio_config prices overlay
-                // on top regardless of which candidate was picked.
-                for ambiguity in &ambiguous {
-                    if let Some(first) = ambiguity.candidates.first() {
-                        models.push(first.model.clone());
+                // Apply ratio_config prices on top of catalog metadata for both
+                // resolved models and ambiguous candidates.
+                for model in &mut models {
+                    if let Some(cost) = ratio_prices.get(&model.id) {
+                        if let Some(object) = model.config.as_object_mut() {
+                            object.insert("cost".into(), cost.to_cost_json());
+                        }
                     }
+                }
+                for ambiguity in &mut ambiguous {
+                    for candidate in &mut ambiguity.candidates {
+                        if let Some(cost) = ratio_prices.get(&candidate.model.id) {
+                            if let Some(object) = candidate.model.config.as_object_mut() {
+                                object.insert("cost".into(), cost.to_cost_json());
+                            }
+                        }
+                    }
+                }
+                if catalog_unreachable {
+                    self.notice(
+                        NoticeKind::Warning,
+                        self.language
+                            .pick(
+                                "models.dev unreachable — imported all models with default metadata",
+                                "models.dev 不可达 — 已用默认元数据导入全部模型",
+                            )
+                            .to_string(),
+                    );
                 }
                 if unavailable > 0 {
                     self.notice(
@@ -621,20 +664,28 @@ impl App {
                             "{} {}",
                             unavailable,
                             self.language.pick(
-                                "model(s) skipped without models.dev metadata",
-                                "个模型因 models.dev 元数据缺失而跳过"
+                                "model(s) imported with default metadata (no models.dev match)",
+                                "个模型无 models.dev 匹配，已用默认元数据导入"
                             )
                         ),
                     );
                 }
                 self.task = None;
-                self.show_fetched(
-                    provider_id,
-                    models,
-                    unavailable,
-                    &ratio_prices,
-                    ratio_config_used,
-                );
+                if ambiguous.is_empty() {
+                    self.import_fetched(&provider_id, models, overwrite);
+                } else {
+                    self.overlay = Some(Overlay::CatalogMatches {
+                        ambiguities: ambiguous.clone(),
+                        index: 0,
+                        cursor: 0,
+                        continuation: Some(CatalogContinuation::ProviderImport {
+                            provider_id,
+                            resolved_models: models,
+                            candidate_indices: Vec::new(),
+                            overwrite,
+                        }),
+                    });
+                }
             }
             Ok(Ok(BackgroundResult::OpenCodePrepared(plan))) => {
                 self.task = None;

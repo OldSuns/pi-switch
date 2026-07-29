@@ -19,7 +19,8 @@ use storage::{
 };
 
 pub use network::check_npm_update;
-pub use network::fetch_models;
+pub use network::fetch_model_ids;
+pub use network::resolve_metadata;
 pub use network::{dismiss_update, install_update, read_dismissed_update};
 pub use opencode::{apply_opencode_import, list_opencode_providers, prepare_opencode_import};
 pub use sessions::{
@@ -293,7 +294,11 @@ pub struct CatalogFetch {
     /// top of catalog metadata so displayed and imported prices reflect the
     /// gateway's own ratios when available.
     pub ratio_prices: std::collections::BTreeMap<String, RatioCost>,
+    #[allow(dead_code)]
     pub ratio_config_used: bool,
+    /// true when the models.dev catalog could not be fetched at all (network
+    /// error, non-2xx, malformed JSON). All models fell back to defaults.
+    pub catalog_unreachable: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

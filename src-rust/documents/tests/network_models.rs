@@ -149,6 +149,151 @@ fn fetch_models_uses_the_explicit_catalog_endpoint() {
 }
 
 #[test]
+fn fetch_models_falls_back_to_defaults_when_a_model_has_no_models_dev_metadata() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for _ in 0..4 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let size = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..size]).to_ascii_lowercase();
+            let body = if request.starts_with("get /v1/models ") {
+                r#"{"data":[{"id":"ghost-model"},{"id":"model-z"}]}"#
+            } else if request.starts_with("get /api/ratio_config ")
+                || request.starts_with("get /api/pricing ")
+            {
+                // No gateway pricing endpoint.
+                write!(
+                    stream,
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+                continue;
+            } else {
+                assert!(request.starts_with("get /api.json "));
+                // Only model-z has models.dev metadata; ghost-model does not.
+                r#"{"local":{"id":"local","name":"Local","env":[],"models":{"model-z":{"id":"model-z","name":"Model Z","reasoning":false,"modalities":{"input":["text"],"output":["text"]},"cost":{"input":1.25,"output":5},"limit":{"context":200000,"output":32000}}}}}"#
+            };
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        }
+    });
+    let provider = ProviderView {
+        id: "local".into(),
+        in_pi: true,
+        base_url: format!("http://{address}/v1"),
+        api: "openai-completions".into(),
+        api_key: String::new(),
+        auth_header: false,
+        models: Vec::new(),
+        raw: json!({}),
+    };
+    let fetched = fetch_models_for_test(
+        provider,
+        ImportOptions {
+            fetch_metadata: true,
+            defaults: ModelDefaults::default(),
+        },
+        &format!("http://{address}/api.json"),
+    )
+    .unwrap();
+    // Both models are imported: model-z resolved from the catalog, ghost-model
+    // falling back to defaults rather than being silently dropped.
+    assert_eq!(fetched.models.len(), 2);
+    assert_eq!(fetched.unavailable, 1);
+    assert!(fetched.ambiguous.is_empty());
+    let ghost = fetched
+        .models
+        .iter()
+        .find(|model| model.id == "ghost-model")
+        .expect("ghost-model kept via default fallback");
+    assert_eq!(ghost.config["contextWindow"], PI_DEFAULT_CONTEXT_WINDOW);
+    assert_eq!(ghost.config["cost"]["input"], 0.0);
+    server.join().unwrap();
+}
+
+#[test]
+fn fetch_models_uses_defaults_when_models_dev_is_unreachable() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let size = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..size]).to_ascii_lowercase();
+            if request.starts_with("get /v1/models ") {
+                let body = r#"{"data":[{"id":"alpha"},{"id":"beta"}]}"#;
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            } else if request.starts_with("get /api/ratio_config ")
+                || request.starts_with("get /api/pricing ")
+            {
+                write!(
+                    stream,
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+            } else {
+                // models.dev catalog is unreachable (503).
+                assert!(request.starts_with("get /api.json "));
+                write!(
+                    stream,
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+            }
+        }
+    });
+    let provider = ProviderView {
+        id: "local".into(),
+        in_pi: true,
+        base_url: format!("http://{address}/v1"),
+        api: "openai-completions".into(),
+        api_key: String::new(),
+        auth_header: false,
+        models: Vec::new(),
+        raw: json!({}),
+    };
+    let fetched = fetch_models_for_test(
+        provider,
+        ImportOptions {
+            fetch_metadata: true,
+            defaults: ModelDefaults::default(),
+        },
+        &format!("http://{address}/api.json"),
+    )
+    .unwrap();
+    // The flow does NOT abort: both models are imported with default metadata.
+    assert_eq!(fetched.models.len(), 2);
+    assert_eq!(fetched.unavailable, 2);
+    assert!(fetched.ambiguous.is_empty());
+    assert!(fetched.catalog_unreachable);
+    for model in &fetched.models {
+        assert_eq!(model.config["contextWindow"], PI_DEFAULT_CONTEXT_WINDOW);
+        assert_eq!(model.config["cost"]["input"], 0.0);
+    }
+    server.join().unwrap();
+}
+
+#[test]
 fn invalid_shapes_and_stale_edits_fail_explicitly() {
     let (root, paths) = fixture();
     fs::write(

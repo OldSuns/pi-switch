@@ -511,3 +511,39 @@
         }
         let _ = fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn fetched_existing_models_skipped_on_import_when_overwrite_off() {
+        let (root, mut app) = app();
+        app.overlay = Some(Overlay::Fetched {
+            provider_id: "示例-provider".into(),
+            models: vec![
+                catalog_model("model-a", 128_000, 16_384, 1.0),
+                catalog_model("model-c", 200_000, 8_192, 2.0),
+            ],
+            unavailable: 0,
+            selected: [0].into_iter().collect(),
+            cursor: 0,
+            ratio_config_used: false,
+            overwrite: false,
+            existing: ["model-a".into()].into_iter().collect(),
+            filter: String::new(),
+            filtering: false,
+        });
+        // Only model-a is selected and it already exists; overwrite is off.
+        // Pressing Enter should NOT start a metadata resolve (overlay stays
+        // Fetched, no Loading) and should show a warning notice instead.
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!matches!(app.overlay, Some(Overlay::Loading { .. })));
+        assert!(app.notice.is_some(), "a notice should be shown");
+        // The Fetched overlay should still be open so the user can adjust.
+        assert!(matches!(app.overlay, Some(Overlay::Fetched { .. })));
+
+        // Now toggle overwrite on and press Enter again — the flow should
+        // proceed (overlay switches to Loading as metadata resolve starts).
+        app.notice = None;
+        app.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(app.overlay, Some(Overlay::Loading { .. })));
+        let _ = fs::remove_dir_all(&root);
+    }

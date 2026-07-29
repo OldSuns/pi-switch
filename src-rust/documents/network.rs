@@ -191,37 +191,50 @@ pub fn fetch_catalog() -> Result<ModelCatalog> {
     fetch_catalog_from(&client, MODELS_DEV_CATALOG_URL)
 }
 
-pub fn fetch_models(provider: ProviderView, options: ImportOptions) -> Result<CatalogFetch> {
-    fetch_models_from(provider, options, MODELS_DEV_CATALOG_URL)
+
+/// No models.dev catalog is touched. Used to present the selection list before
+/// metadata is resolved for the chosen models.
+pub fn fetch_model_ids(provider: &ProviderView) -> Result<Vec<String>> {
+    fetch_provider_ids(provider)
 }
 
-fn fetch_models_from(
+/// Phase 2 of the import flow: resolve models.dev metadata (and ratio_config
+/// pricing) for an already-selected set of model IDs. Models without any
+/// models.dev match fall back to `options.defaults` so the user's explicit
+/// selection is never silently dropped.
+pub fn resolve_metadata(
     provider: ProviderView,
+    ids: Vec<String>,
     options: ImportOptions,
-    metadata_catalog_url: &str,
 ) -> Result<CatalogFetch> {
-    validate_provider_view(&provider)?;
+    let client = http_client()?;
+    resolve_ids_against_catalog(&client, &provider, &ids, options, MODELS_DEV_CATALOG_URL)
+}
+
+/// Validates the provider and requests its `/models` endpoint, returning the
+/// parsed model ID list. Shared by the one-shot and two-phase import paths.
+fn fetch_provider_ids(provider: &ProviderView) -> Result<Vec<String>> {
+    let client = http_client()?;
+    fetch_provider_ids_with(&client, provider)
+}
+
+fn fetch_provider_ids_with(client: &Client, provider: &ProviderView) -> Result<Vec<String>> {
+    validate_provider_view(provider)?;
     if provider.base_url.is_empty() || provider.api.is_empty() {
         return Err(AppError::Invalid(
             "fetching models requires provider baseUrl and api".into(),
         ));
     }
     let key = resolve_secret(&provider.api_key)?;
-    let mut url = catalog_url(&provider)?;
+    let mut url = catalog_url(provider)?;
     if provider.api == "google-generative-ai" {
         if let Some(key) = key.as_deref() {
             url.query_pairs_mut().append_pair("key", key);
         }
     }
 
-    let client = http_client()?;
-
-    // ratio_config — best-effort; failure or malformed payload → no ratio prices.
-    let ratios = fetch_ratio_config(&client, &provider);
-    let ratio_config_used = ratios.is_some();
-
     let mut request = client.get(url);
-    for (name, value) in provider_headers(&provider)? {
+    for (name, value) in provider_headers(provider)? {
         request = request.header(name, value);
     }
     if provider.auth_header {
@@ -247,36 +260,54 @@ fn fetch_models_from(
     let body: Value = response
         .json()
         .map_err(|error| AppError::Http(format!("invalid JSON response: {error}")))?;
-    let ids = parse_provider_catalog(&provider.api, &body)?;
+    parse_provider_catalog(&provider.api, &body)
+}
+
+/// Resolves a set of model IDs against the models.dev catalog, applying
+/// ratio_config pricing on top. IDs with no catalog match fall back to
+/// `options.defaults`; IDs with multiple matches are collected as ambiguities
+/// for the caller to resolve interactively.
+fn resolve_ids_against_catalog(
+    client: &Client,
+    provider: &ProviderView,
+    ids: &[String],
+    options: ImportOptions,
+    metadata_catalog_url: &str,
+) -> Result<CatalogFetch> {
+    // ratio_config — best-effort; failure or malformed payload → no ratio prices.
+    let ratios = fetch_ratio_config(client, provider);
+    let ratio_config_used = ratios.is_some();
     let ratio_prices = ratios
         .as_ref()
-        .map(|ratios| compute_ratio_prices(&ids, ratios))
+        .map(|ratios| compute_ratio_prices(ids, ratios))
         .unwrap_or_default();
-    if !options.fetch_metadata {
-        return Ok(CatalogFetch {
-            models: ids.iter().map(|id| options.defaults.model(id)).collect(),
-            ambiguous: Vec::new(),
-            unavailable: 0,
-            ratio_prices,
-            ratio_config_used,
-        });
-    }
-    let catalog = fetch_catalog_from(&client, metadata_catalog_url)?;
+
+    // models.dev catalog — best-effort; if unreachable, fall back to an empty
+    // catalog so every selected model is imported with default metadata rather
+    // than aborting the entire flow.
+    let (catalog, catalog_unreachable) =
+        match fetch_catalog_from(client, metadata_catalog_url) {
+            Ok(catalog) => (catalog, false),
+            Err(_) => (ModelCatalog::default(), true),
+        };
     let mut models = Vec::new();
     let mut ambiguous = Vec::new();
     let mut unavailable = 0;
     for id in ids {
-        if let Some(model) = catalog.resolve(&provider.id, &id) {
+        if let Some(model) = catalog.resolve(&provider.id, id) {
             models.push(model.clone());
             continue;
         }
-        let candidates = catalog.ambiguous_candidates(&provider.id, &id);
+        let candidates = catalog.ambiguous_candidates(&provider.id, id);
         if candidates.is_empty() {
+            // No models.dev metadata: fall back to defaults so an explicit
+            // user selection is still imported rather than silently dropped.
             unavailable += 1;
+            models.push(options.defaults.model(id));
         } else {
             ambiguous.push(CatalogAmbiguity {
                 provider_id: provider.id.clone(),
-                model_id: id,
+                model_id: id.clone(),
                 candidates,
             });
         }
@@ -293,6 +324,7 @@ fn fetch_models_from(
         unavailable,
         ratio_prices,
         ratio_config_used,
+        catalog_unreachable,
     })
 }
 
@@ -887,5 +919,23 @@ pub(super) fn fetch_models_for_test(
     options: ImportOptions,
     catalog_url: &str,
 ) -> Result<CatalogFetch> {
-    fetch_models_from(provider, options, catalog_url)
+    let client = http_client()?;
+    let ids = fetch_provider_ids_with(&client, &provider)?;
+    if !options.fetch_metadata {
+        let ratios = fetch_ratio_config(&client, &provider);
+        let ratio_config_used = ratios.is_some();
+        let ratio_prices = ratios
+            .as_ref()
+            .map(|ratios| compute_ratio_prices(&ids, ratios))
+            .unwrap_or_default();
+        return Ok(CatalogFetch {
+            models: ids.iter().map(|id| options.defaults.model(id)).collect(),
+            ambiguous: Vec::new(),
+            unavailable: 0,
+            ratio_prices,
+            ratio_config_used,
+            catalog_unreachable: false,
+        });
+    }
+    resolve_ids_against_catalog(&client, &provider, &ids, options, catalog_url)
 }

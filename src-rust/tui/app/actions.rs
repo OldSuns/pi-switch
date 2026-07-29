@@ -343,15 +343,13 @@ impl App {
         };
         let provider_id = provider.id.clone();
         let task_provider_id = provider_id.clone();
-        let options = self.import_options();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let result = documents::fetch_models(provider, options).map(|fetched| {
-                BackgroundResult::Catalog {
+            let result =
+                documents::fetch_model_ids(&provider).map(|ids| BackgroundResult::ModelIds {
                     provider_id: task_provider_id,
-                    fetched,
-                }
-            });
+                    ids,
+                });
             let _ = sender.send(result);
         });
         self.task = Some(receiver);
@@ -360,6 +358,55 @@ impl App {
                 "{} {provider_id}",
                 self.language.pick("Fetching models for", "正在获取模型：")
             ),
+        });
+    }
+
+    /// Phase 2 of the import flow: after the user has selected model IDs from
+    /// the fetched list, resolve models.dev metadata (and ratio_config pricing)
+    /// for just those IDs. Ambiguous matches are presented interactively;
+    /// models without any models.dev match fall back to defaults.
+    pub(super) fn start_resolve_metadata(
+        &mut self,
+        provider_id: String,
+        ids: Vec<String>,
+        overwrite: bool,
+    ) {
+        let Some(provider) = self
+            .snapshot
+            .providers
+            .iter()
+            .find(|provider| provider.id == provider_id)
+            .cloned()
+        else {
+            self.overlay = Some(Overlay::Error(
+                self.language
+                    .pick("Provider no longer exists", "提供商已不存在")
+                    .to_string(),
+            ));
+            return;
+        };
+        let options = self.import_options();
+        let task_provider_id = provider_id.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = documents::resolve_metadata(provider, ids, options).map(
+                |fetched| BackgroundResult::Catalog {
+                    provider_id: task_provider_id,
+                    fetched,
+                    overwrite,
+                },
+            );
+            let _ = sender.send(result);
+        });
+        self.task = Some(receiver);
+        self.overlay = Some(Overlay::Loading {
+            message: self
+                .language
+                .pick(
+                    "Fetching models.dev metadata",
+                    "正在获取 models.dev 模型信息",
+                )
+                .to_string(),
         });
     }
 

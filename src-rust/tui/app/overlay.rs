@@ -156,7 +156,7 @@ impl App {
                 cursor,
                 ratio_config_used: _,
                 overwrite,
-                existing: _,
+                existing,
                 filter,
                 filtering,
             } => {
@@ -233,13 +233,48 @@ impl App {
                                 );
                             } else {
                                 let id = provider_id.clone();
-                                let chosen = selected
+                                // When overwrite is off, skip models that already
+                                // exist so we don't waste a models.dev request
+                                // (and a possible ambiguity prompt) on models
+                                // that import_models will silently skip anyway.
+                                let chosen_ids = selected
                                     .iter()
                                     .filter_map(|index| models.get(*index))
-                                    .cloned()
+                                    .map(|model| model.id.clone())
+                                    .filter(|id| *overwrite || !existing.contains(id))
                                     .collect::<Vec<_>>();
-                                self.import_fetched(&id, chosen, *overwrite);
-                                return;
+                                if chosen_ids.is_empty() {
+                                    self.notice(
+                                        NoticeKind::Warning,
+                                        self.language.pick(
+                                            "All selected models already exist (toggle 'o' to overwrite)",
+                                            "选中的模型均已存在（按 o 覆盖）",
+                                        ).to_string(),
+                                    );
+                                    // Do NOT return — the overlay was taken
+                                    // at the top of on_overlay_key and is
+                                    // restored at the end. Returning here would
+                                    // drop it, closing the Fetched list.
+                                } else {
+                                    // When models.dev metadata is enabled,
+                                    // defer the import: first resolve metadata
+                                    // for the chosen IDs (presenting ambiguous
+                                    // matches for the user to pick), then import.
+                                    // When disabled, the list already holds
+                                    // default models — import directly.
+                                    if self.snapshot.fetch_model_metadata {
+                                        self.start_resolve_metadata(id, chosen_ids, *overwrite);
+                                    } else {
+                                        let chosen = chosen_ids
+                                            .iter()
+                                            .filter_map(|id| {
+                                                models.iter().find(|m| m.id == *id).cloned()
+                                            })
+                                            .collect::<Vec<_>>();
+                                        self.import_fetched(&id, chosen, *overwrite);
+                                    }
+                                    return;
+                                }
                             }
                         }
                         _ => {}
@@ -272,6 +307,10 @@ impl App {
                         CatalogContinuation::OpenCode {
                             candidate_indices, ..
                         } => candidate_indices.push(*cursor),
+                        CatalogContinuation::ProviderImport {
+                            candidate_indices,
+                            ..
+                        } => candidate_indices.push(*cursor),
                     }
                     *index += 1;
                     *cursor = 0;
@@ -281,6 +320,24 @@ impl App {
                                 plan,
                                 candidate_indices,
                             } => self.start_opencode_apply(plan, candidate_indices),
+                            CatalogContinuation::ProviderImport {
+                                provider_id,
+                                resolved_models,
+                                candidate_indices,
+                                overwrite,
+                            } => {
+                                let mut final_models = resolved_models;
+                                for (i, ambiguity) in ambiguities.iter().enumerate() {
+                                    if let Some(&pick) = candidate_indices.get(i) {
+                                        if let Some(candidate) =
+                                            ambiguity.candidates.get(pick)
+                                        {
+                                            final_models.push(candidate.model.clone());
+                                        }
+                                    }
+                                }
+                                self.import_fetched(&provider_id, final_models, overwrite);
+                            }
                         }
                         return;
                     }
