@@ -1,6 +1,6 @@
     #[test]
     fn responsive_layout_renders_wide_and_narrow_with_cjk() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         for (width, height) in [(120, 36), (80, 24), (64, 20)] {
             let backend = TestBackend::new(width, height);
             let mut terminal = Terminal::new(backend).unwrap();
@@ -8,13 +8,7 @@
             app.page = Page::Home;
             app.focus = Focus::Menu;
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-            let menu = terminal
-                .backend()
-                .buffer()
-                .content()
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect::<String>();
+            let menu = buffer_string(&terminal);
             assert!(menu.contains("pi-switch"));
             assert!(menu.contains("Home"));
             assert!(menu.contains("Profiles"));
@@ -28,13 +22,7 @@
             app.page = Page::Profiles;
             app.focus = Focus::Providers;
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-            let profiles = terminal
-                .backend()
-                .buffer()
-                .content()
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect::<String>();
+            let profiles = buffer_string(&terminal);
             assert!(profiles.contains("Providers"));
             assert!(profiles.contains("[x]"));
             assert!(profiles.contains("openai-completions"));
@@ -43,13 +31,7 @@
             app.page = Page::Settings;
             app.focus = Focus::Content;
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-            let settings = terminal
-                .backend()
-                .buffer()
-                .content()
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect::<String>();
+            let settings = buffer_string(&terminal);
             assert!(settings.contains("Configuration"));
             assert!(settings.contains("Actions"));
             assert!(settings.contains("Enter/Space run"));
@@ -80,57 +62,37 @@
         app.focus = Focus::Content;
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let chinese = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let chinese = buffer_string(&terminal);
         let chinese = chinese.replace(' ', "");
         assert!(chinese.contains("设置"));
         assert!(chinese.contains("语言:中文"));
         assert!(chinese.contains("从models.dev获取模型信息"));
         assert!(!chinese.contains("默认模型参数"));
         assert!(chinese.contains("从OpenCode导入"));
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn settings_show_model_defaults_only_when_metadata_fetch_is_off() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         app.page = Page::Settings;
         app.focus = Focus::Content;
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let enabled = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let enabled = buffer_string(&terminal);
         assert!(!enabled.contains("Default model parameters"));
         assert!(enabled.contains("●  Fetch model metadata from models.dev"));
 
         app.snapshot.fetch_model_metadata = false;
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let disabled = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let disabled = buffer_string(&terminal);
         assert!(disabled.contains("Default model parameters"));
         assert!(disabled.contains("○  Fetch model metadata from models.dev"));
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn model_defaults_dialog_keeps_its_left_border() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         app.language = super::i18n::Language::Chinese;
         app.page = Page::Settings;
         app.focus = Focus::Content;
@@ -157,23 +119,16 @@
             form.field = 1;
         }
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let content = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let content = buffer_string(&terminal);
         assert!(content.contains("256000"));
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn backups_open_restore_confirmation_with_space() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         app.overlay = Some(Overlay::Backups {
             items: vec![Backup {
-                path: root
+                path: _root
                     .join("backup-2026-07-23_14-36-08-527.json")
                     .display()
                     .to_string(),
@@ -183,23 +138,16 @@
         });
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let content = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let content = buffer_string(&terminal);
         assert!(content.contains("backup-2026-07-23_14-36-08-527.json"));
         assert!(content.contains("Enter/Space"));
         app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         assert!(matches!(app.overlay, Some(Overlay::ConfirmRestore(_))));
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn chinese_provider_form_values_share_one_column() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         app.language = super::i18n::Language::Chinese;
         let mut form = FormState::add();
         form.id = "#".into();
@@ -231,12 +179,11 @@
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(content.contains("Pi"));
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn profiles_use_the_actual_layout_width_for_responsive_breakpoints() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         app.page = Page::Profiles;
         app.focus = Focus::Providers;
         for (width, menu_visible, detail_visible) in [
@@ -247,23 +194,16 @@
         ] {
             let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-            let content = terminal
-                .backend()
-                .buffer()
-                .content()
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect::<String>();
+            let content = buffer_string(&terminal);
 
             assert_eq!(content.contains("Home"), menu_visible);
             assert_eq!(content.contains("Base URL"), detail_visible);
         }
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn compact_profiles_wrap_detail_values_and_model_metadata() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         app.page = Page::Profiles;
         app.focus = Focus::Providers;
         let mut terminal = Terminal::new(TestBackend::new(48, 24)).unwrap();
@@ -288,13 +228,12 @@
         assert!(!rows
             .iter()
             .any(|row| row.contains("https://example.test/v1...")));
-        let _ = fs::remove_dir_all(root);
     }
 
 
     #[test]
     fn home_shows_update_banner_when_a_newer_version_is_available() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         app.page = Page::Home;
         app.focus = Focus::Menu;
         app.update_available = Some("9.9.9".into());
@@ -302,13 +241,7 @@
         let backend = TestBackend::new(120, 36);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let buffer = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let buffer = buffer_string(&terminal);
 
         // The header version becomes "current ↑ latest"…
         assert!(buffer.contains("\u{2191} 9.9.9"));
@@ -319,14 +252,7 @@
         // With no update available the banner and arrow are absent.
         app.update_available = None;
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let buffer = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let buffer = buffer_string(&terminal);
         assert!(!buffer.contains("Update available"));
         assert!(!buffer.contains("npm i -g @oldsuns/pi-switch"));
-        let _ = fs::remove_dir_all(root);
     }

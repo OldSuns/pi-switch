@@ -1,6 +1,6 @@
     #[test]
     fn menu_routes_pages_and_scopes_profile_commands() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
         assert!(app.overlay.is_none());
 
@@ -79,12 +79,11 @@
             app.overlay.is_none(),
             "loading overlay remained after import"
         );
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn corrupt_provider_library_opens_a_blocking_warning_once() {
-        let (root, app) = app();
+        let (_root, app) = app();
         fs::create_dir_all(app.paths.providers.parent().unwrap()).unwrap();
         fs::create_dir_all(app.paths.models.parent().unwrap()).unwrap();
         fs::write(&app.paths.providers, "{broken").unwrap();
@@ -96,7 +95,6 @@
         assert!(rebuilt.overlay.is_none());
         let reloaded = App::new(rebuilt.paths.clone());
         assert!(reloaded.overlay.is_none());
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -162,7 +160,7 @@
 
     #[test]
     fn provider_and_model_space_actions_are_scoped_by_focus() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         fs::create_dir_all(app.paths.providers.parent().unwrap()).unwrap();
         fs::create_dir_all(app.paths.models.parent().unwrap()).unwrap();
         let provider = json!({
@@ -224,46 +222,32 @@
         app.notice = None;
         app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         assert!(app.notice.is_some());
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn profile_footer_shows_only_the_current_left_action() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         app.page = Page::Profiles;
         app.focus = Focus::Models;
         let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let models_footer = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let models_footer = buffer_string(&terminal);
         assert!(models_footer.contains("Left providers"));
         assert!(!models_footer.contains("Left menu"));
 
         app.focus = Focus::Providers;
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let providers_footer = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let providers_footer = buffer_string(&terminal);
         assert!(providers_footer.contains("Left menu"));
         assert!(providers_footer.contains("Enter models"));
         assert!(providers_footer.contains("Space add/remove"));
         assert!(!providers_footer.contains("Left providers"));
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn interactive_overlays_show_their_key_hints() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
 
         app.overlay = Some(Overlay::Fetched {
@@ -279,13 +263,7 @@
             filtering: false,
         });
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let fetched = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let fetched = buffer_string(&terminal);
         assert!(fetched.contains("Space toggle"));
         assert!(fetched.contains("a all"));
         assert!(fetched.contains("n none"));
@@ -301,13 +279,7 @@
             cursor: 0,
         });
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let opencode = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let opencode = buffer_string(&terminal);
         assert!(opencode.contains("Space toggle"));
         assert!(opencode.contains("a all"));
         assert!(opencode.contains("n none"));
@@ -317,20 +289,13 @@
 
         app.overlay = Some(Overlay::Doctor(Vec::new()));
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let doctor = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let doctor = buffer_string(&terminal);
         assert!(doctor.contains("Esc/Enter close"));
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn fetched_catalog_filters_selects_all_and_requires_a_choice() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         app.overlay = Some(Overlay::Fetched {
             provider_id: "custom".into(),
@@ -410,13 +375,7 @@
 
         // Render: only gpt-4 is visible; the price source label shows ratio_config.
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let content = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let content = buffer_string(&terminal);
         assert!(content.contains("gpt-4"));
         assert!(!content.contains("claude-3"));
         assert!(!content.contains("gemini-1.5"));
@@ -425,12 +384,11 @@
         // Esc cancels and closes the overlay.
         app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.overlay.is_none());
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn fetched_existing_models_show_tag_and_overwrite_toggles() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         app.overlay = Some(Overlay::Fetched {
             provider_id: "示例-provider".into(),
@@ -448,13 +406,7 @@
             filtering: false,
         });
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let content = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let content = buffer_string(&terminal);
         // model-a is existing → tagged "exists"; model-c is not.
         assert!(content.contains("exists"));
         // Title shows the overwrite state (off by default).
@@ -464,12 +416,11 @@
         if let Some(Overlay::Fetched { overwrite, .. }) = app.overlay {
             assert!(overwrite);
         }
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn opencode_provider_selector_all_none_and_invert() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         app.overlay = Some(Overlay::OpenCodeProviders {
             providers: vec!["one".into(), "two".into(), "three".into()],
             selected: std::collections::BTreeSet::new(),
@@ -509,12 +460,11 @@
         if let Some(Overlay::OpenCodeProviders { ref selected, .. }) = app.overlay {
             assert_eq!(selected.len(), 1);
         }
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn fetched_existing_models_skipped_on_import_when_overwrite_off() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         app.overlay = Some(Overlay::Fetched {
             provider_id: "示例-provider".into(),
             models: vec![
@@ -545,5 +495,4 @@
         app.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(app.overlay, Some(Overlay::Loading { .. })));
-        let _ = fs::remove_dir_all(&root);
     }

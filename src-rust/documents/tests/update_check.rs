@@ -30,8 +30,8 @@ fn npm_manifest_version_is_extracted() {
 
 #[test]
 fn cache_round_trip_preserves_latest_and_last_check() {
-    let (root, _paths) = fixture();
-    let cache = root.join("update.json");
+    let (_root, _paths) = fixture();
+    let cache = _root.join("update.json");
     let last_check: u128 = 1_700_000_000_000;
     // Write directly via the storage helper path; network write is private, so
     // emulate the file shape and confirm read picks it up.
@@ -50,14 +50,13 @@ fn cache_round_trip_preserves_latest_and_last_check() {
         value.get("lastCheck").and_then(Value::as_u64),
         Some(last_check as u64)
     );
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn newer_version_from_cache_is_returned_via_check_npm_update() {
     // Populate a fresh cache that records a newer version and a recent
     // lastCheck so check_npm_update reuses it without touching the network.
-    let (root, paths) = fixture();
+    let (_root, paths) = fixture();
     fs::create_dir_all(paths.update.parent().unwrap()).unwrap();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -70,7 +69,6 @@ fn newer_version_from_cache_is_returned_via_check_npm_update() {
     .unwrap();
     let result = check_npm_update(&paths.update).unwrap();
     assert_eq!(result.as_deref(), Some("999.0.0"));
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -78,7 +76,7 @@ fn stale_cache_does_not_silently_return_outdated_newer_version() {
     // A cache whose lastCheck is older than the TTL is ignored. With no network
     // available (the cache cannot be refreshed), the function falls back to
     // None rather than returning a stale "newer" version.
-    let (root, paths) = fixture();
+    let (_root, paths) = fixture();
     fs::create_dir_all(paths.update.parent().unwrap()).unwrap();
     let ancient: u64 = 1; // well before any 24h TTL
     fs::write(
@@ -90,32 +88,29 @@ fn stale_cache_does_not_silently_return_outdated_newer_version() {
     // Network is unreachable in the test sandbox, so the stale entry is not
     // trusted and no newer version is reported.
     assert!(result.is_none());
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn missing_cache_without_network_returns_none() {
-    let (root, paths) = fixture();
+    let (_root, paths) = fixture();
     // No cache file exists; network calls fail against the real registry in the
     // sandbox (or timeout). Either way, best-effort → None.
     let result = check_npm_update(&paths.update);
     assert!(result.unwrap().is_none());
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn corrupt_cache_is_ignored() {
-    let (root, paths) = fixture();
+    let (_root, paths) = fixture();
     fs::create_dir_all(paths.update.parent().unwrap()).unwrap();
     fs::write(&paths.update, b"not json at all").unwrap();
     let result = check_npm_update(&paths.update);
     assert!(result.unwrap().is_none());
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn set_check_updates_persists_and_round_trips_through_snapshot() {
-    let (root, paths) = fixture();
+    let (_root, paths) = fixture();
     fs::write(&paths.models, r#"{"providers":{}}"#).unwrap();
     fs::write(&paths.settings, r#"{}"#).unwrap();
 
@@ -128,10 +123,8 @@ fn set_check_updates_persists_and_round_trips_through_snapshot() {
     set_check_updates(&paths, true).unwrap();
     assert!(load_snapshot(&paths).unwrap().check_updates);
 
-    let settings: Value =
-        serde_json::from_slice(&fs::read(&paths.settings).unwrap()).unwrap();
+    let settings = read_json(&paths.settings);
     assert_eq!(settings["piSwitch"]["checkForUpdates"], json!(true));
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -142,7 +135,7 @@ fn check_updates_field_rejects_non_boolean() {
 
 #[test]
 fn dismiss_update_records_and_reads_back() {
-    let (root, paths) = fixture();
+    let (_root, paths) = fixture();
     fs::create_dir_all(paths.update.parent().unwrap()).unwrap();
     // Initially no dismissed version.
     assert!(read_dismissed_update(&paths.update).is_none());
@@ -158,12 +151,11 @@ fn dismiss_update_records_and_reads_back() {
     assert!(value.get("lastCheck").and_then(Value::as_u64).is_some());
     assert!(value.get("latest").is_some());
     assert_eq!(value.get("dismissed").and_then(Value::as_str), Some("0.4.0"));
-    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
 fn dismiss_update_preserves_existing_cache_fields() {
-    let (root, paths) = fixture();
+    let (_root, paths) = fixture();
     fs::create_dir_all(paths.update.parent().unwrap()).unwrap();
     // Seed a cache with lastCheck and latest.
     fs::write(
@@ -173,16 +165,15 @@ fn dismiss_update_preserves_existing_cache_fields() {
     .unwrap();
     // Dismiss a version — existing lastCheck and latest must survive.
     dismiss_update(&paths.update, "0.3.0");
-    let value: Value = serde_json::from_slice(&fs::read(&paths.update).unwrap()).unwrap();
+    let value = read_json(&paths.update);
     assert_eq!(value.get("lastCheck").and_then(Value::as_u64), Some(123456));
     assert_eq!(value.get("latest").and_then(Value::as_str), Some("0.3.0"));
     assert_eq!(value.get("dismissed").and_then(Value::as_str), Some("0.3.0"));
-    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
 fn read_dismissed_update_returns_none_for_missing_or_corrupt_cache() {
-    let (root, paths) = fixture();
+    let (_root, paths) = fixture();
     // No file at all.
     assert!(read_dismissed_update(&paths.update).is_none());
     // Corrupt file.
@@ -196,5 +187,4 @@ fn read_dismissed_update_returns_none_for_missing_or_corrupt_cache() {
     )
     .unwrap();
     assert!(read_dismissed_update(&paths.update).is_none());
-    let _ = fs::remove_dir_all(root);
 }

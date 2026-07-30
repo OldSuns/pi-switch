@@ -71,7 +71,20 @@ mod tests {
     };
     use unicode_width::UnicodeWidthStr;
 
-    fn app() -> (std::path::PathBuf, App) {
+    struct TempDir(std::path::PathBuf);
+    impl std::ops::Deref for TempDir {
+        type Target = std::path::PathBuf;
+        fn deref(&self) -> &std::path::PathBuf {
+            &self.0
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn app() -> (TempDir, App) {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -113,7 +126,7 @@ mod tests {
             model_defaults: Default::default(),
             warning: None,
         };
-        (root, App::from_snapshot(paths, snapshot))
+        (TempDir(root), App::from_snapshot(paths, snapshot))
     }
 
     fn catalog_model(
@@ -139,6 +152,16 @@ mod tests {
                 "maxTokens": max_tokens
             }),
         }
+    }
+
+    fn buffer_string(terminal: &Terminal<TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
     }
 
     include!("tests/layout.rs");

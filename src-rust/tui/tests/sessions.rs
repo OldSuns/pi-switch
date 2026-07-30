@@ -1,7 +1,7 @@
     #[test]
     fn sessions_page_lists_filters_and_confirms_delete() {
-        let (root, mut app) = app();
-        let sessions_root = root.join(".pi/agent/sessions/--proj--");
+        let (_root, mut app) = app();
+        let sessions_root = _root.join(".pi/agent/sessions/--proj--");
         fs::create_dir_all(&sessions_root).unwrap();
         let session_path = sessions_root.join("demo.jsonl");
         fs::write(
@@ -17,7 +17,7 @@
         // Point session listing at the fixture tree via env override.
         env::set_var(
             "PI_CODING_AGENT_SESSION_DIR",
-            root.join(".pi/agent/sessions"),
+            _root.join(".pi/agent/sessions"),
         );
         app.page = Page::Sessions;
         app.focus = Focus::Content;
@@ -49,13 +49,7 @@
 
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let content = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let content = buffer_string(&terminal);
         assert!(content.contains("Demo Session") || content.contains("demo"));
         assert!(content.contains("Preview") || content.contains("预览"));
 
@@ -66,7 +60,6 @@
         ));
 
         env::remove_var("PI_CODING_AGENT_SESSION_DIR");
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -83,8 +76,8 @@
 
     #[test]
     fn session_preview_focus_navigates_messages_and_copies() {
-        let (root, mut app) = app();
-        let sessions_root = root.join(".pi/agent/sessions/--proj--");
+        let (_root, mut app) = app();
+        let sessions_root = _root.join(".pi/agent/sessions/--proj--");
         fs::create_dir_all(&sessions_root).unwrap();
         let session_path = sessions_root.join("demo.jsonl");
         fs::write(
@@ -99,7 +92,7 @@
 
         env::set_var(
             "PI_CODING_AGENT_SESSION_DIR",
-            root.join(".pi/agent/sessions"),
+            _root.join(".pi/agent/sessions"),
         );
         app.page = Page::Sessions;
         app.focus = Focus::Content;
@@ -141,13 +134,12 @@
         assert!(app.focus == Focus::Menu);
 
         env::remove_var("PI_CODING_AGENT_SESSION_DIR");
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn sessions_grouped_by_cwd_with_headers_and_navigation() {
-        let (root, mut app) = app();
-        let sessions_root = root.join(".pi/agent/sessions/--proj--");
+        let (_root, mut app) = app();
+        let sessions_root = _root.join(".pi/agent/sessions/--proj--");
         fs::create_dir_all(&sessions_root).unwrap();
 
         // Beta group — most recently active (message timestamp 3000).
@@ -177,7 +169,7 @@
 
         env::set_var(
             "PI_CODING_AGENT_SESSION_DIR",
-            root.join(".pi/agent/sessions"),
+            _root.join(".pi/agent/sessions"),
         );
         app.page = Page::Sessions;
         app.focus = Focus::Content;
@@ -201,13 +193,7 @@
         // Render and verify group headers appear in the buffer.
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let content = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let content = buffer_string(&terminal);
         assert!(content.contains("/work/beta"));
         assert!(content.contains("/work/alpha"));
 
@@ -228,6 +214,5 @@
         assert_eq!(app.selected_session().unwrap().id, "alpha-1");
 
         env::remove_var("PI_CODING_AGENT_SESSION_DIR");
-        let _ = fs::remove_dir_all(root);
     }
 

@@ -49,16 +49,7 @@ fn fetch_models_uses_the_explicit_catalog_endpoint() {
             .unwrap();
         }
     });
-    let provider = ProviderView {
-        id: "local".into(),
-        in_pi: true,
-        base_url: format!("http://{address}/v1"),
-        api: "openai-completions".into(),
-        api_key: "secret".into(),
-        auth_header: true,
-        models: Vec::new(),
-        raw: json!({}),
-    };
+    let provider = provider_view(&address, "secret", true);
     let fetched = fetch_models_for_test(
         provider,
         ImportOptions {
@@ -117,16 +108,7 @@ fn fetch_models_uses_the_explicit_catalog_endpoint() {
             }
         }
     });
-    let provider = ProviderView {
-        id: "local".into(),
-        in_pi: true,
-        base_url: format!("http://{address}/v1"),
-        api: "openai-completions".into(),
-        api_key: String::new(),
-        auth_header: false,
-        models: Vec::new(),
-        raw: json!({}),
-    };
+    let provider = provider_view(&address, "", false);
     let fetched = fetch_models_for_test(
         provider,
         ImportOptions {
@@ -187,16 +169,7 @@ fn fetch_models_falls_back_to_defaults_when_a_model_has_no_models_dev_metadata()
             .unwrap();
         }
     });
-    let provider = ProviderView {
-        id: "local".into(),
-        in_pi: true,
-        base_url: format!("http://{address}/v1"),
-        api: "openai-completions".into(),
-        api_key: String::new(),
-        auth_header: false,
-        models: Vec::new(),
-        raw: json!({}),
-    };
+    let provider = provider_view(&address, "", false);
     let fetched = fetch_models_for_test(
         provider,
         ImportOptions {
@@ -262,16 +235,7 @@ fn fetch_models_uses_defaults_when_models_dev_is_unreachable() {
             }
         }
     });
-    let provider = ProviderView {
-        id: "local".into(),
-        in_pi: true,
-        base_url: format!("http://{address}/v1"),
-        api: "openai-completions".into(),
-        api_key: String::new(),
-        auth_header: false,
-        models: Vec::new(),
-        raw: json!({}),
-    };
+    let provider = provider_view(&address, "", false);
     let fetched = fetch_models_for_test(
         provider,
         ImportOptions {
@@ -295,7 +259,7 @@ fn fetch_models_uses_defaults_when_models_dev_is_unreachable() {
 
 #[test]
 fn invalid_shapes_and_stale_edits_fail_explicitly() {
-    let (root, paths) = fixture();
+    let (_root, paths) = fixture();
     fs::write(
             &paths.models,
             r#"{"providers":{"bad":{"baseUrl":"https://example.test","api":"openai-completions","models":[{"id":7}]}}}"#,
@@ -362,12 +326,11 @@ fn invalid_shapes_and_stale_edits_fail_explicitly() {
         read_document(&paths.models, json!({})).unwrap(),
         json!({"providers": {}})
     );
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn model_crud_and_provider_copy_preserve_metadata_and_defaults() {
-    let (root, paths) = fixture();
+    let (_root, paths) = fixture();
     fs::write(
             &paths.models,
             r#"{"rootFuture":4,"providers":{"p":{"baseUrl":"https://example.test/v1","api":"openai-completions","apiKey":"$KEY","providerFuture":true,"models":[{"id":"alpha","name":"alpha","modelFuture":7,"cost":{"input":1},"compat":{"thinkingFormat":"deepseek"}}]}}}"#,
@@ -423,7 +386,7 @@ fn model_crud_and_provider_copy_preserve_metadata_and_defaults() {
     );
     assert_eq!(duplicate_provider(&paths, "p").unwrap(), "p-copy");
 
-    let models: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
+    let models = read_json(&paths.models);
     assert_eq!(models["rootFuture"], 4);
     assert_eq!(models["providers"]["p"]["providerFuture"], true);
     assert_eq!(models["providers"]["p"]["models"][0]["id"], "beta");
@@ -452,15 +415,14 @@ fn model_crud_and_provider_copy_preserve_metadata_and_defaults() {
         "deepseek"
     );
     assert_eq!(models["providers"]["p-copy"]["models"][0]["id"], "beta");
-    let settings: Value = serde_json::from_slice(&fs::read(&paths.settings).unwrap()).unwrap();
+    let settings = read_json(&paths.settings);
     assert_eq!(settings["defaultModel"], "beta");
 
     remove_model(&paths, "p", "beta").unwrap();
-    let settings: Value = serde_json::from_slice(&fs::read(&paths.settings).unwrap()).unwrap();
+    let settings = read_json(&paths.settings);
     assert!(settings.get("defaultProvider").is_none());
     assert!(settings.get("defaultModel").is_none());
     assert_eq!(settings["theme"], "keep");
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -562,7 +524,7 @@ fn find_ratio_matches_exact_case_insensitive_and_prefix() {
 
 #[test]
 fn model_cost_fields_round_trip_and_preserve_through_untouched_edits() {
-    let (root, paths) = fixture();
+    let (_root, paths) = fixture();
     fs::write(
         &paths.models,
         r#"{"providers":{"p":{"baseUrl":"https://e.test/v1","api":"openai-completions","apiKey":"$K","models":[{"id":"m","contextWindow":128000,"maxTokens":16384}]}}}"#,
@@ -576,7 +538,7 @@ fn model_cost_fields_round_trip_and_preserve_through_untouched_edits() {
     priced.cache_read_cost = Some(0.5);
     priced.cache_write_cost = Some(0.0);
     save_model(&paths, "p", Some("m"), &priced).unwrap();
-    let models: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
+    let models = read_json(&paths.models);
     assert_eq!(models["providers"]["p"]["models"][0]["cost"]["input"], 1.0);
     assert_eq!(models["providers"]["p"]["models"][0]["cost"]["output"], 2.0);
     assert_eq!(models["providers"]["p"]["models"][0]["cost"]["cacheRead"], 0.5);
@@ -587,8 +549,7 @@ fn model_cost_fields_round_trip_and_preserve_through_untouched_edits() {
     renamed.context_window = 128_000;
     renamed.max_tokens = 16_384;
     save_model(&paths, "p", Some("m"), &renamed).unwrap();
-    let models: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
+    let models = read_json(&paths.models);
     assert_eq!(models["providers"]["p"]["models"][0]["id"], "m2");
     assert_eq!(models["providers"]["p"]["models"][0]["cost"]["input"], 1.0);
-    fs::remove_dir_all(root).unwrap();
 }

@@ -264,7 +264,7 @@ fn reasoning_models_use_most_detailed_thinking_level_map() {
 
 #[test]
 fn opencode_import_uses_live_catalog_metadata_when_unambiguous() {
-    let (root, paths) = fixture();
+    let (_root, paths) = fixture();
     write_opencode(
         &paths,
         json!({
@@ -294,7 +294,7 @@ fn opencode_import_uses_live_catalog_metadata_when_unambiguous() {
     let summary = import_opencode_with_catalog(&paths, &catalog).unwrap();
     assert_eq!(summary.metadata, 1);
     assert_eq!(summary.unresolved, 0);
-    let models: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
+    let models = read_json(&paths.models);
     let model = &models["providers"]["custom"]["models"][0];
     assert_eq!(model["name"], "Local display name");
     assert_eq!(model["reasoning"], true);
@@ -303,12 +303,11 @@ fn opencode_import_uses_live_catalog_metadata_when_unambiguous() {
     assert_eq!(model["cost"]["input"], 0.6);
     assert_eq!(model["thinkingLevelMap"]["off"], "none");
     assert_eq!(model["thinkingLevelMap"]["max"], "max");
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn opencode_import_ignores_empty_model_name() {
-    let (root, paths) = fixture();
+    let (_root, paths) = fixture();
     write_opencode(
         &paths,
         json!({
@@ -328,17 +327,16 @@ fn opencode_import_ignores_empty_model_name() {
 
     import_opencode_with_catalog(&paths, &catalog).unwrap();
 
-    let models: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
+    let models = read_json(&paths.models);
     assert_eq!(
         models["providers"]["caroline"]["models"][0]["name"],
         "deepseek-v4-pro"
     );
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn opencode_import_can_select_providers_and_use_custom_defaults() {
-    let (root, paths) = fixture();
+    let (_root, paths) = fixture();
     write_opencode(
         &paths,
         json!({
@@ -376,19 +374,18 @@ fn opencode_import_can_select_providers_and_use_custom_defaults() {
     assert_eq!(summary.defaults, 1);
     assert_eq!(summary.metadata, 0);
     assert_eq!(summary.unresolved, 0);
-    let models: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
+    let models = read_json(&paths.models);
     assert!(models["providers"].get("one").is_none());
     let model = &models["providers"]["two"]["models"][0];
     assert_eq!(model["contextWindow"], 256_000);
     assert_eq!(model["maxTokens"], PI_DEFAULT_MAX_TOKENS);
     assert_eq!(model["cost"]["output"], 3.5);
     assert_eq!(model["cost"]["input"], 0.0);
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn opencode_import_applies_the_selected_provider_price() {
-    let (root, paths) = fixture();
+    let (_root, paths) = fixture();
     write_opencode(
         &paths,
         json!({
@@ -431,11 +428,10 @@ fn opencode_import_applies_the_selected_provider_price() {
     let summary = apply_opencode_import(&paths, plan, &[1]).unwrap();
     assert_eq!(summary.metadata, 1);
     assert_eq!(summary.unresolved, 0);
-    let models: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
+    let models = read_json(&paths.models);
     let model = &models["providers"]["custom"]["models"][0];
     assert_eq!(model["cost"]["input"], 2.0);
     assert_eq!(model["contextWindow"], 200_000);
     assert_eq!(model["maxTokens"], 20_000);
-    fs::remove_dir_all(root).unwrap();
 }
 

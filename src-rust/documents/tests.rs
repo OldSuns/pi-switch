@@ -8,7 +8,20 @@ use std::{
 
 static FIXTURE_ID: AtomicUsize = AtomicUsize::new(0);
 
-fn fixture() -> (PathBuf, Paths) {
+struct TempDir(PathBuf);
+impl std::ops::Deref for TempDir {
+    type Target = PathBuf;
+    fn deref(&self) -> &PathBuf {
+        &self.0
+    }
+}
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn fixture() -> (TempDir, Paths) {
     let root = env::temp_dir().join(format!(
         "pi-switch-test-{}-{}-{}",
         process::id(),
@@ -17,7 +30,7 @@ fn fixture() -> (PathBuf, Paths) {
     ));
     fs::create_dir_all(root.join(".pi/agent")).unwrap();
     let paths = Paths::from_home(&root);
-    (root, paths)
+    (TempDir(root), paths)
 }
 
 fn model_draft(id: &str) -> ModelDraft {
@@ -60,6 +73,23 @@ fn models_dev_model(id: &str, context_window: u64, max_tokens: u64, input_cost: 
         "cost": {"input": input_cost, "output": 2, "cache_read": 0.1},
         "limit": {"context": context_window, "output": max_tokens}
     })
+}
+
+fn read_json(path: impl AsRef<std::path::Path>) -> Value {
+    serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+}
+
+fn provider_view(address: &std::net::SocketAddr, api_key: &str, auth_header: bool) -> ProviderView {
+    ProviderView {
+        id: "local".into(),
+        in_pi: true,
+        base_url: format!("http://{address}/v1"),
+        api: "openai-completions".into(),
+        api_key: api_key.into(),
+        auth_header,
+        models: Vec::new(),
+        raw: json!({}),
+    }
 }
 
 fn write_opencode(paths: &Paths, value: Value) {

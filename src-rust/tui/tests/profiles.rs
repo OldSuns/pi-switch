@@ -54,7 +54,7 @@
         assert!(edited.other_compat_json.is_empty());
 
         // Session affinity now lives inside the compat sub-menu (compat_field 9).
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         let mut form = FormState::add();
         form.editing_compat = true;
         form.compat_field = 9;
@@ -63,7 +63,6 @@
         assert!(!form.send_session_affinity_headers);
         app.on_form_key(&mut form, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         assert!(form.send_session_affinity_headers);
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -83,7 +82,7 @@
 
     #[test]
     fn contextual_actions_open_provider_and_model_crud() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         app.page = Page::Profiles;
         app.focus = Focus::Providers;
         app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
@@ -156,13 +155,7 @@
         app.overlay = Some(Overlay::Form(configured_form));
         let mut terminal = Terminal::new(TestBackend::new(64, 20)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let provider_content = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let provider_content = buffer_string(&terminal);
         assert!(provider_content.contains("Headers"));
         assert!(!provider_content.contains("(all models)"));
         assert!(provider_content.contains("User-Agent"));
@@ -172,13 +165,7 @@
         invalid_form.headers_json = "[".into();
         app.overlay = Some(Overlay::Form(invalid_form));
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let invalid_content = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let invalid_content = buffer_string(&terminal);
         assert!(invalid_content.contains("invalid JSON"));
 
         if let Some(Overlay::Form(form)) = app.overlay.as_mut() {
@@ -199,13 +186,7 @@
         ));
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let headers_content = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let headers_content = buffer_string(&terminal);
         assert!(headers_content.contains("Provider headers"));
         assert!(!headers_content.contains("all models"));
         assert!(headers_content.contains("User-Agent"));
@@ -216,13 +197,7 @@
         assert!(!headers_content.contains("User-Agent is separate"));
         app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let json_content = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let json_content = buffer_string(&terminal);
         assert!(json_content.contains("Other headers JSON"));
         assert!(json_content.contains("$KEY"));
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -244,20 +219,13 @@
         )));
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let model_content = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let model_content = buffer_string(&terminal);
         assert!(model_content.contains("Context & limits"));
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn provider_form_question_mark_help_and_api_key_masking() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         app.language = super::i18n::Language::Chinese;
         let mut form = FormState::add();
         form.api_key = "sk-1234567890abcdef".into();
@@ -269,13 +237,7 @@
         }
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let help_content = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let help_content = buffer_string(&terminal);
         let help_content = help_content.replace(' ', "");
         assert!(help_content.contains("仅自定义"));
         app.on_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
@@ -286,47 +248,28 @@
             form.field = 3;
         }
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let masked = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let masked = buffer_string(&terminal);
         assert!(masked.contains("1234567890abcdef"));
         assert!(!masked.contains("sk-1...cdef"));
         if let Some(Overlay::Form(ref mut form)) = app.overlay.as_mut() {
             form.field = 0;
         }
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let plain = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let plain = buffer_string(&terminal);
         assert!(plain.contains("sk-1...cdef"));
         assert!(!plain.contains("1234567890abcdef"));
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn model_limits_are_compact_in_lists_but_raw_in_the_editor() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         app.snapshot.providers[0].models[0].context_window = Some(128_000);
         app.snapshot.providers[0].models[0].max_tokens = Some(1_048_576);
         app.page = Page::Profiles;
         app.focus = Focus::Providers;
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let profiles = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let profiles = buffer_string(&terminal);
         assert!(profiles.contains("ctx 128k  max 1M"));
 
         let model = app.snapshot.providers[0].models[0].clone();
@@ -335,16 +278,9 @@
             &model,
         )));
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let editor = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let editor = buffer_string(&terminal);
         assert!(editor.contains("128000"));
         assert!(editor.contains("1048576"));
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -352,7 +288,7 @@
         // Ambiguities used to gate the model list behind a metadata-source
         // picker; they now auto-resolve to the first candidate so the user
         // sees every gateway model up front in the selection list.
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         app.overlay = Some(Overlay::Fetched {
             provider_id: "custom".into(),
@@ -370,13 +306,7 @@
             filtering: false,
         });
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let content = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let content = buffer_string(&terminal);
         assert!(content.contains("resolved"));
         assert!(content.contains("shared"));
         assert!(content.contains("ratio_config"));
@@ -386,12 +316,11 @@
         if let Some(Overlay::Fetched { ref selected, .. }) = app.overlay {
             assert_eq!(selected.len(), 1);
         }
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn fetched_overlay_o_toggles_overwrite_for_existing_models() {
-        let (root, mut app) = app();
+        let (_root, mut app) = app();
         let existing: std::collections::BTreeSet<String> =
             ["model-a".to_owned()].into_iter().collect();
         let selected: std::collections::BTreeSet<usize> = [0].into_iter().collect();
@@ -420,6 +349,5 @@
             Some(Overlay::Fetched { overwrite, .. }) => assert!(overwrite),
             _ => panic!("overlay should still be Fetched after pressing 'o'"),
         }
-        let _ = fs::remove_dir_all(root);
     }
 

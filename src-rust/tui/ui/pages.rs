@@ -348,11 +348,12 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Them
                     session.message_count,
                     app.language.pick("msg", "条"),
                 );
-                let meta = if UnicodeWidthStr::width(verbose_meta.as_str()) + 2 <= session_text_width {
-                    verbose_meta
-                } else {
-                    time
-                };
+                let meta =
+                    if UnicodeWidthStr::width(verbose_meta.as_str()) + 2 <= session_text_width {
+                        verbose_meta
+                    } else {
+                        time
+                    };
                 let meta = truncate_width(&meta, session_text_width);
                 let meta_width = UnicodeWidthStr::width(meta.as_str());
                 let title_budget = session_text_width.saturating_sub(meta_width + 1);
