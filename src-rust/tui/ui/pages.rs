@@ -334,7 +334,7 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Them
             // Group header row — never selectable.
             let header_text = group_header_text(&group.cwd, header_text_width);
             items.push(ListItem::new(Line::from(Span::styled(
-                format!("{header_text}"),
+                header_text.to_string(),
                 Style::default()
                     .fg(theme.accent)
                     .add_modifier(Modifier::BOLD),
