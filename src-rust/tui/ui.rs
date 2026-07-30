@@ -15,7 +15,10 @@ use crate::documents::{CatalogModel, PI_DEFAULT_CONTEXT_WINDOW, PI_DEFAULT_MAX_T
 
 use super::{
     app::{visible_fetched_indices, App, Focus, Notice, NoticeKind, Overlay, Page},
-    forms::{FormState, ModelDefaultsFormState, ModelFormState},
+    forms::{
+        FormState, ModelDefaultsFormState, ModelFormState, MAX_TOKENS_FIELDS, PRESETS,
+        THINKING_FORMATS,
+    },
     i18n::Language,
     input::{api_label, mask_secret, pad_width, truncate_width, with_cursor, wrap_width},
     keys::{all_shortcuts, shortcut, Command},

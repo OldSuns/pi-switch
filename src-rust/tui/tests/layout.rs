@@ -205,7 +205,6 @@
         form.id = "#".into();
         form.base_url = "@".into();
         form.headers_json = "H".into();
-        form.compat_json = "%".into();
         form.field = 2;
         app.overlay = Some(Overlay::Form(form));
         let mut terminal = Terminal::new(TestBackend::new(80, 26)).unwrap();
@@ -219,9 +218,9 @@
         let columns = [
             value_x(2, "#"),
             value_x(4, "@"),
-            value_x(12, "<"),
+            value_x(6, "<"),
+            value_x(10, "<"),
             value_x(14, "<"),
-            value_x(16, "%"),
         ];
         assert!(
             columns.iter().all(|column| *column == columns[0]),

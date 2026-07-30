@@ -1,7 +1,7 @@
     #[test]
     fn provider_session_affinity_compat_is_first_class_and_preserves_other_keys() {
         let mut form = FormState::add();
-        form.compat_json = r#"{"supportsDeveloperRole":false}"#.into();
+        form.supports_developer_role = Some(false);
 
         let compat = form.draft().unwrap().compat.unwrap();
         assert_eq!(compat["sendSessionAffinityHeaders"], true);
@@ -17,14 +17,15 @@
         assert_eq!(compat["sendSessionAffinityHeaders"], false);
         assert_eq!(compat["supportsDeveloperRole"], false);
 
-        form.compat_json =
+        // Structured keys are rejected when present in the raw Other compat JSON.
+        form.other_compat_json =
             r#"{"sendSessionAffinityHeaders":true,"supportsDeveloperRole":false}"#.into();
         assert!(form
             .draft()
             .unwrap_err()
             .to_string()
-            .contains("managed by Session affinity"));
-        form.compat_json = r#"{"supportsDeveloperRole":false}"#.into();
+            .contains("managed by the compat fields"));
+        form.other_compat_json.clear();
 
         let mut provider = ProviderView {
             id: "custom".into(),
@@ -43,22 +44,41 @@
         };
         let edited = FormState::edit(&provider);
         assert!(edited.send_session_affinity_headers);
-        assert_eq!(edited.compat_json, r#"{"supportsDeveloperRole":false}"#);
+        assert_eq!(edited.supports_developer_role, Some(false));
+        assert!(edited.other_compat_json.is_empty());
 
         provider.raw = json!({"compat":{"supportsDeveloperRole":false}});
         let edited = FormState::edit(&provider);
         assert!(edited.send_session_affinity_headers);
-        assert_eq!(edited.compat_json, r#"{"supportsDeveloperRole":false}"#);
+        assert_eq!(edited.supports_developer_role, Some(false));
+        assert!(edited.other_compat_json.is_empty());
 
+        // Session affinity now lives inside the compat sub-menu (compat_field 9).
         let (root, mut app) = app();
         let mut form = FormState::add();
-        form.field = 6;
+        form.editing_compat = true;
+        form.compat_field = 9;
         assert!(form.send_session_affinity_headers);
         app.on_form_key(&mut form, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert!(!form.send_session_affinity_headers);
         app.on_form_key(&mut form, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         assert!(form.send_session_affinity_headers);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compat_deepseek_preset_writes_official_fields() {
+        let mut form = FormState::add();
+        form.preset = 1; // DeepSeek
+        form.apply_preset();
+        assert_eq!(form.requires_reasoning_content, Some(true));
+        assert_eq!(form.supports_store, Some(false));
+        assert_eq!(form.supports_developer_role, Some(false));
+        let compat = form.draft().unwrap().compat.unwrap();
+        assert_eq!(compat["requiresReasoningContentOnAssistantMessages"], true);
+        assert_eq!(compat["thinkingFormat"], "deepseek");
+        assert_eq!(compat["supportsStore"], false);
+        assert_eq!(compat["supportsDeveloperRole"], false);
     }
 
     #[test]
@@ -106,7 +126,7 @@
         let mut provider_form = FormState::add();
         provider_form.user_agent = "  claude-cli/2.1.161  ".into();
         provider_form.headers_json = r#"{"user-agent":"old","x-api-key":"$KEY"}"#.into();
-        provider_form.compat_json = r#"{"supportsDeveloperRole":false}"#.into();
+        provider_form.supports_developer_role = Some(false);
         let draft = provider_form.draft().unwrap();
         let headers = draft.headers.unwrap();
         assert_eq!(headers["User-Agent"], "claude-cli/2.1.161");
@@ -167,7 +187,7 @@
             form.headers_json = r#"{"x-api-key":"$KEY"}"#.into();
             form.field = 5;
         }
-        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         assert!(matches!(
             app.overlay,
             Some(Overlay::Form(ref form)) if form.editing_headers
@@ -190,9 +210,9 @@
         assert!(!headers_content.contains("all models"));
         assert!(headers_content.contains("User-Agent"));
         assert!(headers_content.contains("Other headers JSON"));
-        assert!(headers_content.contains("Ctrl+S"));
         assert!(headers_content.contains("Tab"));
         assert!(headers_content.contains("Esc"));
+        assert!(!headers_content.contains("Ctrl+S"));
         assert!(!headers_content.contains("User-Agent is separate"));
         app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();

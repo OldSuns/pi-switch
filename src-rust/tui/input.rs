@@ -182,3 +182,16 @@ pub(super) fn with_cursor(value: &str, char_index: usize) -> String {
     output.insert(byte_index(value, char_index), '|');
     output
 }
+
+/// Cycle a tri-state boolean: None (inherit) → Some(true) → Some(false) → None.
+/// Left goes backward, anything else (Right/Space) goes forward.
+pub(super) fn cycle_tristate(value: Option<bool>, key: KeyCode) -> Option<bool> {
+    match (value, key) {
+        (None, KeyCode::Left) => Some(false),
+        (None, _) => Some(true),
+        (Some(true), KeyCode::Left) => None,
+        (Some(true), _) => Some(false),
+        (Some(false), KeyCode::Left) => Some(true),
+        (Some(false), _) => None,
+    }
+}

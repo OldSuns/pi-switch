@@ -18,9 +18,12 @@ mod overlay;
 mod sessions;
 
 use super::{
-    forms::{FormState, ModelDefaultsFormState, ModelFormState},
+    forms::{
+        FormState, ModelDefaultsFormState, ModelFormState, MAX_TOKENS_FIELDS, PRESETS,
+        THINKING_FORMATS,
+    },
     i18n::Language,
-    input::{char_len, edit_text_key, insert_char, moved},
+    input::{char_len, cycle_tristate, edit_text_key, insert_char, moved},
     keys::{command_for, Command},
     API_TYPES, COMPACT_WIDTH,
 };

@@ -11,6 +11,10 @@ pub(super) fn render_form(
         render_provider_headers_form(frame, form, language, area, theme);
         return;
     }
+    if form.editing_compat {
+        render_provider_compat_form(frame, form, language, area, theme);
+        return;
+    }
     let rect = modal_rect(area, 88, 24);
     clear_area(frame, rect, theme);
     let block = Block::default()
@@ -38,12 +42,13 @@ pub(super) fn render_form(
         Constraint::Length(2),
         Constraint::Length(2),
         Constraint::Length(2),
-        Constraint::Length(2),
         Constraint::Min(1),
     ])
     .split(inner);
     let headers_summary =
         headers_summary(form, language, usize::from(inner.width.saturating_sub(26)));
+    let compat_summary =
+        compat_summary(form, language, usize::from(inner.width.saturating_sub(26)));
     let values = [
         form.id.clone(),
         form.base_url.clone(),
@@ -69,15 +74,7 @@ pub(super) fn render_form(
             }
         ),
         headers_summary,
-        format!(
-            "< {} >",
-            if form.send_session_affinity_headers {
-                language.pick("enabled", "启用")
-            } else {
-                language.pick("disabled", "禁用")
-            }
-        ),
-        form.compat_json.clone(),
+        compat_summary,
         format!(
             "< {} >",
             if form.in_pi {
@@ -94,11 +91,10 @@ pub(super) fn render_form(
         language.pick("API key", "API 密钥"),
         language.pick("Auth header", "认证请求头"),
         language.pick("Headers", "请求头"),
-        language.pick("Session affinity", "会话亲和"),
-        language.pick("Other compat JSON", "其他兼容 JSON"),
+        language.pick("Compat", "兼容"),
         language.pick("Add to Pi", "加入 Pi"),
     ];
-    for index in 0..9 {
+    for index in 0..8 {
         let active = form.field == index;
         let label = Line::from(vec![
             Span::styled(
@@ -112,7 +108,7 @@ pub(super) fn render_form(
                 },
             ),
             Span::styled(
-                if active && !matches!(index, 2 | 4 | 5 | 6 | 8) {
+                if active && !matches!(index, 2 | 4 | 5 | 6 | 7) {
                     with_cursor(&values[index], form.cursor)
                 } else {
                     values[index].clone()
@@ -132,8 +128,8 @@ pub(super) fn render_form(
                 label,
                 Line::from(Span::styled(
                     language.pick(
-                        "  Enter to configure User-Agent or other headers",
-                        "  Enter 编辑 User-Agent 或其他请求头",
+                        "  Space to configure User-Agent or other headers",
+                        "  空格编辑 User-Agent 或其他请求头",
                     ),
                     theme.dim_text(),
                 )),
@@ -149,13 +145,18 @@ pub(super) fn render_form(
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                " Ctrl+S ",
+                " Enter ",
                 Style::default()
                     .fg(theme.success)
                     .bg(theme.surface)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(language.pick("save  ", "保存  "), theme.label()),
+            Span::styled(" Space ", theme.keycap()),
+            Span::styled(
+                language.pick("open sub-menu  ", "开二级菜单  "),
+                theme.label(),
+            ),
             Span::styled(" Tab ", theme.keycap()),
             Span::styled(language.pick("next field  ", "下一字段  "), theme.label()),
             Span::styled(
@@ -169,7 +170,7 @@ pub(super) fn render_form(
             Span::styled(" Ctrl+U ", theme.keycap()),
             Span::styled(language.pick("clear", "清空"), theme.label()),
         ])),
-        rows[9],
+        rows[8],
     );
     if form.show_help {
         render_provider_field_help(frame, form, language, area, theme);
@@ -215,7 +216,13 @@ pub(super) fn provider_field_help(
     };
     let body = |text: &'static str| Line::from(Span::styled(text, Style::default()));
     let blank = || Line::from("");
-    let field = if form.editing_headers { 9 } else { form.field };
+    let field = if form.editing_headers {
+        8
+    } else if form.editing_compat {
+        100 + form.compat_field
+    } else {
+        form.field
+    };
     match field {
         0 => vec![
             title(language.pick("Provider ID", "提供商 ID")),
@@ -270,36 +277,106 @@ pub(super) fn provider_field_help(
         5 => vec![
             title(language.pick("Headers", "请求头")),
             body(language.pick(
-                "Custom HTTP headers for all requests. Enter to edit User-Agent and other headers.",
-                "所有请求的自定义 HTTP 头。按 Enter 编辑 User-Agent 与其他请求头。",
+                "Custom HTTP headers for all requests. Space to edit User-Agent and other headers.",
+                "所有请求的自定义 HTTP 头。按空格编辑 User-Agent 与其他请求头。",
             )),
         ],
         6 => vec![
-            title(language.pick("Session affinity", "会话亲和")),
+            title(language.pick("Compat", "兼容")),
             body(language.pick(
-                "Send session affinity headers so the same session routes to the same backend.",
-                "发送会话亲和头,使同一会话路由到同一后端。",
+                "Provider compatibility overrides for Pi. Space to open the compat sub-menu: presets, reasoning, thinking format, cache retention, session affinity, and raw JSON.",
+                "提供商对 Pi 的兼容性覆写。按空格打开兼容二级菜单:预设、推理、思维格式、缓存保留、会话亲和与原始 JSON。",
             )),
         ],
         7 => vec![
-            title(language.pick("Other compat JSON", "其他兼容 JSON")),
-            body(language.pick(
-                "Raw compat fields preserved as-is. sendSessionAffinityHeaders is managed above.",
-                "原样保留的兼容字段。sendSessionAffinityHeaders 由上方字段管理。",
-            )),
-        ],
-        8 => vec![
             title(language.pick("Add to Pi", "加入 Pi")),
             body(language.pick(
                 "Synced providers are written to Pi models.json; not-synced providers stay in the pi-switch library.",
                 "同步到 Pi 的提供商会写入 Pi models.json；不同步的提供商只保存在 pi-switch 库中。",
             )),
         ],
-        9 => vec![
+        8 => vec![
             title(language.pick("Headers", "请求头")),
             body(language.pick(
                 "User-Agent and other HTTP headers sent on every request.",
                 "每次请求发送的 User-Agent 与其他 HTTP 头。",
+            )),
+        ],
+        100 => vec![
+            title(language.pick("Preset", "预设")),
+            body(language.pick(
+                "Apply a bundled set of compat fields matching an official Pi provider preset. Selecting one overwrites the fields it covers; inherit/none applies nothing.",
+                "一键应用官方 Pi 提供商预设的一组 compat 字段。选中会覆写其涉及的字段；“默认”表示不选预设、不做任何改动。",
+            )),
+        ],
+        101 => vec![
+            title(language.pick("requiresReasoningContentOnAssistantMessages", "requiresReasoningContentOnAssistantMessages")),
+            body(language.pick(
+                "Replayed assistant turns must include empty reasoning_content when reasoning is on. Needed for DeepSeek-like providers.",
+                "开启推理时，回放的 assistant 轮次必须包含空 reasoning_content。DeepSeek 等类似模型需要开启。",
+            )),
+        ],
+        102 => vec![
+            title(language.pick("thinkingFormat", "thinkingFormat")),
+            body(language.pick(
+                "Reasoning/thinking parameter format: openai (reasoning_effort), openrouter, deepseek (thinking:{type}), together, zai, qwen. inherit = do not write.",
+                "推理/思维参数的格式:openai(reasoning_effort)、openrouter、deepseek(thinking:{type})、together、zai、qwen。“默认”表示不写入、交由 Pi 自动判断。",
+            )),
+        ],
+        103 => vec![
+            title(language.pick("supportsLongCacheRetention", "supportsLongCacheRetention")),
+            body(language.pick(
+                "Send prompt_cache_retention for long prompt cache retention. inherit = let Pi auto-detect.",
+                "发送 prompt_cache_retention 以请求长缓存保留。“默认”表示不写入、交由 Pi 自动检测。",
+            )),
+        ],
+        104 => vec![
+            title(language.pick("supportsStore", "supportsStore")),
+            body(language.pick(
+                "Whether the provider supports the `store` field. inherit = auto-detect.",
+                "提供商是否支持 `store` 字段。“默认”表示不写入、交由 Pi 自动检测。",
+            )),
+        ],
+        105 => vec![
+            title(language.pick("supportsDeveloperRole", "supportsDeveloperRole")),
+            body(language.pick(
+                "Use the `developer` role instead of `system`. inherit = auto-detect.",
+                "使用 `developer` 角色而非 `system`。“默认”表示不写入、交由 Pi 自动检测。",
+            )),
+        ],
+        106 => vec![
+            title(language.pick("supportsReasoningEffort", "supportsReasoningEffort")),
+            body(language.pick(
+                "Whether the provider supports reasoning_effort. inherit = auto-detect.",
+                "提供商是否支持 reasoning_effort。“默认”表示不写入、交由 Pi 自动检测。",
+            )),
+        ],
+        107 => vec![
+            title(language.pick("maxTokensField", "maxTokensField")),
+            body(language.pick(
+                "Which field to use for max tokens: max_completion_tokens or max_tokens. inherit = auto-detect.",
+                "用哪个字段传 max tokens:max_completion_tokens 或 max_tokens。“默认”表示不写入、交由 Pi 自动检测。",
+            )),
+        ],
+        108 => vec![
+            title(language.pick("supportsStrictMode", "supportsStrictMode")),
+            body(language.pick(
+                "Whether tool definitions support the `strict` field. inherit = auto-detect.",
+                "工具定义是否支持 `strict` 字段。“默认”表示不写入、交由 Pi 自动检测。",
+            )),
+        ],
+        109 => vec![
+            title(language.pick("Session affinity", "会话亲和")),
+            body(language.pick(
+                "Send session affinity headers so the same session routes to the same backend.",
+                "发送会话亲和头，使同一会话路由到同一后端。",
+            )),
+        ],
+        110 => vec![
+            title(language.pick("Other compat JSON", "其他兼容 JSON")),
+            body(language.pick(
+                "Raw compat fields preserved as-is, for keys not covered above. Structured keys are rejected here.",
+                "原样保留的兼容字段，用于上方未覆盖的键。上方已有的结构化键不可写在此处。",
             )),
         ],
         _ => vec![],
@@ -310,9 +387,61 @@ pub(super) fn headers_summary(form: &FormState, language: Language, width: usize
     let body = match form.header_names() {
         Err(()) => language.pick("invalid JSON", "JSON 无效").to_owned(),
         Ok(names) if names.is_empty() => language
-            .pick("none - Enter to edit", "未设置 - Enter 编辑")
+            .pick("none - Space to edit", "未设置 - 空格编辑")
             .to_owned(),
         Ok(names) => names.join(", "),
+    };
+    format!(
+        "< {} >",
+        truncate_width(&body, width.saturating_sub(4).max(1))
+    )
+}
+
+pub(super) fn compat_summary(form: &FormState, language: Language, width: usize) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(preset) = super::PRESETS.get(form.preset).copied() {
+        if !preset.is_empty() {
+            parts.push(preset.into());
+        }
+    }
+    if let Some(value) = form.requires_reasoning_content {
+        parts.push(format!("reasoning:{}", if value { "on" } else { "off" }));
+    }
+    if let Some(format) = super::THINKING_FORMATS.get(form.thinking_format).copied() {
+        if !format.is_empty() {
+            parts.push(format.into());
+        }
+    }
+    if let Some(value) = form.supports_long_cache_retention {
+        parts.push(format!("longCache:{}", if value { "on" } else { "off" }));
+    }
+    if let Some(value) = form.supports_store {
+        parts.push(format!("store:{}", if value { "on" } else { "off" }));
+    }
+    if let Some(value) = form.supports_developer_role {
+        parts.push(format!("devRole:{}", if value { "on" } else { "off" }));
+    }
+    if let Some(value) = form.supports_reasoning_effort {
+        parts.push(format!("effort:{}", if value { "on" } else { "off" }));
+    }
+    if let Some(field) = super::MAX_TOKENS_FIELDS.get(form.max_tokens_field).copied() {
+        if !field.is_empty() {
+            parts.push(field.into());
+        }
+    }
+    if let Some(value) = form.supports_strict_mode {
+        parts.push(format!("strict:{}", if value { "on" } else { "off" }));
+    }
+    if !form.send_session_affinity_headers {
+        parts.push(language.pick("affinity:off", "亲和:关").into());
+    }
+    if !form.other_compat_json.trim().is_empty() {
+        parts.push(language.pick("+raw", "+原始").into());
+    }
+    let body = if parts.is_empty() {
+        language.pick("inherit", "默认").to_owned()
+    } else {
+        parts.join(" · ")
     };
     format!(
         "< {} >",
@@ -405,7 +534,154 @@ pub(super) fn render_provider_headers_form(
         frame,
         hint,
         &[
-            ("Ctrl+S", language.pick("save", "保存")),
+            ("Tab", language.pick("next field", "下一字段")),
+            ("Esc", language.pick("back", "返回")),
+            ("Ctrl+U", language.pick("clear", "清空")),
+        ],
+        theme,
+    );
+}
+
+pub(super) fn render_provider_compat_form(
+    frame: &mut Frame<'_>,
+    form: &FormState,
+    language: Language,
+    area: Rect,
+    theme: Theme,
+) {
+    use super::{MAX_TOKENS_FIELDS, PRESETS, THINKING_FORMATS};
+    let rect = modal_rect(area, 86, 26);
+    clear_area(frame, rect, theme);
+    let block = Block::default()
+        .title(Span::styled(
+            language.pick(" Provider compat ", " 提供商兼容 "),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent))
+        .style(theme.surface_style());
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    let mut constraints: Vec<Constraint> = (0..11).map(|_| Constraint::Length(2)).collect();
+    constraints.push(Constraint::Length(2));
+    let rows = Layout::vertical(constraints).split(inner);
+    let tristate = |value: Option<bool>| -> &'static str {
+        match value {
+            None => language.pick("inherit", "默认"),
+            Some(true) => language.pick("enabled", "启用"),
+            Some(false) => language.pick("disabled", "禁用"),
+        }
+    };
+    let cycle = |index: usize, values: &[&str]| -> String {
+        let value = values.get(index).copied().unwrap_or("");
+        let label = if value.is_empty() {
+            language.pick("inherit", "默认")
+        } else {
+            value
+        };
+        format!("< {label} >")
+    };
+    let values = [
+        cycle(form.preset, &PRESETS),
+        format!("< {} >", tristate(form.requires_reasoning_content)),
+        cycle(form.thinking_format, &THINKING_FORMATS),
+        format!("< {} >", tristate(form.supports_long_cache_retention)),
+        format!("< {} >", tristate(form.supports_store)),
+        format!("< {} >", tristate(form.supports_developer_role)),
+        format!("< {} >", tristate(form.supports_reasoning_effort)),
+        cycle(form.max_tokens_field, &MAX_TOKENS_FIELDS),
+        format!("< {} >", tristate(form.supports_strict_mode)),
+        format!(
+            "< {} >",
+            if form.send_session_affinity_headers {
+                language.pick("enabled", "启用")
+            } else {
+                language.pick("disabled", "禁用")
+            }
+        ),
+        form.other_compat_json.clone(),
+    ];
+    let labels = [
+        language.pick("Preset", "预设"),
+        "requiresReasoningContent",
+        "thinkingFormat",
+        "supportsLongCacheRetention",
+        "supportsStore",
+        "supportsDeveloperRole",
+        "supportsReasoningEffort",
+        "maxTokensField",
+        "supportsStrictMode",
+        language.pick("Session affinity", "会话亲和"),
+        language.pick("Other compat JSON", "其他兼容 JSON"),
+    ];
+    let descriptions = [
+        language.pick(
+            "Bundle of official provider compat fields",
+            "官方提供商兼容字段组合",
+        ),
+        language.pick(
+            "Replayed turns need empty reasoning_content",
+            "回放轮次需空 reasoning_content",
+        ),
+        language.pick("Reasoning parameter format", "推理参数格式"),
+        language.pick("Request long prompt cache retention", "请求长缓存保留"),
+        language.pick("Supports the store field", "是否支持 store 字段"),
+        language.pick(
+            "developer role instead of system",
+            "developer 角色替代 system",
+        ),
+        language.pick("Supports reasoning_effort", "是否支持 reasoning_effort"),
+        language.pick("Field name for max tokens", "max tokens 字段名"),
+        language.pick("Tool definitions support strict", "工具定义支持 strict"),
+        language.pick("Route same session to same backend", "同会话路由到同后端"),
+        language.pick("Raw fields not covered above", "上方未覆盖的原始字段"),
+    ];
+    let label_width = 30;
+    for index in 0..11 {
+        let active = form.compat_field == index;
+        let is_text = index == 10;
+        let value = if active && is_text {
+            with_cursor(&values[index], form.cursor)
+        } else {
+            values[index].clone()
+        };
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(vec![
+                    Span::styled(
+                        format!(" {}", pad_width(labels[index], label_width)),
+                        if active {
+                            Style::default()
+                                .fg(theme.accent)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            theme.label()
+                        },
+                    ),
+                    Span::styled(
+                        value,
+                        if active {
+                            theme.value().add_modifier(Modifier::BOLD)
+                        } else {
+                            theme.value()
+                        },
+                    ),
+                ]),
+                Line::from(Span::styled(
+                    format!("   {}", descriptions[index]),
+                    theme.dim_text(),
+                )),
+            ])
+            .wrap(Wrap { trim: false }),
+            rows[index],
+        );
+    }
+    render_key_hints(
+        frame,
+        rows[11],
+        &[
             ("Tab", language.pick("next field", "下一字段")),
             ("Esc", language.pick("back", "返回")),
             ("Ctrl+U", language.pick("clear", "清空")),
