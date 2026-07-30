@@ -389,13 +389,13 @@ impl App {
         let task_provider_id = provider_id.clone();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let result = documents::resolve_metadata(provider, ids, options).map(
-                |fetched| BackgroundResult::Catalog {
+            let result = documents::resolve_metadata(provider, ids, options).map(|fetched| {
+                BackgroundResult::Catalog {
                     provider_id: task_provider_id,
                     fetched,
                     overwrite,
-                },
-            );
+                }
+            });
             let _ = sender.send(result);
         });
         self.task = Some(receiver);

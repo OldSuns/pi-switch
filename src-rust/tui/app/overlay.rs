@@ -308,8 +308,7 @@ impl App {
                             candidate_indices, ..
                         } => candidate_indices.push(*cursor),
                         CatalogContinuation::ProviderImport {
-                            candidate_indices,
-                            ..
+                            candidate_indices, ..
                         } => candidate_indices.push(*cursor),
                     }
                     *index += 1;
@@ -329,9 +328,7 @@ impl App {
                                 let mut final_models = resolved_models;
                                 for (i, ambiguity) in ambiguities.iter().enumerate() {
                                     if let Some(&pick) = candidate_indices.get(i) {
-                                        if let Some(candidate) =
-                                            ambiguity.candidates.get(pick)
-                                        {
+                                        if let Some(candidate) = ambiguity.candidates.get(pick) {
                                             final_models.push(candidate.model.clone());
                                         }
                                     }

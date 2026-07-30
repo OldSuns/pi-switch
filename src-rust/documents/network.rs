@@ -191,7 +191,6 @@ pub fn fetch_catalog() -> Result<ModelCatalog> {
     fetch_catalog_from(&client, MODELS_DEV_CATALOG_URL)
 }
 
-
 /// No models.dev catalog is touched. Used to present the selection list before
 /// metadata is resolved for the chosen models.
 pub fn fetch_model_ids(provider: &ProviderView) -> Result<Vec<String>> {
@@ -285,11 +284,10 @@ fn resolve_ids_against_catalog(
     // models.dev catalog — best-effort; if unreachable, fall back to an empty
     // catalog so every selected model is imported with default metadata rather
     // than aborting the entire flow.
-    let (catalog, catalog_unreachable) =
-        match fetch_catalog_from(client, metadata_catalog_url) {
-            Ok(catalog) => (catalog, false),
-            Err(_) => (ModelCatalog::default(), true),
-        };
+    let (catalog, catalog_unreachable) = match fetch_catalog_from(client, metadata_catalog_url) {
+        Ok(catalog) => (catalog, false),
+        Err(_) => (ModelCatalog::default(), true),
+    };
     let mut models = Vec::new();
     let mut ambiguous = Vec::new();
     let mut unavailable = 0;

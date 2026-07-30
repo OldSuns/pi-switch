@@ -605,10 +605,7 @@ impl App {
             return;
         };
         match receiver.try_recv() {
-            Ok(Ok(BackgroundResult::ModelIds {
-                provider_id,
-                ids,
-            })) => {
+            Ok(Ok(BackgroundResult::ModelIds { provider_id, ids })) => {
                 self.task = None;
                 let defaults = self.import_options().defaults;
                 let models = ids.iter().map(|id| defaults.model(id)).collect();
