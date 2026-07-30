@@ -254,6 +254,12 @@ pub(super) struct ModelFormState {
     pub(super) image_input: bool,
     pub(super) context_window: String,
     pub(super) max_tokens: String,
+    pub(super) input_cost: String,
+    pub(super) output_cost: String,
+    pub(super) cache_read_cost: String,
+    pub(super) cache_write_cost: String,
+    pub(super) limits_expanded: bool,
+    pub(super) pricing_expanded: bool,
     pub(super) field: usize,
     pub(super) cursor: usize,
 }
@@ -270,6 +276,12 @@ impl ModelFormState {
             image_input: false,
             context_window: String::new(),
             max_tokens: String::new(),
+            input_cost: String::new(),
+            output_cost: String::new(),
+            cache_read_cost: String::new(),
+            cache_write_cost: String::new(),
+            limits_expanded: false,
+            pricing_expanded: false,
             field: 0,
             cursor: 0,
         }
@@ -297,6 +309,12 @@ impl ModelFormState {
                 .max_tokens
                 .map(|value| value.to_string())
                 .unwrap_or_default(),
+            input_cost: optional_number(model.input_cost),
+            output_cost: optional_number(model.output_cost),
+            cache_read_cost: optional_number(model.cache_read_cost),
+            cache_write_cost: optional_number(model.cache_write_cost),
+            limits_expanded: false,
+            pricing_expanded: false,
             field: 0,
             cursor: char_len(&model.id),
         }
@@ -310,24 +328,58 @@ impl ModelFormState {
         form
     }
 
-    pub(super) fn current_text(&self) -> Option<&str> {
-        match self.field {
+    pub(super) fn visible_fields(&self) -> Vec<usize> {
+        let mut fields = vec![0, 1, 2, 3, 4, 5];
+        if self.limits_expanded {
+            fields.extend([6, 7]);
+        }
+        fields.push(8);
+        if self.pricing_expanded {
+            fields.extend([9, 10, 11, 12]);
+        }
+        fields
+    }
+
+    pub(super) fn current_field_id(&self) -> usize {
+        self.visible_fields().get(self.field).copied().unwrap_or(0)
+    }
+
+    fn field_text(&self, field_id: usize) -> Option<&str> {
+        match field_id {
             0 => Some(&self.id),
             1 => Some(&self.name),
-            5 => Some(&self.context_window),
-            6 => Some(&self.max_tokens),
+            6 => Some(&self.context_window),
+            7 => Some(&self.max_tokens),
+            9 => Some(&self.input_cost),
+            10 => Some(&self.output_cost),
+            11 => Some(&self.cache_read_cost),
+            12 => Some(&self.cache_write_cost),
             _ => None,
         }
     }
 
-    pub(super) fn current_text_mut(&mut self) -> Option<&mut String> {
-        match self.field {
+    fn field_text_mut(&mut self, field_id: usize) -> Option<&mut String> {
+        match field_id {
             0 => Some(&mut self.id),
             1 => Some(&mut self.name),
-            5 => Some(&mut self.context_window),
-            6 => Some(&mut self.max_tokens),
+            6 => Some(&mut self.context_window),
+            7 => Some(&mut self.max_tokens),
+            9 => Some(&mut self.input_cost),
+            10 => Some(&mut self.output_cost),
+            11 => Some(&mut self.cache_read_cost),
+            12 => Some(&mut self.cache_write_cost),
             _ => None,
         }
+    }
+
+    pub(super) fn current_text(&self) -> Option<&str> {
+        let field_id = self.current_field_id();
+        self.field_text(field_id)
+    }
+
+    pub(super) fn current_text_mut(&mut self) -> Option<&mut String> {
+        let field_id = self.current_field_id();
+        self.field_text_mut(field_id)
     }
 
     pub(super) fn current_len(&self) -> usize {
@@ -335,7 +387,12 @@ impl ModelFormState {
     }
 
     pub(super) fn select_field(&mut self, next: usize) {
-        self.field = next % 7;
+        let count = self.visible_fields().len();
+        if count == 0 {
+            self.field = 0;
+        } else {
+            self.field = next % count;
+        }
         self.cursor = self.current_len();
     }
 
@@ -352,6 +409,16 @@ impl ModelFormState {
             },
             context_window: parse_positive_u64(&self.context_window, "context window")?,
             max_tokens: parse_positive_u64(&self.max_tokens, "max tokens")?,
+            input_cost: parse_optional_nonnegative_f64(&self.input_cost, "input cost")?,
+            output_cost: parse_optional_nonnegative_f64(&self.output_cost, "output cost")?,
+            cache_read_cost: parse_optional_nonnegative_f64(
+                &self.cache_read_cost,
+                "cache read cost",
+            )?,
+            cache_write_cost: parse_optional_nonnegative_f64(
+                &self.cache_write_cost,
+                "cache write cost",
+            )?,
         })
     }
 }

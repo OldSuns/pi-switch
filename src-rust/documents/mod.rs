@@ -133,6 +133,10 @@ pub struct ModelView {
     pub input: Vec<String>,
     pub context_window: Option<u64>,
     pub max_tokens: Option<u64>,
+    pub input_cost: Option<f64>,
+    pub output_cost: Option<f64>,
+    pub cache_read_cost: Option<f64>,
+    pub cache_write_cost: Option<f64>,
 }
 
 #[derive(Clone, Debug)]
@@ -156,6 +160,10 @@ pub struct ModelDraft {
     pub input: Vec<String>,
     pub context_window: u64,
     pub max_tokens: u64,
+    pub input_cost: Option<f64>,
+    pub output_cost: Option<f64>,
+    pub cache_read_cost: Option<f64>,
+    pub cache_write_cost: Option<f64>,
 }
 
 #[derive(Clone, Debug)]

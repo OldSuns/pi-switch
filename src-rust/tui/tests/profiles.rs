@@ -231,7 +231,7 @@
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(model_content.contains("Context window"));
+        assert!(model_content.contains("Context & limits"));
         let _ = fs::remove_dir_all(root);
     }
 

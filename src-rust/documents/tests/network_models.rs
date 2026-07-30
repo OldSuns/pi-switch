@@ -559,3 +559,36 @@ fn find_ratio_matches_exact_case_insensitive_and_prefix() {
     // no match
     assert_eq!(find_ratio("gemini", &map), None);
 }
+
+#[test]
+fn model_cost_fields_round_trip_and_preserve_through_untouched_edits() {
+    let (root, paths) = fixture();
+    fs::write(
+        &paths.models,
+        r#"{"providers":{"p":{"baseUrl":"https://e.test/v1","api":"openai-completions","apiKey":"$K","models":[{"id":"m","contextWindow":128000,"maxTokens":16384}]}}}"#,
+    )
+    .unwrap();
+
+    // A form-style draft carrying explicit cost writes all four keys.
+    let mut priced = model_draft("m");
+    priced.input_cost = Some(1.0);
+    priced.output_cost = Some(2.0);
+    priced.cache_read_cost = Some(0.5);
+    priced.cache_write_cost = Some(0.0);
+    save_model(&paths, "p", Some("m"), &priced).unwrap();
+    let models: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
+    assert_eq!(models["providers"]["p"]["models"][0]["cost"]["input"], 1.0);
+    assert_eq!(models["providers"]["p"]["models"][0]["cost"]["output"], 2.0);
+    assert_eq!(models["providers"]["p"]["models"][0]["cost"]["cacheRead"], 0.5);
+    assert_eq!(models["providers"]["p"]["models"][0]["cost"]["cacheWrite"], 0.0);
+
+    // A draft that leaves cost unset (None) must NOT strip the existing cost.
+    let mut renamed = model_draft("m2");
+    renamed.context_window = 128_000;
+    renamed.max_tokens = 16_384;
+    save_model(&paths, "p", Some("m"), &renamed).unwrap();
+    let models: Value = serde_json::from_slice(&fs::read(&paths.models).unwrap()).unwrap();
+    assert_eq!(models["providers"]["p"]["models"][0]["id"], "m2");
+    assert_eq!(models["providers"]["p"]["models"][0]["cost"]["input"], 1.0);
+    fs::remove_dir_all(root).unwrap();
+}

@@ -118,6 +118,7 @@ pub(super) fn model_view(provider_id: &str, index: usize, value: &Value) -> Resu
             "provider '{provider_id}' model '{id}' contextWindow and maxTokens must be positive"
         )));
     }
+    let (input_cost, output_cost, cache_read_cost, cache_write_cost) = model_cost(object);
     let view = ModelView {
         id,
         name,
@@ -126,6 +127,10 @@ pub(super) fn model_view(provider_id: &str, index: usize, value: &Value) -> Resu
         input,
         context_window,
         max_tokens,
+        input_cost,
+        output_cost,
+        cache_read_cost,
+        cache_write_cost,
     };
     validate_model_id(&view.id)?;
     if view.input != ["text"] && view.input != ["text", "image"] {
@@ -226,6 +231,46 @@ pub(super) fn patch_model(object: &mut Map<String, Value>, draft: &ModelDraft) {
     }
     object.insert("contextWindow".into(), Value::from(draft.context_window));
     object.insert("maxTokens".into(), Value::from(draft.max_tokens));
+    let cost_fields = [
+        ("input", draft.input_cost),
+        ("output", draft.output_cost),
+        ("cacheRead", draft.cache_read_cost),
+        ("cacheWrite", draft.cache_write_cost),
+    ];
+    // ponytail: None means "leave as-is" (preserves cost through edits that
+    // don't touch pricing); Some overwrites that single key. The model form
+    // always loads existing cost into its fields, so normal edits round-trip
+    // cost. Clearing an individual field is intentionally not supported here.
+    if cost_fields.iter().any(|(_, value)| value.is_some()) {
+        let mut cost = object
+            .get("cost")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        for (field, value) in cost_fields {
+            if let Some(value) = value {
+                cost.insert(field.into(), Value::from(value));
+            }
+        }
+        object.insert("cost".into(), Value::Object(cost));
+    }
+}
+
+fn model_cost(object: &Map<String, Value>) -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>) {
+    let cost = object.get("cost").and_then(Value::as_object);
+    let input_cost = cost
+        .and_then(|cost| cost.get("input"))
+        .and_then(Value::as_f64);
+    let output_cost = cost
+        .and_then(|cost| cost.get("output"))
+        .and_then(Value::as_f64);
+    let cache_read_cost = cost
+        .and_then(|cost| cost.get("cacheRead"))
+        .and_then(Value::as_f64);
+    let cache_write_cost = cost
+        .and_then(|cost| cost.get("cacheWrite"))
+        .and_then(Value::as_f64);
+    (input_cost, output_cost, cache_read_cost, cache_write_cost)
 }
 
 pub(super) fn set_optional_string(

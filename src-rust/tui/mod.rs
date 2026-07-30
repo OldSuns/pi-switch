@@ -86,6 +86,10 @@ mod tests {
             input: vec!["text".into()],
             context_window: Some(128_000),
             max_tokens: Some(16_384),
+            input_cost: None,
+            output_cost: None,
+            cache_read_cost: None,
+            cache_write_cost: None,
         };
         let snapshot = Snapshot {
             providers_path: paths.providers.display().to_string(),

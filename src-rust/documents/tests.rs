@@ -29,6 +29,10 @@ fn model_draft(id: &str) -> ModelDraft {
         input: vec!["text".into()],
         context_window: 128_000,
         max_tokens: 16_384,
+        input_cost: None,
+        output_cost: None,
+        cache_read_cost: None,
+        cache_write_cost: None,
     }
 }
 

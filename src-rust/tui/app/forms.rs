@@ -114,17 +114,31 @@ impl App {
             }
             return true;
         }
+        let field_id = form.current_field_id();
         match key.code {
             KeyCode::Esc => return true,
             KeyCode::Tab | KeyCode::Down => form.select_field(form.field + 1),
-            KeyCode::BackTab | KeyCode::Up => form.select_field((form.field + 6) % 7),
-            KeyCode::Left if form.field == 2 => {
+            KeyCode::BackTab | KeyCode::Up => {
+                let count = form.visible_fields().len();
+                form.select_field((form.field + count.saturating_sub(1)) % count.max(1));
+            }
+            KeyCode::Left if field_id == 2 => {
                 form.api = (form.api + API_TYPES.len()) % (API_TYPES.len() + 1)
             }
-            KeyCode::Right if form.field == 2 => form.api = (form.api + 1) % (API_TYPES.len() + 1),
-            KeyCode::Left | KeyCode::Right if form.field == 3 => form.reasoning = !form.reasoning,
-            KeyCode::Left | KeyCode::Right if form.field == 4 => {
+            KeyCode::Right if field_id == 2 => form.api = (form.api + 1) % (API_TYPES.len() + 1),
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if field_id == 3 => {
+                form.reasoning = !form.reasoning
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if field_id == 4 => {
                 form.image_input = !form.image_input
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if field_id == 5 => {
+                form.limits_expanded = !form.limits_expanded;
+                form.cursor = 0;
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if field_id == 8 => {
+                form.pricing_expanded = !form.pricing_expanded;
+                form.cursor = 0;
             }
             _ => {
                 let mut cursor = form.cursor;
