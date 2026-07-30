@@ -167,8 +167,16 @@ pub fn dismiss_update(cache_path: &Path, version: &str) {
 /// Runs `npm install -g @oldsuns/pi-switch` and returns an error if the
 /// command cannot be found or exits with a non-zero status.
 pub fn install_update() -> Result<()> {
-    let output = std::process::Command::new("npm")
-        .args(["install", "-g", "@oldsuns/pi-switch"])
+    let mut command = if cfg!(target_os = "windows") {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/c", "npm", "install", "-g", "@oldsuns/pi-switch"]);
+        cmd
+    } else {
+        let mut cmd = std::process::Command::new("npm");
+        cmd.args(["install", "-g", "@oldsuns/pi-switch"]);
+        cmd
+    };
+    let output = command
         .output()
         .map_err(|e| AppError::Http(format!("failed to run npm: {e}")))?;
     if !output.status.success() {
