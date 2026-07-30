@@ -1,6 +1,6 @@
 {
   "name": "@oldsuns/pi-switch",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "A focused terminal UI for Pi provider and model configuration",
   "type": "module",
   "bin": {
