@@ -1,14 +1,40 @@
 use super::*;
+use std::cmp::Reverse;
 
 impl App {
+    pub(in crate::tui) fn session_groups(&self) -> Vec<SessionGroup> {
+        let mut groups: Vec<SessionGroup> = Vec::new();
+        for (index, session) in self.sessions.iter().enumerate() {
+            if !documents::session_matches(session, &self.session_filter, self.named_only) {
+                continue;
+            }
+            let cwd = session.cwd.clone();
+            if let Some(group) = groups.iter_mut().find(|g| g.cwd == cwd) {
+                group.sessions.push(index);
+            } else {
+                groups.push(SessionGroup {
+                    cwd,
+                    sessions: vec![index],
+                });
+            }
+        }
+        // Order groups by the most-recently-modified session within each group (descending).
+        groups.sort_by_key(|group| {
+            let max_modified = group
+                .sessions
+                .iter()
+                .filter_map(|&i| self.sessions.get(i))
+                .map(|s| s.modified)
+                .max();
+            Reverse(max_modified)
+        });
+        groups
+    }
+
     pub(in crate::tui) fn visible_sessions(&self) -> Vec<usize> {
-        self.sessions
-            .iter()
-            .enumerate()
-            .filter(|(_, session)| {
-                documents::session_matches(session, &self.session_filter, self.named_only)
-            })
-            .map(|(index, _)| index)
+        self.session_groups()
+            .into_iter()
+            .flat_map(|group| group.sessions)
             .collect()
     }
 

@@ -144,3 +144,90 @@
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn sessions_grouped_by_cwd_with_headers_and_navigation() {
+        let (root, mut app) = app();
+        let sessions_root = root.join(".pi/agent/sessions/--proj--");
+        fs::create_dir_all(&sessions_root).unwrap();
+
+        // Beta group — most recently active (message timestamp 3000).
+        fs::write(
+            sessions_root.join("b1.jsonl"),
+            r#"{"type":"session","version":3,"id":"beta-1","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/work/beta"}
+{"type":"message","id":"u1","parentId":null,"timestamp":1,"message":{"role":"user","content":"beta message","timestamp":3000}}
+"#,
+        )
+        .unwrap();
+
+        // Alpha group — two sessions (timestamps 2000 and 1000).
+        fs::write(
+            sessions_root.join("a1.jsonl"),
+            r#"{"type":"session","version":3,"id":"alpha-1","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/work/alpha"}
+{"type":"message","id":"u1","parentId":null,"timestamp":1,"message":{"role":"user","content":"alpha one","timestamp":2000}}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            sessions_root.join("a2.jsonl"),
+            r#"{"type":"session","version":3,"id":"alpha-2","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/work/alpha"}
+{"type":"message","id":"u1","parentId":null,"timestamp":1,"message":{"role":"user","content":"alpha two","timestamp":1000}}
+"#,
+        )
+        .unwrap();
+
+        env::set_var(
+            "PI_CODING_AGENT_SESSION_DIR",
+            root.join(".pi/agent/sessions"),
+        );
+        app.page = Page::Sessions;
+        app.focus = Focus::Content;
+        app.reload_sessions(None);
+
+        assert_eq!(app.sessions.len(), 3);
+
+        // self.sessions is sorted by modified desc: beta-1(3000), alpha-1(2000), alpha-2(1000)
+        let groups = app.session_groups();
+        assert_eq!(groups.len(), 2);
+        // Beta group first (max modified = 3000).
+        assert_eq!(groups[0].cwd, "/work/beta");
+        assert_eq!(groups[0].sessions.len(), 1);
+        // Alpha group second (max modified = 2000).
+        assert_eq!(groups[1].cwd, "/work/alpha");
+        assert_eq!(groups[1].sessions.len(), 2);
+
+        let visible = app.visible_sessions();
+        assert_eq!(visible, vec![0, 1, 2]);
+
+        // Render and verify group headers appear in the buffer.
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let content = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(content.contains("/work/beta"));
+        assert!(content.contains("/work/alpha"));
+
+        // Navigation skips header rows — cursor always lands on a session.
+        assert_eq!(app.session_cursor, 0);
+        assert_eq!(app.selected_session().unwrap().id, "beta-1");
+
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.session_cursor, 1);
+        assert_eq!(app.selected_session().unwrap().id, "alpha-1");
+
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.session_cursor, 2);
+        assert_eq!(app.selected_session().unwrap().id, "alpha-2");
+
+        app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.session_cursor, 1);
+        assert_eq!(app.selected_session().unwrap().id, "alpha-1");
+
+        env::remove_var("PI_CODING_AGENT_SESSION_DIR");
+        let _ = fs::remove_dir_all(root);
+    }
+

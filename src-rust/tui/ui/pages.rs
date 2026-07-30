@@ -273,7 +273,7 @@ pub(super) fn render_sessions(frame: &mut Frame<'_>, app: &mut App, area: Rect, 
 }
 
 fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
-    let visible = app.visible_sessions();
+    let groups = app.session_groups();
     let active = app.focus == Focus::Content && app.page == Page::Sessions;
     let filter_hint = if app.session_filtering || !app.session_filter.is_empty() {
         format!(
@@ -304,7 +304,10 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Them
         filter_hint,
         flags
     );
-    let items = if visible.is_empty() {
+    // Maps each flattened visible-session position to its row index in `items`,
+    // skipping group header rows so the cursor always lands on a session.
+    let mut session_rows: Vec<usize> = Vec::new();
+    let items: Vec<ListItem> = if groups.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
             format!(
                 "  {}",
@@ -319,15 +322,25 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Them
             theme.label(),
         )))]
     } else {
-        let item_text_width = area
+        // Group header sits flush left; session rows indent 2 spaces under it.
+        let header_text_width = area
             .width
             .saturating_sub(2) // border
             .saturating_sub(3) // selected marker
-            .saturating_sub(2) as usize; // leading padding
-        visible
-            .iter()
-            .map(|index| {
-                let session = &app.sessions[*index];
+            as usize;
+        let session_text_width = header_text_width.saturating_sub(2);
+        let mut items: Vec<ListItem> = Vec::new();
+        for group in &groups {
+            // Group header row — never selectable.
+            let header_text = group_header_text(&group.cwd, header_text_width);
+            items.push(ListItem::new(Line::from(Span::styled(
+                format!("{header_text}"),
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ))));
+            for &session_index in &group.sessions {
+                let session = &app.sessions[session_index];
                 let title = session_display_title(session);
                 let time = format_session_time(session.modified);
                 let verbose_meta = format!(
@@ -335,24 +348,24 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Them
                     session.message_count,
                     app.language.pick("msg", "条"),
                 );
-                let meta = if UnicodeWidthStr::width(verbose_meta.as_str()) + 2 <= item_text_width {
+                let meta = if UnicodeWidthStr::width(verbose_meta.as_str()) + 2 <= session_text_width {
                     verbose_meta
                 } else {
                     time
                 };
-                let meta = truncate_width(&meta, item_text_width);
+                let meta = truncate_width(&meta, session_text_width);
                 let meta_width = UnicodeWidthStr::width(meta.as_str());
-                let title_budget = item_text_width.saturating_sub(meta_width + 1);
+                let title_budget = session_text_width.saturating_sub(meta_width + 1);
                 let title_text = truncate_width(title, title_budget);
                 let title_width = UnicodeWidthStr::width(title_text.as_str());
                 let spacing = if meta_width == 0 || title_width == 0 {
                     0
                 } else {
-                    item_text_width
+                    session_text_width
                         .saturating_sub(title_width + meta_width)
                         .max(1)
                 };
-                let mut lines = vec![Line::from(vec![
+                let line = Line::from(vec![
                     Span::styled(
                         format!("  {title_text}{}", " ".repeat(spacing)),
                         if session.name.is_some() {
@@ -364,19 +377,12 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Them
                         },
                     ),
                     Span::styled(meta, theme.label()),
-                ])];
-                if !session.cwd.is_empty() && area.width >= 40 {
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "    {}",
-                            truncate_width(&session.cwd, item_text_width.saturating_sub(2))
-                        ),
-                        theme.dim_text(),
-                    )));
-                }
-                ListItem::new(lines)
-            })
-            .collect()
+                ]);
+                items.push(ListItem::new(line));
+                session_rows.push(items.len() - 1);
+            }
+        }
+        items
     };
 
     let block = Block::default()
@@ -404,10 +410,22 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Them
                 .add_modifier(Modifier::BOLD)
         });
     let mut state = ListState::default();
-    if !visible.is_empty() {
-        state.select(Some(app.session_cursor.min(visible.len() - 1)));
+    if !session_rows.is_empty() {
+        let cursor = app.session_cursor.min(session_rows.len() - 1);
+        state.select(Some(session_rows[cursor]));
     }
     frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn group_header_text(cwd: &str, max_width: usize) -> String {
+    if cwd.is_empty() {
+        return "(no directory)".into();
+    }
+    if UnicodeWidthStr::width(cwd) <= max_width {
+        return truncate_width(cwd, max_width);
+    }
+    let last = cwd.rsplit('/').next().unwrap_or(cwd);
+    truncate_width(last, max_width)
 }
 
 fn render_session_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect, theme: Theme) {

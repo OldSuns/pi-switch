@@ -142,6 +142,13 @@ pub(super) enum Focus {
     SessionPreview,
 }
 
+#[derive(Clone, Debug)]
+pub(in crate::tui) struct SessionGroup {
+    pub(in crate::tui) cwd: String,
+    /// Indices into `App::sessions` belonging to this group.
+    pub(in crate::tui) sessions: Vec<usize>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Page {
     Home,
