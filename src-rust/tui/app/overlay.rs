@@ -223,6 +223,7 @@ impl App {
                         }
                         KeyCode::Char('o') => {
                             *overwrite = !*overwrite;
+                            self.notice = None;
                         }
                         KeyCode::Enter | KeyCode::Char('s') => {
                             if selected.is_empty() {

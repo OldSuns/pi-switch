@@ -389,3 +389,37 @@
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn fetched_overlay_o_toggles_overwrite_for_existing_models() {
+        let (root, mut app) = app();
+        let existing: std::collections::BTreeSet<String> =
+            ["model-a".to_owned()].into_iter().collect();
+        let selected: std::collections::BTreeSet<usize> = [0].into_iter().collect();
+        app.overlay = Some(Overlay::Fetched {
+            provider_id: "custom".into(),
+            models: vec![catalog_model("model-a", 128_000, 16_384, 1.0)],
+            unavailable: 0,
+            selected,
+            cursor: 0,
+            ratio_config_used: true,
+            overwrite: false,
+            existing,
+            filter: String::new(),
+            filtering: false,
+        });
+        // Press Enter to import — all selected models exist, overwrite is off.
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        // Overlay should still be open (import was blocked).
+        assert!(matches!(app.overlay, Some(Overlay::Fetched { .. })));
+        // A notice should have been set.
+        assert!(app.notice.is_some());
+        // Press 'o' to toggle overwrite.
+        app.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+        // Verify overwrite is now true.
+        match app.overlay {
+            Some(Overlay::Fetched { overwrite, .. }) => assert!(overwrite),
+            _ => panic!("overlay should still be Fetched after pressing 'o'"),
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+

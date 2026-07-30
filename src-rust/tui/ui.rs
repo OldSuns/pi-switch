@@ -150,9 +150,6 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
         render_page(frame, app, body, theme);
     }
     render_footer(frame, app, footer, theme);
-    if let Some(notice) = app.notice.as_ref() {
-        render_notice(frame, notice, frame.area(), theme);
-    }
     if let Some(overlay) = app.overlay.as_ref() {
         overlays::render_overlay(
             frame,
@@ -162,6 +159,9 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
             frame.area(),
             theme,
         );
+    }
+    if let Some(notice) = app.notice.as_ref() {
+        render_notice(frame, notice, frame.area(), theme);
     }
 }
 
