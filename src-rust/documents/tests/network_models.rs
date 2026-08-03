@@ -523,6 +523,66 @@ fn find_ratio_matches_exact_case_insensitive_and_prefix() {
 }
 
 #[test]
+fn round_price_eliminates_floating_point_artifacts() {
+    // The classic 0.1 × 1.5 × 2.0 produces 0.30000000000000004 in f64.
+    assert_eq!(round_price(0.1 * 1.5 * 2.0), 0.3);
+    // Other artifact-prone products.
+    assert_eq!(round_price(0.3 * 0.7 * 2.0), 0.42);
+    assert_eq!(round_price(0.07 * 1.0 * 2.0), 0.14);
+    assert_eq!(round_price(0.21 * 1.0 * 2.0), 0.42);
+    // Already-clean values pass through unchanged.
+    assert_eq!(round_price(0.0), 0.0);
+    assert_eq!(round_price(1.5), 1.5);
+    assert_eq!(round_price(0.25), 0.25);
+    // High-precision ratios are preserved to 6 decimals.
+    assert_eq!(round_price(0.571428571429 * 0.175 * 2.0), 0.2);
+}
+
+#[test]
+fn compute_ratio_prices_rounds_floating_point_artifacts() {
+    // model_ratio=0.1, completion_ratio=1.5: without rounding the output
+    // would be 0.30000000000000004.
+    let ratios = Ratios {
+        model_ratio: [("m1".into(), 0.1_f64)].into_iter().collect(),
+        completion_ratio: [("m1".into(), 1.5_f64)].into_iter().collect(),
+        cache_ratio: [("m1".into(), 0.5_f64)].into_iter().collect(),
+        create_cache_ratio: [("m1".into(), 0.25_f64)].into_iter().collect(),
+    };
+    let ids = vec!["m1".to_string()];
+    let prices = compute_ratio_prices(&ids, &ratios);
+    let cost = &prices["m1"];
+    assert_eq!(cost.input, 0.2);
+    assert_eq!(cost.output, 0.3);
+    assert_eq!(cost.cache_read, 0.1);
+    assert_eq!(cost.cache_write, 0.05);
+
+    // to_cost_json must serialize clean values — no floating-point artifacts.
+    let json = cost.to_cost_json();
+    let serialized = serde_json::to_string(&json).unwrap();
+    assert_eq!(serialized, r#"{"cacheRead":0.1,"cacheWrite":0.05,"input":0.2,"output":0.3}"#);
+    assert!(!serialized.contains("00000000"));
+
+    // A second model with artifact-prone ratios: 0.3 × 0.7 × 2.0 = 0.42.
+    let ratios = Ratios {
+        model_ratio: [
+            ("m2".into(), 0.3_f64),
+            ("m3".into(), 0.07_f64),
+        ]
+        .into_iter()
+        .collect(),
+        completion_ratio: [("m2".into(), 0.7_f64)].into_iter().collect(),
+        ..Default::default()
+    };
+    let ids = vec!["m2".to_string(), "m3".to_string()];
+    let prices = compute_ratio_prices(&ids, &ratios);
+    assert_eq!(prices["m2"].output, 0.42);
+    assert_eq!(prices["m3"].output, 0.14);
+    // Serialized JSON for m2 must be artifact-free.
+    let serialized = serde_json::to_string(&prices["m2"].to_cost_json()).unwrap();
+    assert!(!serialized.contains("00000000"));
+}
+
+#[test]
 fn model_cost_fields_round_trip_and_preserve_through_untouched_edits() {
     let (_root, paths) = fixture();
     fs::write(

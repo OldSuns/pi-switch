@@ -1,6 +1,6 @@
 [package]
 name = "pi-switch-native"
-version = "0.2.6"
+version = "0.2.7"
 description = "Native core and terminal UI for pi-switch"
 edition = "2021"
 

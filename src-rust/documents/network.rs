@@ -534,7 +534,7 @@ pub(super) fn find_ratio(model_id: &str, ratios: &BTreeMap<String, f64>) -> Opti
 /// `model_ratio` get a ratio-derived price; the rest stay with their catalog
 /// (models.dev or defaults) cost. `1 USD = 500,000 quota`; `cost = ratio × 2`
 /// per 1M tokens.
-fn compute_ratio_prices(ids: &[String], ratios: &Ratios) -> BTreeMap<String, RatioCost> {
+pub(super) fn compute_ratio_prices(ids: &[String], ratios: &Ratios) -> BTreeMap<String, RatioCost> {
     let mut prices = BTreeMap::new();
     for id in ids {
         let Some(model_rate) = find_ratio(id, &ratios.model_ratio) else {
@@ -546,14 +546,28 @@ fn compute_ratio_prices(ids: &[String], ratios: &Ratios) -> BTreeMap<String, Rat
         prices.insert(
             id.clone(),
             RatioCost {
-                input: model_rate * COST_FACTOR,
-                output: model_rate * completion_rate * COST_FACTOR,
-                cache_read: model_rate * cache_rate * COST_FACTOR,
-                cache_write: model_rate * create_cache_rate * COST_FACTOR,
+                input: round_price(model_rate * COST_FACTOR),
+                output: round_price(model_rate * completion_rate * COST_FACTOR),
+                cache_read: round_price(model_rate * cache_rate * COST_FACTOR),
+                cache_write: round_price(model_rate * create_cache_rate * COST_FACTOR),
             },
         );
     }
     prices
+}
+
+/// Round a computed price to 6 decimal places to eliminate IEEE 754
+/// floating-point artifacts (e.g. `0.30000000000000004` → `0.3`).
+///
+/// Price ratios from NewAPI gateways are decimal values with a handful of
+/// significant digits, and `COST_FACTOR` is exactly `2.0`. The products
+/// are therefore mathematically short-decimal, but the intermediate
+/// `model_rate × completion_rate` multiplication can introduce a
+/// representation error that the subsequent `× COST_FACTOR` propagates.
+/// Six decimal places is far finer than any real per-1M-token price while
+/// being coarse enough to erase every double-precision artifact.
+pub(super) fn round_price(value: f64) -> f64 {
+    (value * 1_000_000.0).round() / 1_000_000.0
 }
 
 fn fetch_catalog_from(client: &Client, url: &str) -> Result<ModelCatalog> {

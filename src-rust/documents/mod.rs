@@ -184,11 +184,14 @@ pub struct RatioCost {
 
 impl RatioCost {
     pub fn to_cost_json(&self) -> Value {
+        // Defensive rounding: even if a RatioCost is constructed from a source
+        // that bypasses compute_ratio_prices, the serialized value must be free
+        // of IEEE 754 artifacts before it lands in a config file.
         json!({
-            "input": self.input,
-            "output": self.output,
-            "cacheRead": self.cache_read,
-            "cacheWrite": self.cache_write
+            "input": network::round_price(self.input),
+            "output": network::round_price(self.output),
+            "cacheRead": network::round_price(self.cache_read),
+            "cacheWrite": network::round_price(self.cache_write)
         })
     }
 }
@@ -1211,8 +1214,9 @@ fn check(ok: bool, label: impl Into<String>, detail: impl Into<String>) -> Docto
 
 #[cfg(test)]
 use network::{
-    fetch_models_for_test, find_ratio, newer_version, parse_models_dev_catalog, parse_pricing,
-    parse_provider_catalog, parse_ratio_config, resolve_secret,
+    compute_ratio_prices, fetch_models_for_test, find_ratio, newer_version,
+    parse_models_dev_catalog, parse_pricing, parse_provider_catalog, parse_ratio_config,
+    resolve_secret, round_price, Ratios,
 };
 #[cfg(test)]
 use opencode::{import_opencode_with_catalog, prepare_opencode_with_catalog};
