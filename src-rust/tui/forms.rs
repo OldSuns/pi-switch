@@ -653,8 +653,8 @@ impl ModelFormState {
             } else {
                 vec!["text".into()]
             },
-            context_window: parse_positive_u64(&self.context_window, "context window")?,
-            max_tokens: parse_positive_u64(&self.max_tokens, "max tokens")?,
+            context_window: parse_optional_positive_u64(&self.context_window, "context window")?,
+            max_tokens: parse_optional_positive_u64(&self.max_tokens, "max tokens")?,
             input_cost: parse_optional_nonnegative_f64(&self.input_cost, "input cost")?,
             output_cost: parse_optional_nonnegative_f64(&self.output_cost, "output cost")?,
             cache_read_cost: parse_optional_nonnegative_f64(

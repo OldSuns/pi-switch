@@ -229,8 +229,12 @@ pub(super) fn patch_model(object: &mut Map<String, Value>, draft: &ModelDraft) {
             Value::Array(draft.input.iter().cloned().map(Value::String).collect()),
         );
     }
-    object.insert("contextWindow".into(), Value::from(draft.context_window));
-    object.insert("maxTokens".into(), Value::from(draft.max_tokens));
+    set_optional_value(
+        object,
+        "contextWindow",
+        draft.context_window.map(Value::from),
+    );
+    set_optional_value(object, "maxTokens", draft.max_tokens.map(Value::from));
     let cost_fields = [
         ("input", draft.input_cost),
         ("output", draft.output_cost),
@@ -388,7 +392,7 @@ pub(super) fn validate_model_draft(draft: &ModelDraft) -> Result<()> {
             "model input must be text or text + image".into(),
         ));
     }
-    if draft.context_window == 0 || draft.max_tokens == 0 {
+    if draft.context_window == Some(0) || draft.max_tokens == Some(0) {
         return Err(AppError::Invalid(
             "context window and max tokens must be greater than zero".into(),
         ));

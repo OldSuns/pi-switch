@@ -347,8 +347,8 @@ fn model_crud_and_provider_copy_preserve_metadata_and_defaults() {
     beta.api = Some("openai-responses".into());
     beta.reasoning = true;
     beta.input.push("image".into());
-    beta.context_window = 200_000;
-    beta.max_tokens = 32_000;
+    beta.context_window = Some(200_000);
+    beta.max_tokens = Some(32_000);
     save_model(&paths, "p", Some("alpha"), &beta).unwrap();
     save_model(&paths, "p", None, &model_draft("gamma")).unwrap();
     assert_eq!(
@@ -606,8 +606,8 @@ fn model_cost_fields_round_trip_and_preserve_through_untouched_edits() {
 
     // A draft that leaves cost unset (None) must NOT strip the existing cost.
     let mut renamed = model_draft("m2");
-    renamed.context_window = 128_000;
-    renamed.max_tokens = 16_384;
+    renamed.context_window = Some(128_000);
+    renamed.max_tokens = Some(16_384);
     save_model(&paths, "p", Some("m"), &renamed).unwrap();
     let models = read_json(&paths.models);
     assert_eq!(models["providers"]["p"]["models"][0]["id"], "m2");
