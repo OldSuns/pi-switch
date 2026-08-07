@@ -92,6 +92,7 @@ impl App {
     pub(in crate::tui) fn refresh_preview(&mut self) {
         let Some(session) = self.selected_session() else {
             self.preview = None;
+            self.preview_layout = None;
             self.preview_path = None;
             self.preview_scroll = 0;
             self.preview_message_cursor = 0;
@@ -104,12 +105,14 @@ impl App {
         match documents::load_preview(&session.path, self.user_only_preview) {
             Ok(messages) => {
                 self.preview = Some(messages);
+                self.preview_layout = None;
                 self.preview_path = Some(path);
                 self.preview_scroll = 0;
                 self.preview_message_cursor = 0;
             }
             Err(error) => {
                 self.preview = None;
+                self.preview_layout = None;
                 self.preview_path = Some(path);
                 self.preview_message_cursor = 0;
                 if self.focus == Focus::SessionPreview {
@@ -153,20 +156,47 @@ impl App {
         };
     }
 
-    pub(in crate::tui) fn ensure_preview_message_visible(&mut self) {
+    pub(in crate::tui) fn set_preview_geometry(&mut self, width: usize, height: u16) {
+        self.preview_viewport_height = height.max(1);
+        self.ensure_preview_layout(width);
+        self.clamp_preview_message_cursor();
+        let max_scroll = self
+            .preview_total_line_count_from_layout()
+            .saturating_sub(self.preview_viewport_height as usize);
+        self.preview_scroll = (self.preview_scroll as usize)
+            .min(max_scroll)
+            .min(u16::MAX as usize) as u16;
+    }
+
+    pub(in crate::tui) fn ensure_preview_layout(&mut self, width: usize) {
+        let width = width.max(1);
+        self.preview_wrap_width = width;
         let Some(messages) = self.preview.as_ref() else {
+            self.preview_layout = None;
+            return;
+        };
+        let rebuild = self
+            .preview_layout
+            .as_ref()
+            .is_none_or(|layout| layout.width != width || layout.messages.len() != messages.len());
+        if rebuild {
+            self.preview_layout = Some(PreviewLayout::new(messages, width));
+        }
+    }
+
+    pub(in crate::tui) fn ensure_preview_message_visible(&mut self) {
+        self.ensure_preview_layout(self.preview_wrap_width);
+        let Some(layout) = self.preview_layout.as_ref() else {
             self.preview_scroll = 0;
             return;
         };
-        if messages.is_empty() {
+        if layout.messages.is_empty() {
             self.preview_scroll = 0;
             return;
         }
-        let header_lines = self.preview_header_line_count();
-        let wrap_width = self.preview_wrap_width.max(8);
-        let mut offset = header_lines;
-        for (index, message) in messages.iter().enumerate() {
-            let block_lines = preview_message_line_count(message, wrap_width);
+        let mut offset = self.preview_header_line_count();
+        for index in 0..layout.messages.len() {
+            let block_lines = layout.message_height(index);
             if index == self.preview_message_cursor {
                 let viewport = self.preview_viewport_height.max(1) as usize;
                 let start = self.preview_scroll as usize;
@@ -189,18 +219,7 @@ impl App {
     }
 
     fn preview_header_line_count(&self) -> usize {
-        let mut lines = 0;
-        if self.selected_session().is_some() {
-            lines += 1; // id
-            if self
-                .selected_session()
-                .is_some_and(|session| !session.cwd.is_empty())
-            {
-                lines += 1;
-            }
-            lines += 1; // blank
-        }
-        lines
+        usize::from(self.selected_session().is_some()) * 4
     }
 
     pub(in crate::tui) fn focus_session_preview(&mut self) {
@@ -229,8 +248,9 @@ impl App {
     }
 
     pub(in crate::tui) fn scroll_preview_lines(&mut self, delta: isize) {
+        self.ensure_preview_layout(self.preview_wrap_width);
         let max_scroll = self
-            .preview_total_line_count()
+            .preview_total_line_count_from_layout()
             .saturating_sub(self.preview_viewport_height.max(1) as usize);
         let current = self.preview_scroll as usize;
         let next = if delta < 0 {
@@ -244,14 +264,12 @@ impl App {
         }
     }
 
-    fn preview_total_line_count(&self) -> usize {
+    fn preview_total_line_count_from_layout(&self) -> usize {
         let mut lines = self.preview_header_line_count();
-        match self.preview.as_ref() {
-            Some(messages) if !messages.is_empty() => {
-                let wrap_width = self.preview_wrap_width.max(8);
-                lines += messages
-                    .iter()
-                    .map(|message| preview_message_line_count(message, wrap_width))
+        match self.preview_layout.as_ref() {
+            Some(layout) if !layout.messages.is_empty() => {
+                lines += (0..layout.messages.len())
+                    .map(|index| layout.message_height(index))
                     .sum::<usize>();
             }
             _ => lines += 1,
@@ -260,20 +278,19 @@ impl App {
     }
 
     fn preview_message_cursor_at_line(&self, line: usize) -> Option<usize> {
-        let messages = self.preview.as_ref()?;
-        if messages.is_empty() {
+        let layout = self.preview_layout.as_ref()?;
+        if layout.messages.is_empty() {
             return None;
         }
-        let wrap_width = self.preview_wrap_width.max(8);
         let mut offset = self.preview_header_line_count();
-        for (index, message) in messages.iter().enumerate() {
-            let block_lines = preview_message_line_count(message, wrap_width);
+        for index in 0..layout.messages.len() {
+            let block_lines = layout.message_height(index);
             if line < offset + block_lines {
                 return Some(index);
             }
             offset += block_lines;
         }
-        Some(messages.len() - 1)
+        Some(layout.messages.len() - 1)
     }
 
     pub(in crate::tui) fn copy_selected_preview_message(&mut self) {
@@ -324,16 +341,46 @@ impl App {
         }
     }
 
+    pub(in crate::tui) fn move_session_selection(&mut self, delta: isize) {
+        let count = self.visible_sessions().len() as isize;
+        if count == 0 {
+            self.session_cursor = 0;
+            self.preview = None;
+            return;
+        }
+        let next = (self.session_cursor as isize + delta).clamp(0, count - 1);
+        self.session_cursor = next as usize;
+        self.refresh_preview();
+    }
+
+    pub(in crate::tui) fn open_delete_session(&mut self) {
+        let Some(session) = self.selected_session() else {
+            self.notice(
+                NoticeKind::Warning,
+                self.language
+                    .pick("Select a session to delete", "请选择要删除的会话"),
+            );
+            return;
+        };
+        let label = documents::session_display_title(session).to_owned();
+        self.overlay = Some(Overlay::ConfirmDeleteSession {
+            path: session.path.display().to_string(),
+            label,
+        });
+    }
+
     pub(super) fn on_session_preview_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Up | KeyCode::Char('k') => self.move_preview_message(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_preview_message(1),
             KeyCode::PageUp => {
-                self.move_preview_message(-5);
+                let page = self.preview_viewport_height.saturating_sub(1).max(1) as isize;
+                self.scroll_preview_lines(-page);
             }
             KeyCode::PageDown => {
-                self.move_preview_message(5);
+                let page = self.preview_viewport_height.saturating_sub(1).max(1) as isize;
+                self.scroll_preview_lines(page);
             }
             KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc | KeyCode::Tab => {
                 self.focus = Focus::Content;

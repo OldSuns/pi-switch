@@ -3,6 +3,7 @@ mod forms;
 mod i18n;
 mod input;
 mod keys;
+mod markdown;
 mod terminal;
 mod ui;
 
@@ -19,7 +20,7 @@ use ui::draw;
 #[cfg(test)]
 use crate::documents::{Backup, CatalogModel, ModelView, ProviderView, Snapshot};
 #[cfg(test)]
-use app::{wrap_preview_text, Focus, Overlay, Page};
+use app::{Focus, Overlay, Page};
 #[cfg(test)]
 use forms::{FormState, ModelDefaultsFormState, ModelFormState};
 #[cfg(test)]
@@ -70,6 +71,8 @@ mod tests {
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
     use unicode_width::UnicodeWidthStr;
+
+    static SESSION_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     struct TempDir(std::path::PathBuf);
     impl std::ops::Deref for TempDir {

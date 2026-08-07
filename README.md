@@ -8,7 +8,7 @@ CLI：`pi-switch` · npm 包：`@oldsuns/pi-switch` · Node 薄壳 + Rust/napi �
 
 - **主页**：provider / model 计数、默认模型、关键路径；启动后台静默检查 npm 新版本，有更新时弹出确认对话框可一键安装
 - **配置 (Profiles)**：本地 provider 库与 Pi 启用子集；新建 / 编辑 / 删除 / 复制；在线导入模型
-- **会话 (Sessions)**：浏览 JSONL session、筛选、预览、复制消息、删除
+- **会话 (Sessions)**：按工作目录浏览 JSONL session，使用 Markdown 预览区分用户/助手消息，支持筛选、复制与删除
 - **设置 (Settings)**：语言、models.dev 元数据、默认参数、重载、校验、备份、OpenCode 导入、自动检查更新、手动检查更新
 - 完整库保存在 `~/.pi-switch/providers.json`，只有已启用项写入 Pi 的 `models.json`
 
@@ -85,13 +85,14 @@ Model 表单：`id`、`name`、API override、reasoning、文本/图像输入、
 | `n` | 仅显示手动命名的 session（不是新建） |
 | `r` | 重新扫描磁盘 |
 | `u` | 预览仅用户消息 |
-| `Enter` / `Right` | 进入右侧预览 |
+| `Enter` / `Right` / `Tab` | 从列表进入右侧预览；预览中 `Tab` 返回列表 |
 | 预览 `Up` / `Down` | 按消息切换 |
-| 滚轮 / `PageUp` / `PageDown` | 按行滚动长消息 |
+| 预览 `PageUp` / `PageDown` | 按当前可视区域逐页滚动 |
+| 滚轮 | 按行滚动长消息 |
 | 预览 `Ctrl+C` | 复制当前消息到剪贴板（不退出） |
 | `d` | 删除当前 session（确认后优先 trash） |
 
-黄标题 = 手动命名；白标题 = 使用第一条用户消息。
+黄标题 = 手动命名；白标题 = 使用第一条用户消息。预览支持标题、强调、列表、引用、代码块和链接等常用 Markdown，并在终端无颜色模式下保留角色文字与方向标记。
 
 Session 根目录优先级：`PI_CODING_AGENT_SESSION_DIR` → `PI_CODING_AGENT_DIR/sessions` → `~/.pi/agent/sessions/`。
 

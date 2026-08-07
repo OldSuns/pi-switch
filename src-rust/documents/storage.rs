@@ -14,8 +14,8 @@ use serde_json::{json, Map, Value};
 use std::fs::File;
 
 use super::{
-    validate_local_library, validate_provider_document, validate_settings_document, AppError,
-    Backup, Paths, Result,
+    snapshot::{validate_local_library, validate_provider_document, validate_settings_document},
+    AppError, Backup, Paths, Result,
 };
 
 const BACKUP_LIMIT: usize = 10;

@@ -1,5 +1,6 @@
     #[test]
     fn sessions_page_lists_filters_and_confirms_delete() {
+        let _env_lock = SESSION_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let (_root, mut app) = app();
         let sessions_root = _root.join(".pi/agent/sessions/--proj--");
         fs::create_dir_all(&sessions_root).unwrap();
@@ -63,19 +64,8 @@
     }
 
     #[test]
-    fn preview_wrap_removes_invisible_trailing_whitespace() {
-        assert_eq!(
-            wrap_preview_text("visible   \t\nnext  \n", 20),
-            vec!["visible", "next", ""]
-        );
-        assert_eq!(
-            wrap_preview_text("123456   next", 6),
-            vec!["123456", "next"]
-        );
-    }
-
-    #[test]
     fn session_preview_focus_navigates_messages_and_copies() {
+        let _env_lock = SESSION_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let (_root, mut app) = app();
         let sessions_root = _root.join(".pi/agent/sessions/--proj--");
         fs::create_dir_all(&sessions_root).unwrap();
@@ -112,9 +102,15 @@
         app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(app.preview_message_cursor, 0);
 
-        // Mouse-wheel style scrolling moves within a long message before changing selection.
+        // PageDown scrolls by viewport lines instead of jumping messages.
         app.preview_wrap_width = 12;
         app.preview_viewport_height = 4;
+        app.preview_scroll = 0;
+        app.on_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        assert_eq!(app.preview_scroll, 3);
+        assert_eq!(app.preview_message_cursor, 0);
+
+        // Mouse-wheel style scrolling moves within a long message before changing selection.
         app.preview_scroll = 0;
         app.scroll_preview_lines(4);
         assert_eq!(app.preview_scroll, 4);
@@ -125,8 +121,12 @@
         assert!(!app.quit);
         assert!(app.notice.is_some());
 
-        // Left / Esc returns to list.
+        // Left returns to the list; Tab switches between both panes.
         app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert!(app.focus == Focus::Content);
+        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(app.focus == Focus::SessionPreview);
+        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert!(app.focus == Focus::Content);
 
         // Esc from list returns to menu.
@@ -137,7 +137,91 @@
     }
 
     #[test]
+    fn session_preview_clears_old_background_and_resizes() {
+        fn find_ascii(
+            terminal: &Terminal<TestBackend>,
+            width: u16,
+            height: u16,
+            needle: &str,
+        ) -> (u16, u16) {
+            let chars = needle.chars().map(|ch| ch.to_string()).collect::<Vec<_>>();
+            let cells = terminal.backend().buffer().content();
+            for y in 0..height {
+                for x in 0..width.saturating_sub(chars.len() as u16) {
+                    if chars.iter().enumerate().all(|(offset, expected)| {
+                        cells[(y * width + x + offset as u16) as usize].symbol() == expected
+                    }) {
+                        return (x, y);
+                    }
+                }
+            }
+            panic!("{needle:?} was not rendered");
+        }
+
+        let (_root, mut app) = app();
+        app.page = Page::Sessions;
+        app.focus = Focus::SessionPreview;
+        app.sessions_loaded = true;
+        app.sessions = vec![crate::documents::SessionSummary {
+            path: _root.join("demo.jsonl"),
+            id: "demo-1".into(),
+            cwd: "/work/demo".into(),
+            name: Some("Demo Session".into()),
+            created: SystemTime::now(),
+            modified: SystemTime::now(),
+            message_count: 2,
+            first_message: "alpha highlighted body".into(),
+            search_text: "alpha highlighted body short".into(),
+        }];
+        app.preview = Some(vec![
+            crate::documents::PreviewMessage {
+                role: "user".into(),
+                text: "**alpha** highlighted body with [link](https://example.test)".into(),
+            },
+            crate::documents::PreviewMessage {
+                role: "assistant".into(),
+                text: "short".into(),
+            },
+        ]);
+        app.preview_path = Some(_root.join("demo.jsonl").display().to_string());
+        app.preview_message_cursor = 0;
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let (alpha_x, alpha_y) = find_ascii(&terminal, 120, 30, "alpha");
+        let sample_x = alpha_x + 30;
+        let selected_background = terminal.backend().buffer().content()
+            [(alpha_y * 120 + sample_x) as usize]
+            .bg;
+        assert!(!buffer_string(&terminal).contains("**alpha**"));
+
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let old_background = terminal.backend().buffer().content()
+            [(alpha_y * 120 + sample_x) as usize]
+            .bg;
+        assert_ne!(old_background, selected_background);
+
+        let (short_x, short_y) = find_ascii(&terminal, 120, 30, "short");
+        let cells = terminal.backend().buffer().content();
+        assert!((short_x + 5..short_x + 20)
+            .all(|x| cells[(short_y * 120 + x) as usize].bg == selected_background));
+
+        for (width, height) in [(120, 30), (80, 24), (64, 20)] {
+            app.preview_scroll = u16::MAX;
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let content = buffer_string(&terminal);
+            assert!(content.contains("Demo Session"));
+            assert!(content.contains("Preview"));
+            assert_ne!(app.preview_scroll, u16::MAX);
+            assert_eq!(app.preview_layout.as_ref().unwrap().width, app.preview_wrap_width);
+        }
+    }
+
+    #[test]
     fn sessions_grouped_by_cwd_with_headers_and_navigation() {
+        let _env_lock = SESSION_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let (_root, mut app) = app();
         let sessions_root = _root.join(".pi/agent/sessions/--proj--");
         fs::create_dir_all(&sessions_root).unwrap();

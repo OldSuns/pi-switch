@@ -3,12 +3,12 @@ use std::{collections::BTreeMap, fs};
 use serde_json::{json, Map, Value};
 
 use super::{
-    lock_provider_documents,
     network::fetch_catalog,
     schema::{minimal_model, provider_view, validate_draft, validate_model_id},
+    snapshot::{lock_provider_documents, write_provider_changes},
     storage::{io_error, providers_object, providers_object_mut},
-    write_provider_changes, AppError, CatalogAmbiguity, CatalogModel, ImportOptions, ImportSummary,
-    ModelCatalog, OpenCodeImportPlan, Paths, ProviderDraft, Result,
+    AppError, CatalogAmbiguity, CatalogModel, ImportOptions, ImportSummary, ModelCatalog,
+    OpenCodeImportPlan, Paths, ProviderDraft, Result,
 };
 
 pub fn list_opencode_providers(paths: &Paths) -> Result<Vec<String>> {
