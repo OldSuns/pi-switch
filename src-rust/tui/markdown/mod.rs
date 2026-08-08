@@ -64,12 +64,15 @@ pub(super) struct PreviewLayout {
 }
 
 impl PreviewLayout {
-    pub(super) fn new(messages: &[PreviewMessage], width: usize) -> Self {
+    pub(super) fn new<'a>(
+        messages: impl IntoIterator<Item = &'a PreviewMessage>,
+        width: usize,
+    ) -> Self {
         let width = width.max(1);
         Self {
             width,
             messages: messages
-                .iter()
+                .into_iter()
                 .map(|message| render(&message.text, width))
                 .collect(),
         }

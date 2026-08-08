@@ -5,7 +5,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::documents::{
     self, Backup, CatalogAmbiguity, CatalogFetch, CatalogModel, DoctorCheck, ImportSummary,
-    OpenCodeImportPlan, Paths, PreviewMessage, ProviderView, RatioCost, SessionSummary, Snapshot,
+    OpenCodeImportPlan, Paths, PreviewMessage, ProviderView, RatioCost, SessionPreview,
+    SessionSummary, Snapshot,
 };
 
 #[path = "app/actions.rs"]
@@ -260,7 +261,10 @@ pub(super) struct App {
     pub(super) session_filtering: bool,
     pub(super) named_only: bool,
     pub(super) user_only_preview: bool,
-    pub(super) preview: Option<Vec<PreviewMessage>>,
+    pub(super) preview: Option<SessionPreview>,
+    pub(super) preview_visible: Vec<usize>,
+    pub(super) preview_collapsed: BTreeSet<String>,
+    pub(super) preview_child_history: BTreeMap<String, String>,
     pub(super) preview_layout: Option<PreviewLayout>,
     pub(super) preview_scroll: u16,
     pub(super) preview_path: Option<String>,
@@ -337,6 +341,9 @@ impl App {
             named_only: false,
             user_only_preview: false,
             preview: None,
+            preview_visible: Vec::new(),
+            preview_collapsed: BTreeSet::new(),
+            preview_child_history: BTreeMap::new(),
             preview_layout: None,
             preview_scroll: 0,
             preview_path: None,

@@ -3,6 +3,7 @@ mod network;
 mod opencode;
 mod providers;
 mod schema;
+mod session_tree;
 mod sessions;
 mod settings;
 mod snapshot;
@@ -32,9 +33,10 @@ pub use providers::{
     duplicate_provider, import_models, remove_model, remove_provider, save_model, save_provider,
     set_default, set_provider_in_pi,
 };
+pub use session_tree::{load_preview, PreviewMessage, PreviewTreePosition, SessionPreview};
 pub use sessions::{
-    delete_session, format_session_time, list_sessions, load_preview, session_display_title,
-    session_matches, DeleteMethod, PreviewMessage, SessionSummary,
+    delete_session, format_session_time, list_sessions, session_display_title, session_matches,
+    DeleteMethod, SessionSummary,
 };
 #[cfg(test)]
 use settings::check_updates_field;

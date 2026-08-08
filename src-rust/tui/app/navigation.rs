@@ -145,9 +145,7 @@ impl App {
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => self.move_session_selection(-1),
                 KeyCode::Down | KeyCode::Char('j') => self.move_session_selection(1),
-                KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter | KeyCode::Tab => {
-                    self.focus_session_preview();
-                }
+                KeyCode::Right => self.focus_session_preview(),
                 KeyCode::PageUp => self.move_session_selection(-5),
                 KeyCode::PageDown => self.move_session_selection(5),
                 KeyCode::Char('u') => {

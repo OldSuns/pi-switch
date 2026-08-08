@@ -7,12 +7,18 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::documents::{format_session_time, session_display_title};
+use crate::documents::{format_session_time, session_display_title, PreviewTreePosition};
 
 use super::super::super::app::{App, Focus, Page};
 use super::super::super::input::truncate_width;
 use super::super::super::markdown::{MarkdownLine, MarkdownLineKind, MarkdownStyle};
 use super::super::Theme;
+
+mod tree;
+
+use tree::{
+    preview_node_status, preview_tree_width, render_markdown_line, tree_body_prefix, tree_prefix,
+};
 
 pub(in crate::tui::ui) fn render_sessions(
     frame: &mut Frame<'_>,
@@ -214,9 +220,10 @@ fn group_header_text(cwd: &str, count: usize, max_width: usize, app: &App) -> St
 fn render_session_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect, theme: Theme) {
     let preview_focused = app.focus == Focus::SessionPreview;
     let title = if app.user_only_preview {
-        app.language.pick("Preview (user)", "预览（仅用户）")
+        app.language
+            .pick("Preview (user) · tree", "预览（用户）· 树")
     } else {
-        app.language.pick("Preview", "预览")
+        app.language.pick("Preview · tree", "预览 · 树")
     };
     let block = Block::default()
         .title(Span::styled(
@@ -236,12 +243,13 @@ fn render_session_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect, them
     frame.render_widget(block, area);
 
     let line_width = inner.width as usize;
-    let body_width = inner.width.saturating_sub(2).max(1) as usize;
-    app.set_preview_geometry(body_width, inner.height);
+    let tree_width = preview_tree_width(app, line_width);
+    let body_width = line_width.saturating_sub(tree_width).max(1);
 
+    let mut header_lines = Vec::new();
     let mut lines = Vec::new();
     if let Some(session) = app.selected_session() {
-        lines.push(filled_text_line(
+        header_lines.push(filled_text_line(
             session_display_title(session),
             line_width,
             Style::default()
@@ -249,39 +257,58 @@ fn render_session_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect, them
                 .bg(theme.background)
                 .add_modifier(Modifier::BOLD),
         ));
+        let cwd = if session.cwd.is_empty() {
+            "-"
+        } else {
+            &session.cwd
+        };
         let metadata = format!(
-            "{} {}  ·  {} {}  ·  {}",
+            "{cwd}  ·  {} {}  ·  {} {}  ·  {} {}  ·  {}",
             app.language.pick("id", "编号"),
             session.id,
             session.message_count,
             app.language.pick("messages", "条消息"),
+            app.preview
+                .as_ref()
+                .map_or(0, |preview| preview.branch_points),
+            app.language.pick("branches", "个分支"),
             format_session_time(session.modified),
         );
-        lines.push(filled_text_line(
+        header_lines.push(filled_text_line(
             &metadata,
             line_width,
             theme.label().bg(theme.background),
         ));
-        let cwd = format!(
-            "{} {}",
-            app.language.pick("cwd", "目录"),
-            if session.cwd.is_empty() {
-                "-"
-            } else {
-                &session.cwd
-            }
+        header_lines.push(filled_text_line(
+            &preview_node_status(app),
+            line_width,
+            Style::default()
+                .fg(theme.foreground)
+                .bg(theme.surface_hi)
+                .add_modifier(Modifier::BOLD),
+        ));
+        let legend = format!(
+            "◆ {}  ● {}  ○ {}  ▾/▸ {}",
+            app.language.pick("current", "当前"),
+            app.language.pick("active", "活动"),
+            app.language.pick("branch", "分支"),
+            app.language.pick("fold", "折叠"),
         );
-        lines.push(filled_text_line(
-            &cwd,
+        header_lines.push(filled_text_line(
+            &legend,
             line_width,
             theme.label().bg(theme.background),
         ));
-        lines.push(filled_text_line(
-            &"─".repeat(line_width),
-            line_width,
-            Style::default().fg(theme.border).bg(theme.background),
-        ));
     }
+
+    let header_height = (header_lines.len() as u16).min(inner.height);
+    let body_area = Rect::new(
+        inner.x,
+        inner.y.saturating_add(header_height),
+        inner.width,
+        inner.height.saturating_sub(header_height),
+    );
+    app.set_preview_geometry(body_width, body_area.height.max(1));
 
     match (&app.preview, &app.preview_layout) {
         (None, _) if app.selected_session().is_none() => {
@@ -298,7 +325,7 @@ fn render_session_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect, them
                 theme.label().bg(theme.background),
             ));
         }
-        (Some(messages), _) if messages.is_empty() => {
+        (Some(preview), _) if preview.messages.is_empty() => {
             lines.push(filled_text_line(
                 app.language
                     .pick("(no user/assistant text)", "（无用户/助手文本）"),
@@ -306,12 +333,20 @@ fn render_session_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect, them
                 theme.label().bg(theme.background),
             ));
         }
-        (Some(messages), Some(layout)) => {
-            for (index, (message, body)) in messages.iter().zip(&layout.messages).enumerate() {
-                let (role, direction, role_color) = match message.role.as_str() {
-                    "user" => (app.language.pick("User", "用户"), "▶", theme.accent),
-                    "assistant" => (app.language.pick("Assistant", "助手"), "◀", theme.success),
-                    other => (other, "•", theme.warning),
+        (Some(preview), Some(layout)) => {
+            for (index, (full_index, body)) in
+                app.preview_visible.iter().zip(&layout.messages).enumerate()
+            {
+                let message = &preview.messages[*full_index];
+                let (role, role_color) = match message.role.as_str() {
+                    "user" => (app.language.pick("User", "用户"), theme.accent),
+                    "assistant" => (app.language.pick("Assistant", "助手"), theme.success),
+                    "branchSummary" => (
+                        app.language.pick("Branch summary", "分支摘要"),
+                        theme.warning,
+                    ),
+                    "compaction" => (app.language.pick("Compaction", "压缩摘要"), theme.warning),
+                    other => (other, theme.warning),
                 };
                 let selected = preview_focused && index == app.preview_message_cursor;
                 let background = if selected {
@@ -319,104 +354,95 @@ fn render_session_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect, them
                 } else {
                     theme.surface
                 };
-                let marker = if selected { "❯" } else { " " };
-                lines.push(filled_text_line(
-                    &format!("{marker} {direction} {role}"),
-                    line_width,
+                let active_leaf = preview.active_message_id.as_deref() == Some(message.id.as_str());
+                let fold_marker = if message.tree.has_children {
+                    if app.preview_collapsed.contains(&message.id) {
+                        "▸ "
+                    } else {
+                        "▾ "
+                    }
+                } else {
+                    "  "
+                };
+                let branch_label = preview
+                    .parent_index(*full_index)
+                    .filter(|parent| preview.direct_child_count(*parent) > 1)
+                    .and_then(|_| preview.branch_position(*full_index))
+                    .map(|(position, count)| format!(" [{position}/{count}]"))
+                    .unwrap_or_default();
+                let label = message
+                    .label
+                    .as_deref()
+                    .map(|label| format!(" [{label}]"))
+                    .unwrap_or_default();
+                let header = truncate_width(
+                    &format!("{fold_marker}{role}{branch_label}{label}"),
+                    body_width,
+                );
+                let mut header_spans = vec![tree_prefix(
+                    &message.tree,
+                    tree_width,
+                    selected,
+                    active_leaf,
+                    background,
+                    theme,
+                )];
+                header_spans.push(Span::styled(
+                    header,
                     Style::default()
                         .fg(role_color)
                         .bg(background)
                         .add_modifier(Modifier::BOLD),
                 ));
+                lines.push(filled_line(
+                    header_spans,
+                    line_width,
+                    Style::default().bg(background),
+                ));
                 for line in body {
                     lines.push(render_markdown_line(
-                        line, line_width, selected, role_color, theme,
+                        line,
+                        &message.tree,
+                        tree_width,
+                        line_width,
+                        selected,
+                        theme,
                     ));
                 }
-                lines.push(filled_text_line("", line_width, theme.base()));
+                lines.push(filled_line(
+                    vec![tree_body_prefix(
+                        &message.tree,
+                        tree_width,
+                        theme.background,
+                        theme,
+                    )],
+                    line_width,
+                    theme.base(),
+                ));
             }
         }
         (Some(_), None) => {}
     }
 
-    let visible_height = inner.height.max(1) as usize;
+    let visible_height = body_area.height.max(1) as usize;
     let max_scroll = lines.len().saturating_sub(visible_height);
     let scroll = (app.preview_scroll as usize).min(max_scroll);
     app.preview_scroll = scroll.min(u16::MAX as usize) as u16;
-    let view = lines
-        .into_iter()
-        .skip(scroll)
-        .take(visible_height)
-        .collect::<Vec<_>>();
-    frame.render_widget(Paragraph::new(view).style(theme.base()), inner);
-}
-
-fn render_markdown_line(
-    line: &MarkdownLine,
-    width: usize,
-    selected: bool,
-    role_color: Color,
-    theme: Theme,
-) -> Line<'static> {
-    let background = if selected {
-        theme.accent_dim
-    } else if line.kind == MarkdownLineKind::Code {
-        theme.surface_hi
-    } else {
-        theme.background
-    };
-    let mut spans = vec![Span::styled(
-        "│ ",
-        Style::default().fg(role_color).bg(background),
-    )];
-    spans.extend(line.spans.iter().map(|span| {
-        Span::styled(
-            span.text.clone(),
-            markdown_style(span.style, line.kind, background, selected, theme),
-        )
-    }));
-    filled_line(spans, width, Style::default().bg(background))
-}
-
-fn markdown_style(
-    markdown: MarkdownStyle,
-    kind: MarkdownLineKind,
-    background: Color,
-    selected: bool,
-    theme: Theme,
-) -> Style {
-    let foreground = if markdown.link {
-        theme.accent
-    } else if markdown.dim {
-        theme.dim
-    } else {
-        match kind {
-            MarkdownLineKind::Heading => theme.accent,
-            MarkdownLineKind::Quote => theme.warning,
-            MarkdownLineKind::Rule => theme.border,
-            MarkdownLineKind::Body | MarkdownLineKind::Code => theme.foreground,
-        }
-    };
-    let mut style = Style::default().fg(foreground).bg(background);
-    if markdown.bold || kind == MarkdownLineKind::Heading {
-        style = style.add_modifier(Modifier::BOLD);
+    if header_height > 0 {
+        let header_area = Rect::new(inner.x, inner.y, inner.width, header_height);
+        frame.render_widget(
+            Paragraph::new(header_lines).style(theme.base()),
+            header_area,
+        );
     }
-    if markdown.italic {
-        style = style.add_modifier(Modifier::ITALIC);
+    if body_area.height > 0 {
+        let view = lines
+            .into_iter()
+            .skip(scroll)
+            .take(visible_height)
+            .collect::<Vec<_>>();
+        frame.render_widget(Paragraph::new(view).style(theme.base()), body_area);
     }
-    if markdown.crossed_out {
-        style = style.add_modifier(Modifier::CROSSED_OUT);
-    }
-    if markdown.link {
-        style = style.add_modifier(Modifier::UNDERLINED);
-    }
-    if markdown.code {
-        style = style.fg(theme.warning);
-        if !selected {
-            style = style.bg(theme.surface_hi);
-        }
-    }
-    style
 }
 
 fn filled_text_line(text: &str, width: usize, style: Style) -> Line<'static> {

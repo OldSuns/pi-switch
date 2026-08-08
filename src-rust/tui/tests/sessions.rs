@@ -28,14 +28,14 @@
         assert!(app
             .preview
             .as_ref()
-            .is_some_and(|messages| messages.iter().any(|m| m.role == "user")));
+            .is_some_and(|preview| preview.messages.iter().any(|m| m.role == "user")));
 
         app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
         assert!(app.user_only_preview);
         assert!(app
             .preview
             .as_ref()
-            .is_some_and(|messages| messages.iter().all(|m| m.role == "user")));
+            .is_some_and(|preview| preview.messages.iter().all(|m| m.role == "user")));
 
         app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
         assert!(app.named_only);
@@ -89,18 +89,18 @@
         app.reload_sessions(None);
         assert_eq!(app.preview_message_count(), 3);
 
-        // Right / Enter enters preview message selection.
+        // Only Right enters preview message selection.
         app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert!(app.focus == Focus::SessionPreview);
-        assert_eq!(app.preview_message_cursor, 0);
+        assert_eq!(app.preview_message_cursor, 2);
 
-        // Down moves to next message.
+        // Down stays on the active leaf at the end of the tree.
         app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.preview_message_cursor, 1);
+        assert_eq!(app.preview_message_cursor, 2);
 
-        // Up moves back.
+        // Up moves to the previous branch node.
         app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.preview_message_cursor, 0);
+        assert_eq!(app.preview_message_cursor, 1);
 
         // PageDown scrolls by viewport lines instead of jumping messages.
         app.preview_wrap_width = 12;
@@ -121,12 +121,20 @@
         assert!(!app.quit);
         assert!(app.notice.is_some());
 
-        // Left returns to the list; Tab switches between both panes.
+        // Pane switching only accepts the physical Left/Right arrows.
         app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         assert!(app.focus == Focus::Content);
-        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        for code in [KeyCode::Tab, KeyCode::Enter, KeyCode::Char('l')] {
+            app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+            assert!(app.focus == Focus::Content);
+        }
+        app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert!(app.focus == Focus::SessionPreview);
-        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        for code in [KeyCode::Tab, KeyCode::Esc, KeyCode::Char('h')] {
+            app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+            assert!(app.focus == Focus::SessionPreview);
+        }
+        app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         assert!(app.focus == Focus::Content);
 
         // Esc from list returns to menu.
@@ -173,16 +181,16 @@
             first_message: "alpha highlighted body".into(),
             search_text: "alpha highlighted body short".into(),
         }];
-        app.preview = Some(vec![
-            crate::documents::PreviewMessage {
-                role: "user".into(),
-                text: "**alpha** highlighted body with [link](https://example.test)".into(),
-            },
-            crate::documents::PreviewMessage {
-                role: "assistant".into(),
-                text: "short".into(),
-            },
-        ]);
+        app.preview = Some(crate::documents::SessionPreview::from_messages(vec![
+            crate::documents::PreviewMessage::new(
+                "u1",
+                None,
+                "user",
+                "**alpha** highlighted body with [link](https://example.test)",
+            ),
+            crate::documents::PreviewMessage::new("a1", Some("u1".into()), "assistant", "short"),
+        ]));
+        app.preview_visible = vec![0, 1];
         app.preview_path = Some(_root.join("demo.jsonl").display().to_string());
         app.preview_message_cursor = 0;
 
@@ -217,6 +225,93 @@
             assert_ne!(app.preview_scroll, u16::MAX);
             assert_eq!(app.preview_layout.as_ref().unwrap().width, app.preview_wrap_width);
         }
+    }
+
+    #[test]
+    fn session_preview_renders_tree_and_folds_branch() {
+        let _env_lock = SESSION_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let (_root, mut app) = app();
+        let sessions_root = _root.join(".pi/agent/sessions/--proj--");
+        fs::create_dir_all(&sessions_root).unwrap();
+        fs::write(
+            sessions_root.join("branch.jsonl"),
+            r#"{"type":"session","version":3,"id":"branch-1","timestamp":"2026-01-01T00:00:00Z","cwd":"/work/tree"}
+{"type":"message","id":"u1","parentId":null,"timestamp":"2026-01-01T00:00:01Z","message":{"role":"user","content":"root"}}
+{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","content":[{"type":"text","text":"reply"}]}}
+{"type":"message","id":"u-old","parentId":"a1","timestamp":"2026-01-01T00:00:03Z","message":{"role":"user","content":"old branch"}}
+{"type":"message","id":"a-old","parentId":"u-old","timestamp":"2026-01-01T00:00:04Z","message":{"role":"assistant","content":[{"type":"text","text":"old reply"}]}}
+{"type":"message","id":"u-new","parentId":"a1","timestamp":"2026-01-01T00:00:05Z","message":{"role":"user","content":"active branch"}}
+{"type":"message","id":"a-new","parentId":"u-new","timestamp":"2026-01-01T00:00:06Z","message":{"role":"assistant","content":[{"type":"text","text":"active reply"}]}}
+"#,
+        )
+        .unwrap();
+        env::set_var(
+            "PI_CODING_AGENT_SESSION_DIR",
+            _root.join(".pi/agent/sessions"),
+        );
+        app.page = Page::Sessions;
+        app.focus = Focus::Content;
+        app.reload_sessions(None);
+        assert_eq!(app.preview_message_count(), 6);
+        assert_eq!(app.preview.as_ref().unwrap().branch_points, 1);
+        app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let content = buffer_string(&terminal);
+        assert!(!content.contains("└─●"));
+        assert!(content.contains("├─●"));
+        assert!(content.contains("└─○"));
+        assert!(content.contains("[1/2]"));
+        assert!(content.contains("[2/2]"));
+        assert!(content.contains('◆'));
+        assert!(content.contains('▾'));
+        assert!(content.contains("◆ Current") || content.contains("◆ 当前"));
+        assert!(content.contains("Branch 1/2") || content.contains("分支 1/2"));
+
+        // The default active leaf switches at the nearest branch point.
+        assert_eq!(app.selected_preview_message().unwrap().id, "a-new");
+        app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+        assert_eq!(app.selected_preview_message().unwrap().id, "u-old");
+
+        // Parent/child navigation must retain the branch we came from.
+        app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(app.selected_preview_message().unwrap().id, "a1");
+        app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert_eq!(app.selected_preview_message().unwrap().id, "u-old");
+
+        // Horizontal navigation follows visual branch levels, not serial messages.
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.selected_preview_message().unwrap().id, "a-old");
+        app.on_key(KeyEvent::new(
+            KeyCode::Left,
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ));
+        assert_eq!(app.selected_preview_message().unwrap().id, "a1");
+        app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert_eq!(app.selected_preview_message().unwrap().id, "u-old");
+        app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert_eq!(app.selected_preview_message().unwrap().id, "u-old");
+        app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(app.selected_preview_message().unwrap().id, "u-new");
+        app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(app.selected_preview_message().unwrap().id, "a1");
+
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.preview_message_count(), 6);
+        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.preview_message_count(), 2);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let collapsed = buffer_string(&terminal);
+        assert!(collapsed.contains('▸'));
+        assert!(collapsed.contains("hidden 4") || collapsed.contains("已隐藏 4"));
+
+        app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert_eq!(app.preview_message_count(), 6);
+        assert_eq!(app.selected_preview_message().unwrap().id, "u-new");
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(buffer_string(&terminal).contains('▾'));
+        env::remove_var("PI_CODING_AGENT_SESSION_DIR");
     }
 
     #[test]

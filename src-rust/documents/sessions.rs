@@ -12,7 +12,6 @@ use serde_json::Value;
 use super::{AppError, Result};
 
 const SEARCH_TEXT_LIMIT: usize = 8_192;
-const PREVIEW_TEXT_LIMIT: usize = 4_096;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionSummary {
@@ -25,12 +24,6 @@ pub struct SessionSummary {
     pub message_count: usize,
     pub first_message: String,
     pub search_text: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PreviewMessage {
-    pub role: String,
-    pub text: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,54 +65,6 @@ pub fn list_sessions_in(root: &Path) -> Result<Vec<SessionSummary>> {
         .collect::<Vec<_>>();
     sessions.sort_by_key(|b| std::cmp::Reverse(b.modified));
     Ok(sessions)
-}
-
-pub fn load_preview(path: &Path, user_only: bool) -> Result<Vec<PreviewMessage>> {
-    let file = fs::File::open(path).map_err(|source| AppError::Io {
-        path: path.into(),
-        source,
-    })?;
-    let reader = BufReader::new(file);
-    let mut messages = Vec::new();
-    for line in reader.lines() {
-        let line = line.map_err(|source| AppError::Io {
-            path: path.into(),
-            source,
-        })?;
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(entry) = serde_json::from_str::<Value>(trimmed) else {
-            continue;
-        };
-        if entry.get("type").and_then(Value::as_str) != Some("message") {
-            continue;
-        }
-        let Some(message) = entry.get("message") else {
-            continue;
-        };
-        let Some(role) = message.get("role").and_then(Value::as_str) else {
-            continue;
-        };
-        if role != "user" && role != "assistant" {
-            continue;
-        }
-        if user_only && role != "user" {
-            continue;
-        }
-        let Some(text) = extract_text_content(message.get("content")) else {
-            continue;
-        };
-        if text.trim().is_empty() {
-            continue;
-        }
-        messages.push(PreviewMessage {
-            role: role.into(),
-            text: truncate_chars(&text, PREVIEW_TEXT_LIMIT),
-        });
-    }
-    Ok(messages)
 }
 
 pub fn delete_session(path: &Path) -> Result<DeleteMethod> {
@@ -360,7 +305,7 @@ fn message_activity_time(entry: &Value, message: &Value) -> Option<SystemTime> {
         .and_then(parse_iso_time)
 }
 
-fn extract_text_content(content: Option<&Value>) -> Option<String> {
+pub(super) fn extract_text_content(content: Option<&Value>) -> Option<String> {
     let content = content?;
     match content {
         Value::String(text) => {
@@ -402,7 +347,7 @@ fn push_search(parts: &mut Vec<String>, used: &mut usize, text: &str) {
     parts.push(piece);
 }
 
-fn truncate_chars(text: &str, max_chars: usize) -> String {
+pub(super) fn truncate_chars(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text.to_owned();
     }
@@ -450,6 +395,7 @@ fn try_trash(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::documents::load_preview;
     use std::{
         env, fs, process,
         sync::atomic::{AtomicUsize, Ordering},
@@ -540,14 +486,14 @@ mod tests {
         assert!(session_matches(&sessions[0], "", true));
 
         let preview = load_preview(&sessions[0].path, false).unwrap();
-        assert_eq!(preview.len(), 2);
-        assert_eq!(preview[0].role, "user");
-        assert_eq!(preview[0].text, "named user");
-        assert_eq!(preview[1].role, "assistant");
+        assert_eq!(preview.messages.len(), 2);
+        assert_eq!(preview.messages[0].role, "user");
+        assert_eq!(preview.messages[0].text, "named user");
+        assert_eq!(preview.messages[1].role, "assistant");
 
         let user_only = load_preview(&sessions[0].path, true).unwrap();
-        assert_eq!(user_only.len(), 1);
-        assert_eq!(user_only[0].role, "user");
+        assert_eq!(user_only.messages.len(), 1);
+        assert_eq!(user_only.messages[0].role, "user");
         let _ = fs::remove_dir_all(root);
     }
 

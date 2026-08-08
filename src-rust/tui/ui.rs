@@ -329,17 +329,21 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
             ]
         } else if app.focus == Focus::SessionPreview {
             vec![
-                ("Up/Down", app.language.pick("messages", "消息")),
+                ("Up/Down", app.language.pick("tree node", "树节点")),
+                (
+                    "Ctrl+←/→",
+                    app.language.pick("parent / child", "父节点/子节点"),
+                ),
+                ("Alt+←/→", app.language.pick("sibling branch", "相邻分支")),
+                ("Tab", app.language.pick("collapse / expand", "折叠/展开")),
                 ("PgUp/PgDn", app.language.pick("scroll", "滚动")),
                 ("Ctrl+C", app.language.pick("copy", "复制")),
-                ("u", app.language.pick("user-only", "仅用户")),
-                ("Tab/Left", app.language.pick("list", "列表")),
-                ("q", app.language.pick("quit", "退出")),
+                ("Left", app.language.pick("list", "列表")),
             ]
         } else if compact {
             vec![
                 ("/", app.language.pick("filter", "筛选")),
-                ("Enter/Tab", app.language.pick("open", "进入")),
+                ("Right", app.language.pick("open", "进入")),
                 ("d", app.language.pick("delete", "删除")),
                 ("r", app.language.pick("reload", "刷新")),
                 ("n", app.language.pick("named", "命名")),
@@ -349,7 +353,7 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         } else {
             vec![
                 ("Up/Down", app.language.pick("select", "选择")),
-                ("Enter/Tab", app.language.pick("browse", "浏览消息")),
+                ("Right", app.language.pick("browse", "浏览消息")),
                 ("/", app.language.pick("filter", "筛选")),
                 ("n", app.language.pick("named only", "仅命名")),
                 ("u", app.language.pick("user-only", "仅用户")),
@@ -378,9 +382,7 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
                 keys.push(("Left", app.language.pick("menu", "菜单")));
             }
         } else if app.page == Page::Sessions {
-            if app.focus == Focus::SessionPreview {
-                keys.push(("Left", app.language.pick("list", "列表")));
-            } else {
+            if app.focus != Focus::SessionPreview {
                 keys.push(("Left", app.language.pick("menu", "菜单")));
             }
         } else if app.page != Page::Home {
