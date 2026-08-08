@@ -56,6 +56,10 @@ impl App {
             self.toggle_selected_provider_in_pi();
             return;
         }
+        if self.in_session_list() && key.code == KeyCode::Char('v') {
+            self.toggle_session_view_mode();
+            return;
+        }
         if let Some(command) = command_for(key) {
             match command {
                 Command::Quit => self.quit = true,

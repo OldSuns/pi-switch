@@ -7,17 +7,20 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::documents::{format_session_time, session_display_title, PreviewTreePosition};
+use crate::documents::{format_session_time, session_display_title};
 
-use super::super::super::app::{App, Focus, Page};
+use super::super::super::app::{App, Focus, Page, SessionViewMode};
 use super::super::super::input::truncate_width;
-use super::super::super::markdown::{MarkdownLine, MarkdownLineKind, MarkdownStyle};
+use super::super::super::markdown::{
+    full_tree_width, MarkdownLine, MarkdownLineKind, MarkdownStyle,
+};
 use super::super::Theme;
 
 mod tree;
 
 use tree::{
-    preview_node_status, preview_tree_width, render_markdown_line, tree_body_prefix, tree_prefix,
+    compact_horizontal_scroll, preview_node_status, render_compact_tree_line, render_markdown_line,
+    tree_body_prefix, tree_prefix,
 };
 
 pub(in crate::tui::ui) fn render_sessions(
@@ -39,11 +42,14 @@ pub(in crate::tui::ui) fn render_sessions(
             [Constraint::Percentage(45), Constraint::Percentage(55)]
         })
         .split(area);
+    app.session_list_left = sections[0].x;
+    app.session_preview_left = sections[1].x;
     render_session_list(frame, app, sections[0], theme);
     render_session_preview(frame, app, sections[1], theme);
 }
 
-fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
+fn render_session_list(frame: &mut Frame<'_>, app: &mut App, area: Rect, theme: Theme) {
+    app.session_list_top = area.y.saturating_add(1);
     let groups = app.session_groups();
     let active = app.focus == Focus::Content && app.page == Page::Sessions;
     let filter_hint = if app.session_filtering || !app.session_filter.is_empty() {
@@ -219,11 +225,17 @@ fn group_header_text(cwd: &str, count: usize, max_width: usize, app: &App) -> St
 
 fn render_session_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect, theme: Theme) {
     let preview_focused = app.focus == Focus::SessionPreview;
+    let view = match app.session_view_mode {
+        SessionViewMode::Tree => app.language.pick("Tree", "树预览"),
+        SessionViewMode::Full => app.language.pick("Full", "完整阅读"),
+    };
     let title = if app.user_only_preview {
-        app.language
-            .pick("Preview (user) · tree", "预览（用户）· 树")
+        format!(
+            "{} · {view}",
+            app.language.pick("Preview (user)", "预览（用户）")
+        )
     } else {
-        app.language.pick("Preview · tree", "预览 · 树")
+        format!("{} · {view}", app.language.pick("Preview", "预览"))
     };
     let block = Block::default()
         .title(Span::styled(
@@ -243,8 +255,6 @@ fn render_session_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect, them
     frame.render_widget(block, area);
 
     let line_width = inner.width as usize;
-    let tree_width = preview_tree_width(app, line_width);
-    let body_width = line_width.saturating_sub(tree_width).max(1);
 
     let mut header_lines = Vec::new();
     let mut lines = Vec::new();
@@ -287,18 +297,6 @@ fn render_session_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect, them
                 .bg(theme.surface_hi)
                 .add_modifier(Modifier::BOLD),
         ));
-        let legend = format!(
-            "◆ {}  ● {}  ○ {}  ▾/▸ {}",
-            app.language.pick("current", "当前"),
-            app.language.pick("active", "活动"),
-            app.language.pick("branch", "分支"),
-            app.language.pick("fold", "折叠"),
-        );
-        header_lines.push(filled_text_line(
-            &legend,
-            line_width,
-            theme.label().bg(theme.background),
-        ));
     }
 
     let header_height = (header_lines.len() as u16).min(inner.height);
@@ -308,7 +306,8 @@ fn render_session_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect, them
         inner.width,
         inner.height.saturating_sub(header_height),
     );
-    app.set_preview_geometry(body_width, body_area.height.max(1));
+    app.preview_body_top = body_area.y;
+    app.set_preview_geometry(line_width, body_area.height.max(1));
 
     match (&app.preview, &app.preview_layout) {
         (None, _) if app.selected_session().is_none() => {
@@ -327,100 +326,109 @@ fn render_session_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect, them
         }
         (Some(preview), _) if preview.messages.is_empty() => {
             lines.push(filled_text_line(
-                app.language
-                    .pick("(no user/assistant text)", "（无用户/助手文本）"),
+                app.language.pick("(no User/Pi text)", "（无用户/Pi文本）"),
                 line_width,
                 theme.label().bg(theme.background),
             ));
         }
-        (Some(preview), Some(layout)) => {
-            for (index, (full_index, body)) in
-                app.preview_visible.iter().zip(&layout.messages).enumerate()
-            {
-                let message = &preview.messages[*full_index];
-                let (role, role_color) = match message.role.as_str() {
-                    "user" => (app.language.pick("User", "用户"), theme.accent),
-                    "assistant" => (app.language.pick("Assistant", "助手"), theme.success),
-                    "branchSummary" => (
-                        app.language.pick("Branch summary", "分支摘要"),
-                        theme.warning,
-                    ),
-                    "compaction" => (app.language.pick("Compaction", "压缩摘要"), theme.warning),
-                    other => (other, theme.warning),
-                };
-                let selected = preview_focused && index == app.preview_message_cursor;
-                let background = if selected {
-                    theme.accent_dim
-                } else {
-                    theme.surface
-                };
-                let active_leaf = preview.active_message_id.as_deref() == Some(message.id.as_str());
-                let fold_marker = if message.tree.has_children {
-                    if app.preview_collapsed.contains(&message.id) {
-                        "▸ "
-                    } else {
-                        "▾ "
-                    }
-                } else {
-                    "  "
-                };
-                let branch_label = preview
-                    .parent_index(*full_index)
-                    .filter(|parent| preview.direct_child_count(*parent) > 1)
-                    .and_then(|_| preview.branch_position(*full_index))
-                    .map(|(position, count)| format!(" [{position}/{count}]"))
-                    .unwrap_or_default();
-                let label = message
-                    .label
-                    .as_deref()
-                    .map(|label| format!(" [{label}]"))
-                    .unwrap_or_default();
-                let header = truncate_width(
-                    &format!("{fold_marker}{role}{branch_label}{label}"),
-                    body_width,
-                );
-                let mut header_spans = vec![tree_prefix(
-                    &message.tree,
-                    tree_width,
-                    selected,
-                    active_leaf,
-                    background,
-                    theme,
-                )];
-                header_spans.push(Span::styled(
-                    header,
-                    Style::default()
-                        .fg(role_color)
-                        .bg(background)
-                        .add_modifier(Modifier::BOLD),
-                ));
-                lines.push(filled_line(
-                    header_spans,
-                    line_width,
-                    Style::default().bg(background),
-                ));
-                for line in body {
-                    lines.push(render_markdown_line(
-                        line,
-                        &message.tree,
-                        tree_width,
+        (Some(preview), Some(layout)) => match app.session_view_mode {
+            SessionViewMode::Tree => {
+                let horizontal_scroll = compact_horizontal_scroll(app, line_width);
+                for (index, full_index) in app.preview_visible.iter().enumerate() {
+                    lines.push(render_compact_tree_line(
+                        app,
+                        preview,
+                        *full_index,
                         line_width,
-                        selected,
+                        horizontal_scroll,
+                        preview_focused && index == app.preview_message_cursor,
                         theme,
                     ));
                 }
-                lines.push(filled_line(
-                    vec![tree_body_prefix(
+            }
+            SessionViewMode::Full => {
+                for (index, (full_index, body)) in
+                    app.preview_visible.iter().zip(&layout.messages).enumerate()
+                {
+                    let message = &preview.messages[*full_index];
+                    let selected = preview_focused && index == app.preview_message_cursor;
+                    let background = if selected {
+                        theme.accent_dim
+                    } else {
+                        theme.surface
+                    };
+                    let active_leaf =
+                        preview.active_message_id.as_deref() == Some(message.id.as_str());
+                    let fold_marker = if message.tree.has_children {
+                        if app.preview_collapsed.contains(&message.id) {
+                            "▸ "
+                        } else {
+                            "▾ "
+                        }
+                    } else {
+                        "  "
+                    };
+                    let branch_label = preview
+                        .parent_index(*full_index)
+                        .filter(|parent| preview.direct_child_count(*parent) > 1)
+                        .and_then(|_| preview.branch_position(*full_index))
+                        .map(|(position, count)| format!(" [{position}/{count}]"))
+                        .unwrap_or_default();
+                    let label = message
+                        .label
+                        .as_deref()
+                        .map(|label| format!(" [{label}]"))
+                        .unwrap_or_default();
+                    let (role, role_color) = tree::role_label(message, app, theme);
+                    let tree_width = full_tree_width(&message.tree, line_width);
+                    let body_width = line_width.saturating_sub(tree_width).max(1);
+                    let header = truncate_width(
+                        &format!("{fold_marker}{role}{branch_label}{label}"),
+                        body_width,
+                    );
+                    let mut header_spans = vec![tree_prefix(
                         &message.tree,
                         tree_width,
-                        theme.background,
+                        selected,
+                        active_leaf,
+                        background,
                         theme,
-                    )],
-                    line_width,
-                    theme.base(),
-                ));
+                    )];
+                    header_spans.push(Span::styled(
+                        header,
+                        Style::default()
+                            .fg(role_color)
+                            .bg(background)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                    lines.push(filled_line(
+                        header_spans,
+                        line_width,
+                        Style::default().bg(background),
+                    ));
+                    for line in body {
+                        lines.push(render_markdown_line(
+                            line,
+                            &message.tree,
+                            tree_width,
+                            line_width,
+                            selected,
+                            theme,
+                        ));
+                    }
+                    lines.push(filled_line(
+                        vec![tree_body_prefix(
+                            &message.tree,
+                            tree_width,
+                            theme.background,
+                            theme,
+                        )],
+                        line_width,
+                        theme.base(),
+                    ));
+                }
             }
-        }
+        },
         (Some(_), None) => {}
     }
 

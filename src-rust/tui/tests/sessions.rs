@@ -37,6 +37,26 @@
             .as_ref()
             .is_some_and(|preview| preview.messages.iter().all(|m| m.role == "user")));
 
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer().content();
+        let mut click = None;
+        for y in 2..30u16 {
+            if buffer[(y * 120 + 4) as usize].symbol() != " " {
+                click = Some((4, y));
+                break;
+            }
+        }
+        let (click_x, click_y) = click.expect("session row was not rendered");
+        app.on_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: click_x,
+            row: click_y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.selected_session().unwrap().name.as_deref(), Some("Demo Session"));
+        assert!(app.focus == Focus::Content);
+
         app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
         assert!(app.named_only);
         app.on_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
@@ -88,11 +108,41 @@
         app.focus = Focus::Content;
         app.reload_sessions(None);
         assert_eq!(app.preview_message_count(), 3);
+        app.on_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.session_view_mode, crate::tui::app::SessionViewMode::Full);
+        app.on_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.session_view_mode, crate::tui::app::SessionViewMode::Tree);
 
         // Only Right enters preview message selection.
         app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert!(app.focus == Focus::SessionPreview);
         assert_eq!(app.preview_message_cursor, 2);
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer().content();
+        let mut click = None;
+        for y in 0..30u16 {
+            for x in 0..120u16.saturating_sub(2) {
+                if buffer[(y * 120 + x) as usize].symbol() == "P"
+                    && buffer[(y * 120 + x + 1) as usize].symbol() == "i"
+                {
+                    click = Some((x, y));
+                    break;
+                }
+            }
+            if click.is_some() {
+                break;
+            }
+        }
+        let (click_x, click_y) = click.expect("Pi line was not rendered");
+        app.on_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: click_x,
+            row: click_y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.selected_preview_message().unwrap().id, "a1");
 
         // Down stays on the active leaf at the end of the tree.
         app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
@@ -101,6 +151,11 @@
         // Up moves to the previous branch node.
         app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(app.preview_message_cursor, 1);
+
+        // Tree mode is one row per node; v switches to full Markdown reading.
+        assert_eq!(app.session_view_mode, crate::tui::app::SessionViewMode::Tree);
+        app.on_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(app.session_view_mode, crate::tui::app::SessionViewMode::Full);
 
         // PageDown scrolls by viewport lines instead of jumping messages.
         app.preview_wrap_width = 12;
@@ -193,6 +248,7 @@
         app.preview_visible = vec![0, 1];
         app.preview_path = Some(_root.join("demo.jsonl").display().to_string());
         app.preview_message_cursor = 0;
+        app.session_view_mode = crate::tui::app::SessionViewMode::Full;
 
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -259,15 +315,24 @@
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let content = buffer_string(&terminal);
-        assert!(!content.contains("└─●"));
-        assert!(content.contains("├─●"));
-        assert!(content.contains("└─○"));
-        assert!(content.contains("[1/2]"));
-        assert!(content.contains("[2/2]"));
+        assert!(content.contains("├─"));
+        assert!(content.contains("└─"));
+        assert!(content.contains('•'));
+        assert!(content.contains("User: active branch"));
+        assert!(content.contains("Pi: active reply"));
+        assert!(!content.contains("Assistant:"));
+        assert!(!content.contains("助手"));
         assert!(content.contains('◆'));
-        assert!(content.contains('▾'));
         assert!(content.contains("◆ Current") || content.contains("◆ 当前"));
         assert!(content.contains("Branch 1/2") || content.contains("分支 1/2"));
+        assert!(content.contains("Tree") || content.contains("树预览"));
+        app.on_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let full = buffer_string(&terminal);
+        assert!(full.contains("Full") || full.contains("完整阅读"));
+        assert!(full.contains("Pi"));
+        assert!(!full.contains("Assistant"));
+        app.on_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
 
         // The default active leaf switches at the nearest branch point.
         assert_eq!(app.selected_preview_message().unwrap().id, "a-new");
@@ -311,7 +376,61 @@
         assert_eq!(app.selected_preview_message().unwrap().id, "u-new");
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         assert!(buffer_string(&terminal).contains('▾'));
+
+        // A serial continuation is not a foldable child branch.
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.selected_preview_message().unwrap().id, "a-new");
+        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.preview_message_count(), 6);
+        assert!(app.notice.as_ref().is_some_and(|notice| {
+            notice.message.contains("branch point") || notice.message.contains("分叉点")
+        }));
         env::remove_var("PI_CODING_AGENT_SESSION_DIR");
+    }
+
+    #[test]
+    fn deep_tree_keeps_selected_summary_visible_in_both_modes() {
+        let (_root, mut app) = app();
+        app.page = Page::Sessions;
+        app.focus = Focus::SessionPreview;
+        app.sessions_loaded = true;
+        app.sessions = vec![crate::documents::SessionSummary {
+            path: _root.join("deep.jsonl"),
+            id: "deep".into(),
+            cwd: "/work/deep".into(),
+            name: Some("Deep Tree".into()),
+            created: SystemTime::now(),
+            modified: SystemTime::now(),
+            message_count: 2,
+            first_message: "root".into(),
+            search_text: "root deep response".into(),
+        }];
+        let mut preview = crate::documents::SessionPreview::from_messages(vec![
+            crate::documents::PreviewMessage::new("root", None, "user", "root"),
+            crate::documents::PreviewMessage::new(
+                "deep",
+                Some("root".into()),
+                "assistant",
+                "deep response remains visible",
+            ),
+        ]);
+        preview.messages[1].tree.indent = 16;
+        preview.messages[1].tree.active_path = true;
+        app.preview = Some(preview);
+        app.preview_visible = vec![0, 1];
+        app.preview_message_cursor = 1;
+        app.preview_path = Some(_root.join("deep.jsonl").display().to_string());
+
+        let mut terminal = Terminal::new(TestBackend::new(64, 20)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let tree = buffer_string(&terminal);
+        assert!(tree.contains("Pi: deep response remains visible"));
+
+        app.on_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let full = buffer_string(&terminal);
+        assert!(full.contains("Pi"));
+        assert!(full.contains("deep response remains visible"));
     }
 
     #[test]

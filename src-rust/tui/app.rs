@@ -46,6 +46,13 @@ pub(super) enum Focus {
     SessionPreview,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum SessionViewMode {
+    #[default]
+    Tree,
+    Full,
+}
+
 #[derive(Clone, Debug)]
 pub(in crate::tui) struct SessionGroup {
     pub(in crate::tui) cwd: String,
@@ -261,12 +268,17 @@ pub(super) struct App {
     pub(super) session_filtering: bool,
     pub(super) named_only: bool,
     pub(super) user_only_preview: bool,
+    pub(super) session_view_mode: SessionViewMode,
     pub(super) preview: Option<SessionPreview>,
     pub(super) preview_visible: Vec<usize>,
     pub(super) preview_collapsed: BTreeSet<String>,
     pub(super) preview_child_history: BTreeMap<String, String>,
     pub(super) preview_layout: Option<PreviewLayout>,
     pub(super) preview_scroll: u16,
+    pub(super) preview_body_top: u16,
+    pub(super) session_list_left: u16,
+    pub(super) session_list_top: u16,
+    pub(super) session_preview_left: u16,
     pub(super) preview_path: Option<String>,
     pub(super) preview_message_cursor: usize,
     pub(super) preview_wrap_width: usize,
@@ -340,12 +352,17 @@ impl App {
             session_filtering: false,
             named_only: false,
             user_only_preview: false,
+            session_view_mode: SessionViewMode::Tree,
             preview: None,
             preview_visible: Vec::new(),
             preview_collapsed: BTreeSet::new(),
             preview_child_history: BTreeMap::new(),
             preview_layout: None,
             preview_scroll: 0,
+            preview_body_top: 0,
+            session_list_left: 0,
+            session_list_top: 0,
+            session_preview_left: 0,
             preview_path: None,
             preview_message_cursor: 0,
             preview_wrap_width: 40,

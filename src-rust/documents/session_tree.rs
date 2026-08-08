@@ -88,20 +88,9 @@ impl SessionPreview {
     }
 
     pub(crate) fn parent_branch(&self, index: usize) -> Option<(usize, usize)> {
-        let indent = self.messages.get(index)?.tree.indent;
-        if indent == 0 {
-            return None;
-        }
-        let mut branch_root = index;
-        let mut cursor = index;
-        while let Some(parent) = self.parent_index(cursor) {
-            if self.messages[parent].tree.indent < indent {
-                return Some((parent, branch_root));
-            }
-            branch_root = parent;
-            cursor = parent;
-        }
-        None
+        let (siblings, position) = self.branch_context(index)?;
+        let branch_root = *siblings.get(position)?;
+        Some((self.parent_index(branch_root)?, branch_root))
     }
 
     pub(crate) fn child_branch_index(
@@ -109,12 +98,14 @@ impl SessionPreview {
         index: usize,
         preferred_id: Option<&str>,
     ) -> Option<usize> {
-        let child_indent = self.messages.get(index)?.tree.indent + 1;
+        let message = self.messages.get(index)?;
+        if !message.tree.has_children {
+            return None;
+        }
         let is_child_branch = |candidate: usize| {
             self.messages
                 .get(candidate)
-                .is_some_and(|entry| entry.tree.indent == child_indent)
-                && self.is_descendant_of(candidate, index)
+                .is_some_and(|entry| entry.tree.parent_id.as_deref() == Some(message.id.as_str()))
         };
         if let Some(candidate) = preferred_id.and_then(|id| self.message_index(id)) {
             if is_child_branch(candidate) {
@@ -122,17 +113,6 @@ impl SessionPreview {
             }
         }
         ((index + 1)..self.messages.len()).find(|candidate| is_child_branch(*candidate))
-    }
-
-    fn is_descendant_of(&self, candidate: usize, ancestor: usize) -> bool {
-        let mut cursor = Some(candidate);
-        while let Some(index) = cursor {
-            if index == ancestor {
-                return true;
-            }
-            cursor = self.parent_index(index);
-        }
-        false
     }
 
     pub(crate) fn branch_position(&self, index: usize) -> Option<(usize, usize)> {
@@ -465,13 +445,23 @@ fn build_preview(raw: Vec<RawEntry>, labels: HashMap<String, String>) -> Result<
 
     let active_message_raw = nearest_visible(leaf_index, &raw, &by_id, &visible_set);
     let mut messages = Vec::with_capacity(visible_raw.len());
-    type StackItem = (usize, usize, usize, bool, bool, Vec<TreeGutter>);
+    type StackItem = (usize, usize, usize, bool, bool, bool, Vec<TreeGutter>);
     let mut stack: Vec<StackItem> = Vec::new();
     for index in (0..visible_roots.len()).rev() {
         let is_last = index == visible_roots.len() - 1;
-        stack.push((visible_roots[index], 0, 0, false, is_last, Vec::new()));
+        stack.push((
+            visible_roots[index],
+            0,
+            0,
+            false,
+            false,
+            is_last,
+            Vec::new(),
+        ));
     }
-    while let Some((index, indent, level, show_connector, is_last, gutters)) = stack.pop() {
+    while let Some((index, indent, level, just_branched, show_connector, is_last, gutters)) =
+        stack.pop()
+    {
         let parent_id = visible_parent[index].map(|parent| raw[parent].id.clone());
         let child_indices = &visible_children[index];
         let multiple_children = child_indices.len() > 1;
@@ -502,17 +492,22 @@ fn build_preview(raw: Vec<RawEntry>, labels: HashMap<String, String>) -> Result<
                 is_last,
                 gutters,
                 active_path: active_path.contains(&index),
-                has_children: !child_indices.is_empty(),
+                has_children: multiple_children,
             },
         });
 
-        let child_indent = indent + usize::from(multiple_children);
+        let child_indent = if multiple_children || (just_branched && indent > 0) {
+            indent + 1
+        } else {
+            indent
+        };
         for child_index in (0..child_indices.len()).rev() {
             let child_is_last = child_index == child_indices.len() - 1;
             stack.push((
                 child_indices[child_index],
                 child_indent,
                 level + 1,
+                multiple_children,
                 multiple_children,
                 child_is_last,
                 child_gutters.clone(),
@@ -600,14 +595,20 @@ mod tests {
         assert_eq!(preview.active_message_id.as_deref(), Some("a-new"));
         assert_eq!(preview.active_leaf_id.as_deref(), Some("a-new"));
         assert_eq!(preview.branch_points, 1);
+        assert!(!preview.messages[0].tree.has_children);
+        assert!(preview.messages[1].tree.has_children);
+        assert!(!preview.messages[2].tree.has_children);
+        assert!(!preview.messages[3].tree.has_children);
+        assert!(!preview.messages[4].tree.has_children);
+        assert!(!preview.messages[5].tree.has_children);
         assert!(!preview.messages[1].tree.show_connector);
         assert!(preview.messages[2].tree.show_connector);
         assert!(!preview.messages[3].tree.show_connector);
         assert_eq!(preview.messages[1].tree.indent, 0);
         assert_eq!(preview.messages[2].tree.indent, 1);
-        assert_eq!(preview.messages[3].tree.indent, 1);
+        assert_eq!(preview.messages[3].tree.indent, 2);
         assert_eq!(preview.messages[4].tree.indent, 1);
-        assert_eq!(preview.messages[5].tree.indent, 1);
+        assert_eq!(preview.messages[5].tree.indent, 2);
         assert!(preview.messages[4].tree.is_last);
         assert_eq!(preview.messages[4].label.as_deref(), Some("alternative"));
         assert_eq!(preview.parent_index(3), Some(2));
@@ -650,6 +651,10 @@ mod tests {
         );
         let preview = load_preview(&path, false).unwrap();
         assert_eq!(preview.messages.len(), 2);
+        assert!(preview
+            .messages
+            .iter()
+            .all(|message| !message.tree.has_children));
         assert_eq!(
             preview.messages[1].tree.parent_id.as_deref(),
             Some("legacy-0")

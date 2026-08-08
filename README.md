@@ -8,7 +8,7 @@ CLI：`pi-switch` · npm 包：`@oldsuns/pi-switch` · Node 薄壳 + Rust/napi �
 
 - **主页**：provider / model 计数、默认模型、关键路径；启动后台静默检查 npm 新版本，有更新时弹出确认对话框可一键安装
 - **配置 (Profiles)**：本地 provider 库与 Pi 启用子集；新建 / 编辑 / 删除 / 复制；在线导入模型
-- **会话 (Sessions)**：按工作目录浏览 JSONL session，使用 Markdown 预览区分用户/助手消息，支持筛选、复制与删除
+- **会话 (Sessions)**：按工作目录浏览 JSONL session，使用 Tree/Markdown 视图区分用户/Pi消息，支持筛选、复制与删除
 - **设置 (Settings)**：语言、models.dev 元数据、默认参数、重载、校验、备份、OpenCode 导入、自动检查更新、手动检查更新
 - 完整库保存在 `~/.pi-switch/providers.json`，只有已启用项写入 Pi 的 `models.json`
 
@@ -89,14 +89,15 @@ Model 表单：`id`、`name`、API override、reasoning、文本/图像输入、
 | 预览 `Left` | 从树预览返回会话列表 |
 | 预览 `Up` / `Down` | 按树节点切换，默认定位当前 active leaf |
 | 预览 `PageUp` / `PageDown` | 按当前可视区域逐页滚动 |
-| 预览 `Tab` | 折叠或展开当前节点的全部下级 |
+| 预览 `v` | 切换 Tree 单行预览和完整 Markdown 阅读 |
+| 预览 `Tab` | 折叠或展开当前真实分叉点的全部下级 |
 | 预览 `Ctrl+Left/Right` | 在视觉分支层级间移动：跳过同 lane 的串行消息，进入上一级/下一级分支段 |
 | 预览 `Alt+Left/Right` | 从当前位置切换最近分叉点的相邻分支 |
 | 滚轮 | 按行滚动长消息 |
 | 预览 `Ctrl+C` | 复制当前消息到剪贴板（不退出） |
 | `d` | 删除当前 session（确认后优先 trash） |
 
-预览按 Pi 官方 session 的 `id` / `parentId` 构建树：串行单子节点沿同一条竖向 lane 延伸，用 `│` 和节点圆点连接；只有真实分叉才增加一层并使用 `├─` / `└─`。`Ctrl+Left/Right` 操作的是视觉上的分支段层级，会跳过同一 lane 内的普通串行消息；`Alt+Left/Right` 切换相邻分支。`◆` 表示当前 leaf，`●` 表示 active path，`○` 表示备选分支，`▾` / `▸` 表示展开/折叠。消息正文沿所属节点的竖线对齐，避免把线性对话误显示成分支。预览头实时显示所选节点的序号、层级、最近分支序号和折叠状态。可见消息挂到最近可见祖先，`session_info`、tool 等 bookkeeping 节点不会伪装成对话消息。黄标题 = 手动命名；白标题 = 使用第一条用户消息。预览支持标题、强调、列表、引用、代码块和链接等常用 Markdown，并在终端无颜色模式下保留角色文字和完整树连接。
+预览按 Pi 官方 session 的 `id` / `parentId` 构建树。默认 Tree 模式参考 Pi 原生 `/tree`：每个节点只占一行，显示 `User:` / `Pi:` 和单行摘要；只有真实分叉才增加缩进并使用 `├─` / `└─`，串行消息保持同一 lane。深层分支不会为所有消息预留固定宽度；仅在当前节点过深时水平平移树正文，并固定保留左侧光标 gutter。按 `v` 可切换到完整阅读模式，显示完整 Markdown 正文；每条消息按自身树深度分配前缀，树栏最多约占三分之一宽度。`Ctrl+Left/Right` 在分支段层级间移动，`Alt+Left/Right` 切换相邻分支，`Tab` 仅折叠真实分叉点。可见消息挂到最近可见祖先，`session_info`、tool 等 bookkeeping 节点不会伪装成对话消息。黄标题 = 手动命名；白标题 = 使用第一条用户消息。
 
 Session 根目录优先级：`PI_CODING_AGENT_SESSION_DIR` → `PI_CODING_AGENT_DIR/sessions` → `~/.pi/agent/sessions/`。
 

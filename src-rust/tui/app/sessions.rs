@@ -45,6 +45,24 @@ impl App {
             .and_then(|index| self.sessions.get(*index))
     }
 
+    pub(in crate::tui) fn session_index_at_row(&self, row: usize) -> Option<usize> {
+        let groups = self.session_groups();
+        let mut current_row = 0usize;
+        for group in groups {
+            if current_row == row {
+                return None;
+            }
+            current_row += 1;
+            for session_index in group.sessions {
+                if current_row == row {
+                    return Some(session_index);
+                }
+                current_row += 1;
+            }
+        }
+        None
+    }
+
     pub(in crate::tui) fn ensure_sessions_loaded(&mut self) {
         if self.sessions_loaded {
             return;
@@ -98,6 +116,7 @@ impl App {
             self.preview_layout = None;
             self.preview_path = None;
             self.preview_scroll = 0;
+            self.preview_body_top = 0;
             self.preview_message_cursor = 0;
             if self.focus == Focus::SessionPreview {
                 self.focus = Focus::Content;
@@ -114,6 +133,7 @@ impl App {
                 self.preview_layout = None;
                 self.preview_path = Some(path);
                 self.preview_scroll = 0;
+                self.preview_body_top = 0;
                 self.rebuild_preview_visibility();
             }
             Err(error) => {
@@ -123,6 +143,7 @@ impl App {
                 self.preview_child_history.clear();
                 self.preview_layout = None;
                 self.preview_path = Some(path);
+                self.preview_body_top = 0;
                 self.preview_message_cursor = 0;
                 if self.focus == Focus::SessionPreview {
                     self.focus = Focus::Content;
@@ -228,7 +249,7 @@ impl App {
             self.notice(
                 NoticeKind::Warning,
                 self.language
-                    .pick("Leaf nodes cannot be folded", "叶节点没有可折叠的下级"),
+                    .pick("Only branch points can be folded", "只有真实分叉点可以折叠"),
             );
             return;
         }
@@ -391,6 +412,7 @@ impl App {
                         .iter()
                         .filter_map(|index| preview.messages.get(*index)),
                     width,
+                    self.session_view_mode,
                 )
             });
         }
@@ -408,7 +430,7 @@ impl App {
         }
         let mut offset = self.preview_header_line_count();
         for index in 0..layout.messages.len() {
-            let block_lines = layout.message_height(index);
+            let block_lines = layout.message_height(index, self.session_view_mode);
             if index == self.preview_message_cursor {
                 let viewport = self.preview_viewport_height.max(1) as usize;
                 let start = self.preview_scroll as usize;
@@ -432,6 +454,16 @@ impl App {
 
     fn preview_header_line_count(&self) -> usize {
         0
+    }
+
+    pub(in crate::tui) fn toggle_session_view_mode(&mut self) {
+        self.session_view_mode = match self.session_view_mode {
+            SessionViewMode::Tree => SessionViewMode::Full,
+            SessionViewMode::Full => SessionViewMode::Tree,
+        };
+        self.preview_layout = None;
+        self.preview_scroll = 0;
+        self.ensure_preview_message_visible();
     }
 
     pub(in crate::tui) fn focus_session_preview(&mut self) {
@@ -483,7 +515,7 @@ impl App {
         match self.preview_layout.as_ref() {
             Some(layout) if !layout.messages.is_empty() => {
                 lines += (0..layout.messages.len())
-                    .map(|index| layout.message_height(index))
+                    .map(|index| layout.message_height(index, self.session_view_mode))
                     .sum::<usize>();
             }
             _ => lines += 1,
@@ -498,7 +530,7 @@ impl App {
         }
         let mut offset = self.preview_header_line_count();
         for index in 0..layout.messages.len() {
-            let block_lines = layout.message_height(index);
+            let block_lines = layout.message_height(index, self.session_view_mode);
             if line < offset + block_lines {
                 return Some(index);
             }
@@ -548,8 +580,44 @@ impl App {
                     self.move_session_selection(1);
                 }
             }
-            MouseEventKind::Down(MouseButton::Left) if self.in_session_list() => {
-                // click stays on list; right key enters preview
+            MouseEventKind::Down(MouseButton::Left) if self.page == Page::Sessions => {
+                let horizontal_split = self.session_preview_left > self.session_list_left;
+                let clicked_preview = if horizontal_split {
+                    mouse.column >= self.session_preview_left && mouse.row >= self.preview_body_top
+                } else {
+                    mouse.row >= self.preview_body_top
+                };
+                if clicked_preview {
+                    let line = self.preview_scroll as usize
+                        + (mouse.row.saturating_sub(self.preview_body_top) as usize);
+                    if let Some(cursor) = self.preview_message_cursor_at_line(line) {
+                        self.focus = Focus::SessionPreview;
+                        self.preview_message_cursor = cursor;
+                        self.remember_selected_preview_child();
+                        self.ensure_preview_message_visible();
+                    }
+                    return;
+                }
+
+                let clicked_list = if horizontal_split {
+                    mouse.column < self.session_preview_left && mouse.row >= self.session_list_top
+                } else {
+                    mouse.row >= self.session_list_top && mouse.row < self.preview_body_top
+                };
+                if clicked_list {
+                    let row = mouse.row.saturating_sub(self.session_list_top) as usize;
+                    if let Some(session_index) = self.session_index_at_row(row) {
+                        if let Some(cursor) = self
+                            .visible_sessions()
+                            .iter()
+                            .position(|index| *index == session_index)
+                        {
+                            self.session_cursor = cursor;
+                            self.focus = Focus::Content;
+                            self.refresh_preview();
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -610,6 +678,7 @@ impl App {
                 self.scroll_preview_lines(page);
             }
             KeyCode::Left => self.focus = Focus::Content,
+            KeyCode::Char('v') => self.toggle_session_view_mode(),
             KeyCode::Char('u') => {
                 self.user_only_preview = !self.user_only_preview;
                 self.refresh_preview();

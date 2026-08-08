@@ -7,7 +7,9 @@ mod tests;
 
 use unicode_width::UnicodeWidthStr;
 
-use crate::documents::PreviewMessage;
+use crate::documents::{PreviewMessage, PreviewTreePosition};
+
+use super::app::SessionViewMode;
 
 use parser::render;
 
@@ -67,23 +69,52 @@ impl PreviewLayout {
     pub(super) fn new<'a>(
         messages: impl IntoIterator<Item = &'a PreviewMessage>,
         width: usize,
+        mode: SessionViewMode,
     ) -> Self {
         let width = width.max(1);
         Self {
             width,
             messages: messages
                 .into_iter()
-                .map(|message| render(&message.text, width))
+                .map(|message| match mode {
+                    SessionViewMode::Tree => Vec::new(),
+                    SessionViewMode::Full => {
+                        render(&message.text, full_message_width(&message.tree, width))
+                    }
+                })
                 .collect(),
         }
     }
 
-    pub(super) fn message_height(&self, index: usize) -> usize {
-        self.messages
-            .get(index)
-            .map(|lines| 1 + lines.len().max(1) + 1)
-            .unwrap_or(0)
+    pub(super) fn message_height(&self, index: usize, mode: SessionViewMode) -> usize {
+        match mode {
+            SessionViewMode::Tree => usize::from(index < self.messages.len()),
+            SessionViewMode::Full => self
+                .messages
+                .get(index)
+                .map(|lines| 1 + lines.len().max(1) + 1)
+                .unwrap_or(0),
+        }
     }
+}
+
+pub(super) fn full_tree_width(position: &PreviewTreePosition, width: usize) -> usize {
+    let desired = 4 + position.indent * 3;
+    let cap = (width / 3).clamp(4, 24).min(width.saturating_sub(8).max(1));
+    desired.min(cap).max(1)
+}
+
+fn full_message_width(position: &PreviewTreePosition, width: usize) -> usize {
+    width
+        .saturating_sub(full_tree_width(position, width))
+        .max(1)
+}
+
+pub(super) fn one_line_summary(text: &str) -> String {
+    sanitize::clean(text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Clone, Debug)]

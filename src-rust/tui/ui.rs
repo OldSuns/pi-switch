@@ -335,6 +335,7 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
                     app.language.pick("parent / child", "父节点/子节点"),
                 ),
                 ("Alt+←/→", app.language.pick("sibling branch", "相邻分支")),
+                ("v", app.language.pick("tree / full", "树预览/完整阅读")),
                 ("Tab", app.language.pick("collapse / expand", "折叠/展开")),
                 ("PgUp/PgDn", app.language.pick("scroll", "滚动")),
                 ("Ctrl+C", app.language.pick("copy", "复制")),
@@ -348,6 +349,7 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
                 ("r", app.language.pick("reload", "刷新")),
                 ("n", app.language.pick("named", "命名")),
                 ("u", app.language.pick("user", "用户")),
+                ("v", app.language.pick("tree/full", "树/全文")),
                 ("q", app.language.pick("quit", "退出")),
             ]
         } else {
@@ -357,6 +359,7 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
                 ("/", app.language.pick("filter", "筛选")),
                 ("n", app.language.pick("named only", "仅命名")),
                 ("u", app.language.pick("user-only", "仅用户")),
+                ("v", app.language.pick("tree/full", "树/全文")),
                 ("d", app.language.pick("delete", "删除")),
                 ("r", app.language.pick("reload", "刷新")),
                 ("q", app.language.pick("quit", "退出")),
