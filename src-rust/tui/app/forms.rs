@@ -218,18 +218,26 @@ impl App {
                 form.image_input = !form.image_input
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if field_id == 5 => {
+                form.thinking_expanded = !form.thinking_expanded;
+                form.cursor = 0;
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if (6..=12).contains(&field_id) => {
+                if let Some(text) = form.current_text_mut() {
+                    *text = cycle_string(text, &THINKING_LEVEL_VALUES, key.code);
+                }
+                form.cursor = 0;
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if field_id == 13 => {
                 form.limits_expanded = !form.limits_expanded;
                 form.cursor = 0;
             }
-            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if field_id == 8 => {
-                form.pricing_expanded = !form.pricing_expanded;
-                form.cursor = 0;
-            }
             _ => {
-                let mut cursor = form.cursor;
-                if let Some(text) = form.current_text_mut() {
-                    edit_text_key(text, &mut cursor, key);
-                    form.cursor = cursor;
+                if !(6..=12).contains(&field_id) {
+                    let mut cursor = form.cursor;
+                    if let Some(text) = form.current_text_mut() {
+                        edit_text_key(text, &mut cursor, key);
+                        form.cursor = cursor;
+                    }
                 }
             }
         }

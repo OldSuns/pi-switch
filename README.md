@@ -75,7 +75,7 @@ node ./bin/pi-switch.js
 
 Provider 表单：`baseUrl`、`api`（`openai-completions` / `openai-responses` / `anthropic-messages` / `google-generative-ai`）、`apiKey`、`authHeader`、Headers（独立 `User-Agent` + 其余 JSON）、`compat`（含一等开关 Session affinity = `sendSessionAffinityHeaders`）。
 
-Model 表单：`id`、`name`、API override、reasoning、文本/图像输入、context window、max tokens。`cost`、`thinkingLevelMap`、`modelOverrides`、OAuth 等未知字段会无损保留。字段语义以 [Pi Custom Models](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md) 为准。
+Model 表单：`id`、`name`、API override、reasoning、文本/图像输入、context window、max tokens、thinking levels（`thinkingLevelMap`）。`cost`、`modelOverrides`、OAuth 等未知字段会无损保留。字段语义以 [Pi Custom Models](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md) 为准。
 
 ### 会话 (Sessions)
 

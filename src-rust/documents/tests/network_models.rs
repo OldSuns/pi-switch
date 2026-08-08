@@ -613,3 +613,102 @@ fn model_cost_fields_round_trip_and_preserve_through_untouched_edits() {
     assert_eq!(models["providers"]["p"]["models"][0]["id"], "m2");
     assert_eq!(models["providers"]["p"]["models"][0]["cost"]["input"], 1.0);
 }
+
+#[test]
+fn thinking_level_map_roundtrips_through_save_and_load() {
+    let (_root, paths) = fixture();
+    fs::write(
+        &paths.models,
+        r#"{"providers":{"p":{"baseUrl":"https://e.test/v1","api":"openai-completions","apiKey":"$K","models":[{"id":"m","thinkingLevelMap":{"off":"none","low":"low","medium":"medium","high":"high","max":"max"}}]}}}"#,
+    )
+    .unwrap();
+
+    // Full map: draft replaces, content is preserved.
+    let mut draft = model_draft("m");
+    let mut map = Map::new();
+    for level in ["off", "low", "medium", "high", "max"] {
+        map.insert(level.into(), Value::String(level.into()));
+    }
+    draft.thinking_level_map = Some(map);
+    save_model(&paths, "p", Some("m"), &draft).unwrap();
+    let models = read_json(&paths.models);
+    let saved = &models["providers"]["p"]["models"][0]["thinkingLevelMap"];
+    for level in ["off", "low", "medium", "high", "max"] {
+        assert_eq!(saved[level], Value::String(level.into()));
+    }
+}
+
+#[test]
+fn thinking_level_map_partial_fill_writes_only_set_levels() {
+    let (_root, paths) = fixture();
+    fs::write(
+        &paths.models,
+        r#"{"providers":{"p":{"baseUrl":"https://e.test/v1","api":"openai-completions","apiKey":"$K","models":[{"id":"m"}]}}}"#,
+    )
+    .unwrap();
+
+    let mut draft = model_draft("m");
+    let mut map = Map::new();
+    map.insert("off".into(), Value::String("none".into()));
+    draft.thinking_level_map = Some(map);
+    save_model(&paths, "p", Some("m"), &draft).unwrap();
+    let models = read_json(&paths.models);
+    let saved = &models["providers"]["p"]["models"][0]["thinkingLevelMap"];
+    assert_eq!(saved["off"], "none");
+    assert!(saved.get("low").is_none());
+    assert!(saved.get("high").is_none());
+}
+
+#[test]
+fn thinking_level_map_none_removes_existing_key() {
+    let (_root, paths) = fixture();
+    fs::write(
+        &paths.models,
+        r#"{"providers":{"p":{"baseUrl":"https://e.test/v1","api":"openai-completions","apiKey":"$K","models":[{"id":"m","thinkingLevelMap":{"off":"none"}}]}}}"#,
+    )
+    .unwrap();
+
+    // None means "remove the key" (unlike cost, where None preserves).
+    let draft = model_draft("m");
+    save_model(&paths, "p", Some("m"), &draft).unwrap();
+    let models = read_json(&paths.models);
+    assert!(models["providers"]["p"]["models"][0]
+        .as_object()
+        .unwrap()
+        .get("thinkingLevelMap")
+        .is_none());
+}
+
+#[test]
+fn thinking_level_map_appears_on_previously_unset_model() {
+    let (_root, paths) = fixture();
+    fs::write(
+        &paths.models,
+        r#"{"providers":{"p":{"baseUrl":"https://e.test/v1","api":"openai-completions","apiKey":"$K","models":[{"id":"m"}]}}}"#,
+    )
+    .unwrap();
+
+    let mut draft = model_draft("m");
+    let mut map = Map::new();
+    map.insert("low".into(), Value::String("low".into()));
+    map.insert("high".into(), Value::String("high".into()));
+    draft.thinking_level_map = Some(map);
+    save_model(&paths, "p", Some("m"), &draft).unwrap();
+    let models = read_json(&paths.models);
+    let saved = &models["providers"]["p"]["models"][0]["thinkingLevelMap"];
+    assert_eq!(saved["low"], "low");
+    assert_eq!(saved["high"], "high");
+    assert!(saved.get("off").is_none());
+}
+
+#[test]
+fn thinking_level_map_rejects_non_object_shape() {
+    let (_root, paths) = fixture();
+    fs::write(
+        &paths.models,
+        r#"{"providers":{"p":{"baseUrl":"https://e.test/v1","api":"openai-completions","apiKey":"$K","models":[{"id":"m","thinkingLevelMap":"bad"}]}}}"#,
+    )
+    .unwrap();
+    let error = load_snapshot(&paths).unwrap_err().to_string();
+    assert!(error.contains("thinkingLevelMap must be an object"), "{error}");
+}

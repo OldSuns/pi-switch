@@ -119,6 +119,15 @@ pub(super) fn model_view(provider_id: &str, index: usize, value: &Value) -> Resu
         )));
     }
     let (input_cost, output_cost, cache_read_cost, cache_write_cost) = model_cost(object);
+    let thinking_level_map = match object.get("thinkingLevelMap") {
+        None => None,
+        Some(Value::Object(map)) => Some(map.clone()),
+        Some(_) => {
+            return Err(AppError::Invalid(format!(
+                "provider '{provider_id}' model '{id}' thinkingLevelMap must be an object"
+            )))
+        }
+    };
     let view = ModelView {
         id,
         name,
@@ -131,6 +140,7 @@ pub(super) fn model_view(provider_id: &str, index: usize, value: &Value) -> Resu
         output_cost,
         cache_read_cost,
         cache_write_cost,
+        thinking_level_map,
     };
     validate_model_id(&view.id)?;
     if view.input != ["text"] && view.input != ["text", "image"] {
@@ -257,6 +267,14 @@ pub(super) fn patch_model(object: &mut Map<String, Value>, draft: &ModelDraft) {
             }
         }
         object.insert("cost".into(), Value::Object(cost));
+    }
+    match draft.thinking_level_map {
+        Some(ref map) => {
+            object.insert("thinkingLevelMap".into(), Value::Object(map.clone()));
+        }
+        None => {
+            object.remove("thinkingLevelMap");
+        }
     }
 }
 

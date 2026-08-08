@@ -8,12 +8,20 @@ pub(in crate::tui) struct ModelFormState {
     pub(in crate::tui) api: usize,
     pub(in crate::tui) reasoning: bool,
     pub(in crate::tui) image_input: bool,
+    pub(in crate::tui) thinking_off: String,
+    pub(in crate::tui) thinking_minimal: String,
+    pub(in crate::tui) thinking_low: String,
+    pub(in crate::tui) thinking_medium: String,
+    pub(in crate::tui) thinking_high: String,
+    pub(in crate::tui) thinking_xhigh: String,
+    pub(in crate::tui) thinking_max: String,
     pub(in crate::tui) context_window: String,
     pub(in crate::tui) max_tokens: String,
     pub(in crate::tui) input_cost: String,
     pub(in crate::tui) output_cost: String,
     pub(in crate::tui) cache_read_cost: String,
     pub(in crate::tui) cache_write_cost: String,
+    pub(in crate::tui) thinking_expanded: bool,
     pub(in crate::tui) limits_expanded: bool,
     pub(in crate::tui) pricing_expanded: bool,
     pub(in crate::tui) field: usize,
@@ -30,12 +38,20 @@ impl ModelFormState {
             api: 0,
             reasoning: false,
             image_input: false,
+            thinking_off: String::new(),
+            thinking_minimal: String::new(),
+            thinking_low: String::new(),
+            thinking_medium: String::new(),
+            thinking_high: String::new(),
+            thinking_xhigh: String::new(),
+            thinking_max: String::new(),
             context_window: String::new(),
             max_tokens: String::new(),
             input_cost: String::new(),
             output_cost: String::new(),
             cache_read_cost: String::new(),
             cache_write_cost: String::new(),
+            thinking_expanded: false,
             limits_expanded: false,
             pricing_expanded: false,
             field: 0,
@@ -44,6 +60,15 @@ impl ModelFormState {
     }
 
     pub(in crate::tui) fn edit(provider_id: &str, model: &ModelView) -> Self {
+        let thinking = |level: &str| {
+            model
+                .thinking_level_map
+                .as_ref()
+                .and_then(|map| map.get(level))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
         Self {
             provider_id: provider_id.into(),
             previous_id: Some(model.id.clone()),
@@ -57,6 +82,13 @@ impl ModelFormState {
                 .unwrap_or_default(),
             reasoning: model.reasoning,
             image_input: model.input.iter().any(|input| input == "image"),
+            thinking_off: thinking("off"),
+            thinking_minimal: thinking("minimal"),
+            thinking_low: thinking("low"),
+            thinking_medium: thinking("medium"),
+            thinking_high: thinking("high"),
+            thinking_xhigh: thinking("xhigh"),
+            thinking_max: thinking("max"),
             context_window: model
                 .context_window
                 .map(|value| value.to_string())
@@ -69,6 +101,7 @@ impl ModelFormState {
             output_cost: optional_number(model.output_cost),
             cache_read_cost: optional_number(model.cache_read_cost),
             cache_write_cost: optional_number(model.cache_write_cost),
+            thinking_expanded: false,
             limits_expanded: false,
             pricing_expanded: false,
             field: 0,
@@ -86,12 +119,16 @@ impl ModelFormState {
 
     pub(in crate::tui) fn visible_fields(&self) -> Vec<usize> {
         let mut fields = vec![0, 1, 2, 3, 4, 5];
-        if self.limits_expanded {
-            fields.extend([6, 7]);
+        if self.thinking_expanded {
+            fields.extend([6, 7, 8, 9, 10, 11, 12]);
         }
-        fields.push(8);
+        fields.push(13);
+        if self.limits_expanded {
+            fields.extend([14, 15]);
+        }
+        fields.push(16);
         if self.pricing_expanded {
-            fields.extend([9, 10, 11, 12]);
+            fields.extend([17, 18, 19, 20]);
         }
         fields
     }
@@ -104,12 +141,19 @@ impl ModelFormState {
         match field_id {
             0 => Some(&self.id),
             1 => Some(&self.name),
-            6 => Some(&self.context_window),
-            7 => Some(&self.max_tokens),
-            9 => Some(&self.input_cost),
-            10 => Some(&self.output_cost),
-            11 => Some(&self.cache_read_cost),
-            12 => Some(&self.cache_write_cost),
+            6 => Some(&self.thinking_off),
+            7 => Some(&self.thinking_minimal),
+            8 => Some(&self.thinking_low),
+            9 => Some(&self.thinking_medium),
+            10 => Some(&self.thinking_high),
+            11 => Some(&self.thinking_xhigh),
+            12 => Some(&self.thinking_max),
+            14 => Some(&self.context_window),
+            15 => Some(&self.max_tokens),
+            17 => Some(&self.input_cost),
+            18 => Some(&self.output_cost),
+            19 => Some(&self.cache_read_cost),
+            20 => Some(&self.cache_write_cost),
             _ => None,
         }
     }
@@ -118,12 +162,19 @@ impl ModelFormState {
         match field_id {
             0 => Some(&mut self.id),
             1 => Some(&mut self.name),
-            6 => Some(&mut self.context_window),
-            7 => Some(&mut self.max_tokens),
-            9 => Some(&mut self.input_cost),
-            10 => Some(&mut self.output_cost),
-            11 => Some(&mut self.cache_read_cost),
-            12 => Some(&mut self.cache_write_cost),
+            6 => Some(&mut self.thinking_off),
+            7 => Some(&mut self.thinking_minimal),
+            8 => Some(&mut self.thinking_low),
+            9 => Some(&mut self.thinking_medium),
+            10 => Some(&mut self.thinking_high),
+            11 => Some(&mut self.thinking_xhigh),
+            12 => Some(&mut self.thinking_max),
+            14 => Some(&mut self.context_window),
+            15 => Some(&mut self.max_tokens),
+            17 => Some(&mut self.input_cost),
+            18 => Some(&mut self.output_cost),
+            19 => Some(&mut self.cache_read_cost),
+            20 => Some(&mut self.cache_write_cost),
             _ => None,
         }
     }
@@ -153,6 +204,21 @@ impl ModelFormState {
     }
 
     pub(in crate::tui) fn draft(&self) -> documents::Result<ModelDraft> {
+        let mut thinking_level_map = Map::new();
+        for (level, value) in [
+            ("off", &self.thinking_off),
+            ("minimal", &self.thinking_minimal),
+            ("low", &self.thinking_low),
+            ("medium", &self.thinking_medium),
+            ("high", &self.thinking_high),
+            ("xhigh", &self.thinking_xhigh),
+            ("max", &self.thinking_max),
+        ] {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                thinking_level_map.insert(level.into(), Value::String(trimmed.into()));
+            }
+        }
         Ok(ModelDraft {
             id: self.id.trim().into(),
             name: (!self.name.trim().is_empty()).then(|| self.name.trim().into()),
@@ -175,6 +241,7 @@ impl ModelFormState {
                 &self.cache_write_cost,
                 "cache write cost",
             )?,
+            thinking_level_map: (!thinking_level_map.is_empty()).then_some(thinking_level_map),
         })
     }
 }

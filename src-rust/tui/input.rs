@@ -183,6 +183,17 @@ pub(super) fn with_cursor(value: &str, char_index: usize) -> String {
     output
 }
 
+pub(super) fn cycle_string(value: &str, values: &[&str], key: KeyCode) -> String {
+    let index = values.iter().position(|candidate| *candidate == value);
+    let next = match (index, key) {
+        (Some(index), KeyCode::Left) => (index + values.len() - 1) % values.len(),
+        (Some(index), _) => (index + 1) % values.len(),
+        (None, KeyCode::Left) => values.len() - 1,
+        (None, _) => 0,
+    };
+    values[next].into()
+}
+
 /// Cycle a tri-state boolean: None (inherit) → Some(true) → Some(false) → None.
 /// Left goes backward, anything else (Right/Space) goes forward.
 pub(super) fn cycle_tristate(value: Option<bool>, key: KeyCode) -> Option<bool> {
@@ -193,5 +204,20 @@ pub(super) fn cycle_tristate(value: Option<bool>, key: KeyCode) -> Option<bool> 
         (Some(true), _) => Some(false),
         (Some(false), KeyCode::Left) => Some(true),
         (Some(false), _) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cycle_string_wraps_and_handles_unknown_values() {
+        let values = ["", "low", "xhigh"];
+        assert_eq!(cycle_string("", &values, KeyCode::Right), "low");
+        assert_eq!(cycle_string("", &values, KeyCode::Left), "xhigh");
+        assert_eq!(cycle_string("xhigh", &values, KeyCode::Right), "");
+        assert_eq!(cycle_string("custom", &values, KeyCode::Right), "");
+        assert_eq!(cycle_string("custom", &values, KeyCode::Left), "xhigh");
     }
 }

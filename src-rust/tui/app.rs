@@ -29,10 +29,10 @@ use clipboard::copy_text_to_clipboard;
 use super::{
     forms::{
         FormState, ModelDefaultsFormState, ModelFormState, MAX_TOKENS_FIELDS, PRESETS,
-        THINKING_FORMATS,
+        THINKING_FORMATS, THINKING_LEVEL_VALUES,
     },
     i18n::Language,
-    input::{char_len, cycle_tristate, edit_text_key, insert_char},
+    input::{char_len, cycle_string, cycle_tristate, edit_text_key, insert_char},
     markdown::PreviewLayout,
     API_TYPES, COMPACT_WIDTH,
 };

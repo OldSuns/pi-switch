@@ -86,6 +86,38 @@ fn model_form_row(
     // never runs into the label, and aligns with the field value column.
     match field_id {
         5 => {
+            let marker = if form.thinking_expanded { "▾" } else { "▸" };
+            let levels = [
+                ("off", "none", &form.thinking_off),
+                ("minimal", "minimal", &form.thinking_minimal),
+                ("low", "low", &form.thinking_low),
+                ("medium", "medium", &form.thinking_medium),
+                ("high", "high", &form.thinking_high),
+                ("xhigh", "xhigh", &form.thinking_xhigh),
+                ("max", "max", &form.thinking_max),
+            ];
+            let set: Vec<String> = levels
+                .iter()
+                .filter(|(_, standard, value)| !value.is_empty() && value != standard)
+                .map(|(level, _, value)| format!("{level}: {value}"))
+                .collect();
+            let summary = if set.is_empty() {
+                language.pick("no custom values", "无自定义值").to_string()
+            } else {
+                set.join("  ")
+            };
+            Line::from(vec![
+                Span::styled(
+                    format!(
+                        " {marker} {}",
+                        pad_width(language.pick("Thinking levels", "思考级别"), 20)
+                    ),
+                    label_style,
+                ),
+                Span::styled(summary, value_style),
+            ])
+        }
+        13 => {
             let marker = if form.limits_expanded { "▾" } else { "▸" };
             let summary = if form.context_window.is_empty() && form.max_tokens.is_empty() {
                 language.pick("not set", "未设置").to_string()
@@ -103,7 +135,7 @@ fn model_form_row(
                 Span::styled(summary, value_style),
             ])
         }
-        8 => {
+        16 => {
             let marker = if form.pricing_expanded { "▾" } else { "▸" };
             let empty = form.input_cost.is_empty()
                 && form.output_cost.is_empty()
@@ -177,35 +209,70 @@ fn model_form_row(
                     false,
                 ),
                 6 => (
+                    language.pick("Off", "Off").to_string(),
+                    format_thinking_value(&form.thinking_off, language),
+                    false,
+                ),
+                7 => (
+                    language.pick("Minimal", "Minimal").to_string(),
+                    format_thinking_value(&form.thinking_minimal, language),
+                    false,
+                ),
+                8 => (
+                    language.pick("Low", "Low").to_string(),
+                    format_thinking_value(&form.thinking_low, language),
+                    false,
+                ),
+                9 => (
+                    language.pick("Medium", "Medium").to_string(),
+                    format_thinking_value(&form.thinking_medium, language),
+                    false,
+                ),
+                10 => (
+                    language.pick("High", "High").to_string(),
+                    format_thinking_value(&form.thinking_high, language),
+                    false,
+                ),
+                11 => (
+                    language.pick("Xhigh", "Xhigh").to_string(),
+                    format_thinking_value(&form.thinking_xhigh, language),
+                    false,
+                ),
+                12 => (
+                    language.pick("Max", "Max").to_string(),
+                    format_thinking_value(&form.thinking_max, language),
+                    false,
+                ),
+                14 => (
                     language.pick("Context window", "上下文窗口").to_string(),
                     form.context_window.clone(),
                     true,
                 ),
-                7 => (
+                15 => (
                     language
                         .pick("Max output tokens", "最大输出 Token")
                         .to_string(),
                     form.max_tokens.clone(),
                     true,
                 ),
-                9 => (
+                17 => (
                     language.pick("Input cost / M", "输入成本 / M").to_string(),
                     form.input_cost.clone(),
                     true,
                 ),
-                10 => (
+                18 => (
                     language.pick("Output cost / M", "输出成本 / M").to_string(),
                     form.output_cost.clone(),
                     true,
                 ),
-                11 => (
+                19 => (
                     language
                         .pick("Cache read cost / M", "缓存读取成本 / M")
                         .to_string(),
                     form.cache_read_cost.clone(),
                     true,
                 ),
-                12 => (
+                20 => (
                     language
                         .pick("Cache write cost / M", "缓存写入成本 / M")
                         .to_string(),
@@ -225,6 +292,17 @@ fn model_form_row(
             ])
         }
     }
+}
+
+fn format_thinking_value(value: &str, language: Language) -> String {
+    format!(
+        "< {} >",
+        if value.is_empty() {
+            language.pick("not set", "未设置")
+        } else {
+            value
+        }
+    )
 }
 
 pub(in crate::tui::ui) fn render_model_defaults_form(

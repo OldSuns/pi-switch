@@ -152,6 +152,7 @@ pub struct ModelView {
     pub output_cost: Option<f64>,
     pub cache_read_cost: Option<f64>,
     pub cache_write_cost: Option<f64>,
+    pub thinking_level_map: Option<Map<String, Value>>,
 }
 
 #[derive(Clone, Debug)]
@@ -179,6 +180,10 @@ pub struct ModelDraft {
     pub output_cost: Option<f64>,
     pub cache_read_cost: Option<f64>,
     pub cache_write_cost: Option<f64>,
+    /// `Some(map)` replaces the model's thinkingLevelMap; `None` removes the
+    /// key entirely. Unlike cost, an all-empty map has no "keep" reading, so
+    /// None always means removal.
+    pub thinking_level_map: Option<Map<String, Value>>,
 }
 
 #[derive(Clone, Debug)]

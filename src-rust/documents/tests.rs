@@ -46,6 +46,7 @@ fn model_draft(id: &str) -> ModelDraft {
         output_cost: None,
         cache_read_cost: None,
         cache_write_cost: None,
+        thinking_level_map: None,
     }
 }
 

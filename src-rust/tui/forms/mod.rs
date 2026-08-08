@@ -25,6 +25,11 @@ pub(super) const THINKING_FORMATS: [&str; 7] = [
     "qwen",
 ];
 
+/// thinkingLevelMap values supported by Pi's standard model catalog.
+pub(super) const THINKING_LEVEL_VALUES: [&str; 8] = [
+    "", "none", "minimal", "low", "medium", "high", "xhigh", "max",
+];
+
 /// maxTokensField cycle values (index 0 = inherit / do not write).
 pub(super) const MAX_TOKENS_FIELDS: [&str; 3] = ["", "max_completion_tokens", "max_tokens"];
 
