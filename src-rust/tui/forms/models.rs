@@ -118,9 +118,12 @@ impl ModelFormState {
     }
 
     pub(in crate::tui) fn visible_fields(&self) -> Vec<usize> {
-        let mut fields = vec![0, 1, 2, 3, 4, 5];
-        if self.thinking_expanded {
-            fields.extend([6, 7, 8, 9, 10, 11, 12]);
+        let mut fields = vec![0, 1, 2, 3, 4];
+        if self.reasoning {
+            fields.push(5);
+            if self.thinking_expanded {
+                fields.extend([6, 7, 8, 9, 10, 11, 12]);
+            }
         }
         fields.push(13);
         if self.limits_expanded {
@@ -338,4 +341,22 @@ fn parse_optional_nonnegative_f64(value: &str, field: &str) -> documents::Result
         .filter(|value| value.is_finite() && *value >= 0.0)
         .map(Some)
         .ok_or_else(|| AppError::Invalid(format!("{field} must be a non-negative number")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thinking_fields_are_visible_only_for_reasoning_models() {
+        let mut form = ModelFormState::add("provider");
+        form.thinking_expanded = true;
+        assert_eq!(form.visible_fields(), [0, 1, 2, 3, 4, 13, 16]);
+
+        form.reasoning = true;
+        assert_eq!(
+            form.visible_fields(),
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16]
+        );
+    }
 }
