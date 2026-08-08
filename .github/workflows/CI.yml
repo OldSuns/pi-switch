@@ -78,10 +78,12 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - name: Setup zig
-        uses: mlugg/setup-zig@v2
         if: contains(matrix.target, 'musl')
-        with:
-          version: 0.15.2
+        run: |
+          curl -sSLo /tmp/zig.tar.xz https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+          mkdir -p /tmp/zig
+          tar -xf /tmp/zig.tar.xz --strip-components=1 -C /tmp/zig
+          echo /tmp/zig >> "$GITHUB_PATH"
       - name: Install cargo-zigbuild
         uses: taiki-e/install-action@v2
         if: contains(matrix.target, 'musl')
