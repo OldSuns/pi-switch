@@ -231,6 +231,10 @@ impl App {
                 form.limits_expanded = !form.limits_expanded;
                 form.cursor = 0;
             }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if field_id == 16 => {
+                form.pricing_expanded = !form.pricing_expanded;
+                form.cursor = 0;
+            }
             _ => {
                 if !(6..=12).contains(&field_id) {
                     let mut cursor = form.cursor;
