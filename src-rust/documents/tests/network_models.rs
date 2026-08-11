@@ -258,6 +258,53 @@ fn fetch_models_uses_defaults_when_models_dev_is_unreachable() {
 }
 
 #[test]
+fn metadata_resolution_honors_one_shared_timeout() {
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let mut streams = Vec::new();
+        for _ in 0..2 {
+            streams.push(listener.accept().unwrap().0);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    });
+    let started = Instant::now();
+    let fetched = resolve_metadata_with_timeout_for_test(
+        provider_view(&address, "", false),
+        vec!["alpha".into(), "beta".into()],
+        ImportOptions {
+            fetch_metadata: true,
+            defaults: ModelDefaults {
+                context_window: Some(64_000),
+                ..Default::default()
+            },
+        },
+        &format!("http://{address}/api.json"),
+        Duration::from_millis(150),
+    )
+    .unwrap();
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_millis(400),
+        "shared timeout exceeded: {elapsed:?}"
+    );
+    assert!(fetched.catalog_unreachable);
+    assert_eq!(fetched.unavailable, 2);
+    assert!(fetched.ratio_prices.is_empty());
+    assert!(!fetched.ratio_config_used);
+    assert!(fetched.ambiguous.is_empty());
+    assert!(fetched
+        .models
+        .iter()
+        .all(|model| model.config["contextWindow"] == 64_000));
+    server.join().unwrap();
+}
+
+#[test]
 fn invalid_shapes_and_stale_edits_fail_explicitly() {
     let (_root, paths) = fixture();
     fs::write(

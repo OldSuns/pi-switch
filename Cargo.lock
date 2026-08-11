@@ -1391,7 +1391,7 @@ dependencies = [
 
 [[package]]
 name = "pi-switch-native"
-version = "0.2.12"
+version = "0.2.13"
 dependencies = [
  "chrono",
  "crossterm",

@@ -64,7 +64,13 @@
         app.notice = None;
         app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(matches!(app.overlay, Some(Overlay::Loading { .. })));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Loading {
+                cancelable: true,
+                ..
+            })
+        ));
         let mut imported = false;
         for _ in 0..100 {
             app.tick();
@@ -484,15 +490,155 @@
         // Pressing Enter should NOT start a metadata resolve (overlay stays
         // Fetched, no Loading) and should show a warning notice instead.
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(!matches!(app.overlay, Some(Overlay::Loading { .. })));
+        assert!(!matches!(
+            app.overlay,
+            Some(Overlay::MetadataLoading { .. })
+        ));
         assert!(app.notice.is_some(), "a notice should be shown");
         // The Fetched overlay should still be open so the user can adjust.
         assert!(matches!(app.overlay, Some(Overlay::Fetched { .. })));
 
         // Now toggle overwrite on and press Enter again — the flow should
-        // proceed (overlay switches to Loading as metadata resolve starts).
+        // proceed (overlay switches to MetadataLoading as metadata resolve starts).
         app.notice = None;
         app.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(matches!(app.overlay, Some(Overlay::Loading { .. })));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::MetadataLoading { .. })
+        ));
+    }
+
+    #[test]
+    fn readonly_loading_escape_cancels_and_discards_results() {
+        let (_root, mut app) = app();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(Ok(BackgroundResult::ModelIds {
+                provider_id: "queued-provider".into(),
+                ids: vec!["queued-model".into()],
+            }))
+            .unwrap();
+        app.task = Some(receiver);
+        app.overlay = Some(Overlay::Loading {
+            message: "Reading".into(),
+            cancelable: true,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(buffer_string(&terminal).contains("Esc cancel"));
+
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert!(app.task.is_none());
+        assert!(app.overlay.is_none());
+        assert!(app
+            .notice
+            .as_ref()
+            .is_some_and(|notice| notice.message.contains("cancelled")));
+        assert!(sender
+            .send(Ok(BackgroundResult::ModelIds {
+                provider_id: "late-provider".into(),
+                ids: vec!["late-model".into()],
+            }))
+            .is_err());
+        app.tick();
+        assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn metadata_loading_escape_imports_defaults_and_discards_queued_result() {
+        let (_root, mut app) = app();
+        write_empty_provider(&mut app);
+        app.snapshot.model_defaults.context_window = Some(64_000);
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let result = |context_window| {
+            Ok(BackgroundResult::Catalog {
+                provider_id: "示例-provider".into(),
+                fetched: CatalogFetch {
+                    models: vec![catalog_model("late-model", context_window, 32_000, 1.0)],
+                    ambiguous: Vec::new(),
+                    unavailable: 0,
+                    ratio_prices: std::collections::BTreeMap::new(),
+                    ratio_config_used: false,
+                    catalog_unreachable: false,
+                },
+                overwrite: true,
+            })
+        };
+        sender.send(result(200_000)).unwrap();
+        app.task = Some(receiver);
+        app.overlay = Some(Overlay::MetadataLoading {
+            provider_id: "示例-provider".into(),
+            ids: vec!["late-model".into()],
+            overwrite: true,
+        });
+
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.task.is_none());
+        assert!(app.overlay.is_none());
+        assert!(app
+            .notice
+            .as_ref()
+            .is_some_and(|notice| notice.message.contains("skipped online metadata")));
+        assert!(sender.send(result(300_000)).is_err());
+
+        app.tick();
+        let providers: serde_json::Value =
+            serde_json::from_slice(&fs::read(&app.paths.providers).unwrap()).unwrap();
+        let models = providers["providers"]["示例-provider"]["models"]
+            .as_array()
+            .unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["id"], "late-model");
+        assert_eq!(models[0]["contextWindow"], 64_000);
+    }
+
+    #[test]
+    fn unmatched_fallback_notice_survives_catalog_selection() {
+        let (_root, mut app) = app();
+        write_empty_provider(&mut app);
+        app.overlay = Some(Overlay::CatalogMatches {
+            ambiguities: vec![CatalogAmbiguity {
+                provider_id: "示例-provider".into(),
+                model_id: "ambiguous-model".into(),
+                candidates: vec![CatalogCandidate {
+                    provider_id: "catalog-provider".into(),
+                    model: catalog_model("ambiguous-model", 200_000, 32_000, 1.0),
+                }],
+            }],
+            index: 0,
+            cursor: 0,
+            continuation: Some(CatalogContinuation::ProviderImport {
+                provider_id: "示例-provider".into(),
+                resolved_models: vec![catalog_model(
+                    "default-model",
+                    PI_DEFAULT_CONTEXT_WINDOW,
+                    PI_DEFAULT_MAX_TOKENS,
+                    0.0,
+                )],
+                candidate_indices: Vec::new(),
+                overwrite: false,
+                fallback: Some(MetadataFallback::Unmatched(1)),
+            }),
+        });
+
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(app.overlay.is_none());
+        let notice = app.notice.as_ref().expect("import notice");
+        assert!(notice.message.contains("Added 2"));
+        assert!(notice
+            .message
+            .contains("no models.dev match for 1 model(s)"));
+        let providers: serde_json::Value =
+            serde_json::from_slice(&fs::read(&app.paths.providers).unwrap()).unwrap();
+        assert_eq!(
+            providers["providers"]["示例-provider"]["models"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
     }

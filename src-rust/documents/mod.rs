@@ -410,7 +410,7 @@ pub struct DoctorCheck {
 use network::{
     compute_ratio_prices, fetch_models_for_test, find_ratio, newer_version,
     parse_models_dev_catalog, parse_pricing, parse_provider_catalog, parse_ratio_config,
-    resolve_secret, round_price, Ratios,
+    resolve_metadata_with_timeout_for_test, resolve_secret, round_price, Ratios,
 };
 #[cfg(test)]
 use opencode::{import_opencode_with_catalog, prepare_opencode_with_catalog};

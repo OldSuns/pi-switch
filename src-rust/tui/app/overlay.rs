@@ -11,13 +11,41 @@ impl App {
                     return;
                 }
             }
-            Overlay::Loading { .. } => {
+            Overlay::Loading { cancelable, .. } => {
                 if key.code == KeyCode::Esc {
+                    if *cancelable {
+                        self.task = None;
+                        self.notice(
+                            NoticeKind::Warning,
+                            self.language.pick("Request cancelled", "请求已取消"),
+                        );
+                        return;
+                    }
                     self.notice(
                         NoticeKind::Warning,
                         self.language
                             .pick("This request cannot be cancelled", "当前请求无法取消"),
                     );
+                }
+            }
+            Overlay::MetadataLoading {
+                provider_id,
+                ids,
+                overwrite,
+            } => {
+                if key.code == KeyCode::Esc {
+                    let provider_id = provider_id.clone();
+                    let overwrite = *overwrite;
+                    let defaults = self.import_options().defaults;
+                    let models = ids.iter().map(|id| defaults.model(id)).collect();
+                    self.task = None;
+                    self.import_fetched(
+                        &provider_id,
+                        models,
+                        overwrite,
+                        Some(MetadataFallback::Manual),
+                    );
+                    return;
                 }
             }
             Overlay::Form(form) => {
@@ -272,7 +300,7 @@ impl App {
                                                 models.iter().find(|m| m.id == *id).cloned()
                                             })
                                             .collect::<Vec<_>>();
-                                        self.import_fetched(&id, chosen, *overwrite);
+                                        self.import_fetched(&id, chosen, *overwrite, None);
                                     }
                                     return;
                                 }
@@ -325,6 +353,7 @@ impl App {
                                 resolved_models,
                                 candidate_indices,
                                 overwrite,
+                                fallback,
                             } => {
                                 let mut final_models = resolved_models;
                                 for (i, ambiguity) in ambiguities.iter().enumerate() {
@@ -334,7 +363,12 @@ impl App {
                                         }
                                     }
                                 }
-                                self.import_fetched(&provider_id, final_models, overwrite);
+                                self.import_fetched(
+                                    &provider_id,
+                                    final_models,
+                                    overwrite,
+                                    fallback,
+                                );
                             }
                         }
                         return;

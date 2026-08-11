@@ -18,9 +18,12 @@ use terminal::{terminal_error, PanicRestoreHookGuard, TuiTerminal};
 use ui::draw;
 
 #[cfg(test)]
-use crate::documents::{Backup, CatalogModel, ModelView, ProviderView, Snapshot};
+use crate::documents::{
+    Backup, CatalogAmbiguity, CatalogCandidate, CatalogFetch, CatalogModel, ModelView,
+    ProviderView, Snapshot, PI_DEFAULT_CONTEXT_WINDOW, PI_DEFAULT_MAX_TOKENS,
+};
 #[cfg(test)]
-use app::{Focus, Overlay, Page};
+use app::{BackgroundResult, CatalogContinuation, Focus, MetadataFallback, Overlay, Page};
 #[cfg(test)]
 use forms::{FormState, ModelDefaultsFormState, ModelFormState};
 #[cfg(test)]
@@ -131,6 +134,36 @@ mod tests {
             warning: None,
         };
         (TempDir(root), App::from_snapshot(paths, snapshot))
+    }
+
+    fn write_empty_provider(app: &mut App) {
+        fs::create_dir_all(app.paths.providers.parent().unwrap()).unwrap();
+        fs::create_dir_all(app.paths.models.parent().unwrap()).unwrap();
+        fs::create_dir_all(app.paths.settings.parent().unwrap()).unwrap();
+        let provider = json!({
+            "baseUrl": "https://example.test/v1",
+            "api": "openai-completions",
+            "models": []
+        });
+        fs::write(
+            &app.paths.providers,
+            serde_json::to_vec_pretty(&json!({
+                "version": 1,
+                "providers": {"示例-provider": provider.clone()}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &app.paths.models,
+            serde_json::to_vec_pretty(&json!({
+                "providers": {"示例-provider": provider}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(&app.paths.settings, r#"{"piSwitch":{}}"#).unwrap();
+        app.reload(None);
     }
 
     fn catalog_model(

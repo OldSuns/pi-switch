@@ -29,11 +29,13 @@ mod update;
 pub(super) use catalog::fetch_catalog;
 use catalog::http_client;
 #[cfg(test)]
+pub(in crate::documents) use catalog::resolve_metadata_with_timeout_for_test;
+#[cfg(test)]
 pub(super) use catalog::Ratios;
 pub use catalog::{fetch_model_ids, resolve_metadata};
 #[cfg(test)]
-use catalog::{fetch_provider_ids_with, fetch_ratio_config, resolve_ids_against_catalog};
-use pricing::{catalog_url, fetch_catalog_from, provider_headers};
+use catalog::{fetch_provider_ids_with, fetch_ratio_config};
+use pricing::{catalog_url, fetch_catalog_from, fetch_catalog_from_until, provider_headers};
 pub(super) use pricing::{
     compute_ratio_prices, parse_pricing, parse_provider_catalog, parse_ratio_config,
     resolve_secret, round_price,

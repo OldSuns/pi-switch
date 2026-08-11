@@ -151,8 +151,29 @@ pub(in crate::documents) fn round_price(value: f64) -> f64 {
 }
 
 pub(super) fn fetch_catalog_from(client: &Client, url: &str) -> Result<ModelCatalog> {
-    let response = client
-        .get(url)
+    fetch_catalog_request(client.get(url), None)
+}
+
+pub(super) fn fetch_catalog_from_until(
+    client: &Client,
+    url: &str,
+    deadline: std::time::Instant,
+) -> Result<ModelCatalog> {
+    let timeout = deadline
+        .checked_duration_since(std::time::Instant::now())
+        .filter(|timeout| !timeout.is_zero())
+        .ok_or_else(|| AppError::Http("models.dev catalog timed out".into()))?;
+    fetch_catalog_request(client.get(url), Some(timeout))
+}
+
+fn fetch_catalog_request(
+    mut request: reqwest::blocking::RequestBuilder,
+    timeout: Option<Duration>,
+) -> Result<ModelCatalog> {
+    if let Some(timeout) = timeout {
+        request = request.timeout(timeout);
+    }
+    let response = request
         .header("accept", "application/json")
         .send()
         .map_err(|error| AppError::Http(format!("models.dev catalog: {error}")))?;
@@ -539,5 +560,11 @@ pub(in crate::documents) fn fetch_models_for_test(
             catalog_unreachable: false,
         });
     }
-    resolve_ids_against_catalog(&client, &provider, &ids, options, catalog_url)
+    resolve_metadata_with_timeout_for_test(
+        provider,
+        ids,
+        options,
+        catalog_url,
+        Duration::from_secs(10),
+    )
 }

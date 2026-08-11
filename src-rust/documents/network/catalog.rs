@@ -1,4 +1,8 @@
+use std::{sync::mpsc, thread, time::Instant};
+
 use super::*;
+
+const METADATA_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn fetch_catalog() -> Result<ModelCatalog> {
     let client = http_client()?;
@@ -20,8 +24,130 @@ pub fn resolve_metadata(
     ids: Vec<String>,
     options: ImportOptions,
 ) -> Result<CatalogFetch> {
+    resolve_metadata_with_timeout(
+        provider,
+        ids,
+        options,
+        MODELS_DEV_CATALOG_URL,
+        METADATA_TIMEOUT,
+    )
+}
+
+fn resolve_metadata_with_timeout(
+    provider: ProviderView,
+    ids: Vec<String>,
+    options: ImportOptions,
+    metadata_catalog_url: &str,
+    timeout: Duration,
+) -> Result<CatalogFetch> {
     let client = http_client()?;
-    resolve_ids_against_catalog(&client, &provider, &ids, options, MODELS_DEV_CATALOG_URL)
+    let deadline = Instant::now() + timeout;
+    let (sender, receiver) = mpsc::channel();
+
+    let catalog_client = client.clone();
+    let catalog_url = metadata_catalog_url.to_owned();
+    let catalog_sender = sender.clone();
+    thread::spawn(move || {
+        let result = fetch_catalog_from_until(&catalog_client, &catalog_url, deadline);
+        let _ = catalog_sender.send(TimedMetadataResult {
+            completed_at: Instant::now(),
+            result: MetadataResult::Catalog(result),
+        });
+    });
+
+    let pricing_provider = provider.clone();
+    thread::spawn(move || {
+        let ratios = fetch_ratio_config_until(&client, &pricing_provider, deadline);
+        let _ = sender.send(TimedMetadataResult {
+            completed_at: Instant::now(),
+            result: MetadataResult::Ratios(ratios),
+        });
+    });
+
+    let mut catalog = ModelCatalog::default();
+    let mut catalog_unreachable = true;
+    let mut ratios = None;
+    let mut received = 0;
+    while received < 2 {
+        let Some(remaining) = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+        else {
+            break;
+        };
+        match receiver.recv_timeout(remaining) {
+            Ok(result) => {
+                apply_metadata_result(
+                    result,
+                    deadline,
+                    &mut catalog,
+                    &mut catalog_unreachable,
+                    &mut ratios,
+                );
+                received += 1;
+            }
+            Err(_) => break,
+        }
+    }
+    while let Ok(result) = receiver.try_recv() {
+        apply_metadata_result(
+            result,
+            deadline,
+            &mut catalog,
+            &mut catalog_unreachable,
+            &mut ratios,
+        );
+    }
+
+    build_catalog_fetch(
+        &provider,
+        &ids,
+        options,
+        catalog,
+        catalog_unreachable,
+        ratios,
+    )
+}
+
+#[cfg(test)]
+pub(in crate::documents) fn resolve_metadata_with_timeout_for_test(
+    provider: ProviderView,
+    ids: Vec<String>,
+    options: ImportOptions,
+    metadata_catalog_url: &str,
+    timeout: Duration,
+) -> Result<CatalogFetch> {
+    resolve_metadata_with_timeout(provider, ids, options, metadata_catalog_url, timeout)
+}
+
+struct TimedMetadataResult {
+    completed_at: Instant,
+    result: MetadataResult,
+}
+
+enum MetadataResult {
+    Catalog(Result<ModelCatalog>),
+    Ratios(Option<Ratios>),
+}
+
+fn apply_metadata_result(
+    timed: TimedMetadataResult,
+    deadline: Instant,
+    catalog: &mut ModelCatalog,
+    catalog_unreachable: &mut bool,
+    ratios: &mut Option<Ratios>,
+) {
+    if timed.completed_at > deadline {
+        return;
+    }
+    match timed.result {
+        MetadataResult::Catalog(Ok(fetched)) => {
+            *catalog = fetched;
+            *catalog_unreachable = false;
+        }
+        MetadataResult::Catalog(Err(_)) => {}
+        MetadataResult::Ratios(fetched) => *ratios = fetched,
+    }
 }
 
 /// Validates the provider and requests its `/models` endpoint, returning the
@@ -79,32 +205,19 @@ pub(super) fn fetch_provider_ids_with(
     parse_provider_catalog(&provider.api, &body)
 }
 
-/// Resolves a set of model IDs against the models.dev catalog, applying
-/// ratio_config pricing on top. IDs with no catalog match fall back to
-/// `options.defaults`; IDs with multiple matches are collected as ambiguities
-/// for the caller to resolve interactively.
-pub(super) fn resolve_ids_against_catalog(
-    client: &Client,
+fn build_catalog_fetch(
     provider: &ProviderView,
     ids: &[String],
     options: ImportOptions,
-    metadata_catalog_url: &str,
+    catalog: ModelCatalog,
+    catalog_unreachable: bool,
+    ratios: Option<Ratios>,
 ) -> Result<CatalogFetch> {
-    // ratio_config — best-effort; failure or malformed payload → no ratio prices.
-    let ratios = fetch_ratio_config(client, provider);
     let ratio_config_used = ratios.is_some();
     let ratio_prices = ratios
         .as_ref()
         .map(|ratios| compute_ratio_prices(ids, ratios))
         .unwrap_or_default();
-
-    // models.dev catalog — best-effort; if unreachable, fall back to an empty
-    // catalog so every selected model is imported with default metadata rather
-    // than aborting the entire flow.
-    let (catalog, catalog_unreachable) = match fetch_catalog_from(client, metadata_catalog_url) {
-        Ok(catalog) => (catalog, false),
-        Err(_) => (ModelCatalog::default(), true),
-    };
     let mut models = Vec::new();
     let mut ambiguous = Vec::new();
     let mut unavailable = 0;
@@ -181,10 +294,11 @@ fn gateway_root_url(base_url: &str) -> String {
 /// GET a JSON endpoint at the gateway root with the provider's auth. Returns
 /// None on any error (unreachable, non-2xx, malformed JSON) so callers fall
 /// back silently.
-pub(super) fn get_gateway_json(
+fn get_gateway_json_until(
     client: &Client,
     provider: &ProviderView,
     path: &str,
+    deadline: Option<Instant>,
 ) -> Option<Value> {
     let result = (|| -> Result<Option<Value>> {
         let root = gateway_root_url(&provider.base_url);
@@ -193,6 +307,13 @@ pub(super) fn get_gateway_json(
         let key = resolve_secret(&provider.api_key)?;
         let headers = provider_headers(provider)?;
         let mut request = client.get(url);
+        if let Some(deadline) = deadline {
+            let timeout = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|timeout| !timeout.is_zero())
+                .ok_or_else(|| AppError::Http("gateway pricing timed out".into()))?;
+            request = request.timeout(timeout);
+        }
         for (name, value) in headers {
             request = request.header(name, value);
         }
@@ -222,14 +343,31 @@ pub(super) fn get_gateway_json(
 /// Fetch gateway pricing. Tries /api/ratio_config first (admin-only, may have
 /// create_cache_ratio), then falls back to /api/pricing (regular user key).
 /// Returns None only if both fail, so the caller falls back to models.dev.
+#[cfg(test)]
 pub(super) fn fetch_ratio_config(client: &Client, provider: &ProviderView) -> Option<Ratios> {
-    if let Some(body) = get_gateway_json(client, provider, "/api/ratio_config") {
+    fetch_ratio_config_before(client, provider, None)
+}
+
+fn fetch_ratio_config_until(
+    client: &Client,
+    provider: &ProviderView,
+    deadline: Instant,
+) -> Option<Ratios> {
+    fetch_ratio_config_before(client, provider, Some(deadline))
+}
+
+fn fetch_ratio_config_before(
+    client: &Client,
+    provider: &ProviderView,
+    deadline: Option<Instant>,
+) -> Option<Ratios> {
+    if let Some(body) = get_gateway_json_until(client, provider, "/api/ratio_config", deadline) {
         let ratios = parse_ratio_config(&body);
         if !ratios.model_ratio.is_empty() {
             return Some(ratios);
         }
     }
-    if let Some(body) = get_gateway_json(client, provider, "/api/pricing") {
+    if let Some(body) = get_gateway_json_until(client, provider, "/api/pricing", deadline) {
         let ratios = parse_pricing(&body);
         if !ratios.model_ratio.is_empty() {
             return Some(ratios);

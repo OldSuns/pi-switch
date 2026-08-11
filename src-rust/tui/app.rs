@@ -197,6 +197,12 @@ pub(super) enum Overlay {
     Doctor(Vec<DoctorCheck>),
     Loading {
         message: String,
+        cancelable: bool,
+    },
+    MetadataLoading {
+        provider_id: String,
+        ids: Vec<String>,
+        overwrite: bool,
     },
     Fetched {
         provider_id: String,
@@ -236,10 +242,18 @@ pub(super) enum CatalogContinuation {
         resolved_models: Vec<CatalogModel>,
         candidate_indices: Vec<usize>,
         overwrite: bool,
+        fallback: Option<MetadataFallback>,
     },
 }
 
-enum BackgroundResult {
+#[derive(Clone, Copy)]
+pub(super) enum MetadataFallback {
+    Unreachable,
+    Unmatched(usize),
+    Manual,
+}
+
+pub(super) enum BackgroundResult {
     ModelIds {
         provider_id: String,
         ids: Vec<String>,
@@ -290,7 +304,7 @@ pub(super) struct App {
     pub(super) width: u16,
     pub(super) overlay: Option<Overlay>,
     pub(super) notice: Option<Notice>,
-    task: Option<mpsc::Receiver<documents::Result<BackgroundResult>>>,
+    pub(super) task: Option<mpsc::Receiver<documents::Result<BackgroundResult>>>,
     pub(super) update_available: Option<String>,
     update_check: Option<mpsc::Receiver<documents::Result<Option<String>>>>,
     update_check_manual: bool,

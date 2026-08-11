@@ -140,33 +140,16 @@ impl App {
                         }
                     }
                 }
-                if catalog_unreachable {
-                    self.notice(
-                        NoticeKind::Warning,
-                        self.language
-                            .pick(
-                                "models.dev unreachable — imported all models with default metadata",
-                                "models.dev 不可达 — 已用默认元数据导入全部模型",
-                            )
-                            .to_string(),
-                    );
-                }
-                if unavailable > 0 {
-                    self.notice(
-                        NoticeKind::Warning,
-                        format!(
-                            "{} {}",
-                            unavailable,
-                            self.language.pick(
-                                "model(s) imported with default metadata (no models.dev match)",
-                                "个模型无 models.dev 匹配，已用默认元数据导入"
-                            )
-                        ),
-                    );
-                }
+                let fallback = if catalog_unreachable {
+                    Some(MetadataFallback::Unreachable)
+                } else if unavailable > 0 {
+                    Some(MetadataFallback::Unmatched(unavailable))
+                } else {
+                    None
+                };
                 self.task = None;
                 if ambiguous.is_empty() {
-                    self.import_fetched(&provider_id, models, overwrite);
+                    self.import_fetched(&provider_id, models, overwrite, fallback);
                 } else {
                     self.overlay = Some(Overlay::CatalogMatches {
                         ambiguities: ambiguous.clone(),
@@ -177,6 +160,7 @@ impl App {
                             resolved_models: models,
                             candidate_indices: Vec::new(),
                             overwrite,
+                            fallback,
                         }),
                     });
                 }

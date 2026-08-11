@@ -197,6 +197,7 @@ impl App {
                     "正在安装 @oldsuns/pi-switch…",
                 )
                 .to_string(),
+            cancelable: false,
         });
     }
 
@@ -358,6 +359,7 @@ impl App {
                 "{} {provider_id}",
                 self.language.pick("Fetching models for", "正在获取模型：")
             ),
+            cancelable: true,
         });
     }
 
@@ -387,9 +389,10 @@ impl App {
         };
         let options = self.import_options();
         let task_provider_id = provider_id.clone();
+        let task_ids = ids.clone();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let result = documents::resolve_metadata(provider, ids, options).map(|fetched| {
+            let result = documents::resolve_metadata(provider, task_ids, options).map(|fetched| {
                 BackgroundResult::Catalog {
                     provider_id: task_provider_id,
                     fetched,
@@ -399,14 +402,10 @@ impl App {
             let _ = sender.send(result);
         });
         self.task = Some(receiver);
-        self.overlay = Some(Overlay::Loading {
-            message: self
-                .language
-                .pick(
-                    "Fetching models.dev metadata",
-                    "正在获取 models.dev 模型信息",
-                )
-                .to_string(),
+        self.overlay = Some(Overlay::MetadataLoading {
+            provider_id,
+            ids,
+            overwrite,
         });
     }
 
@@ -415,15 +414,40 @@ impl App {
         provider_id: &str,
         models: Vec<CatalogModel>,
         overwrite: bool,
+        fallback: Option<MetadataFallback>,
     ) {
         match documents::import_models(&self.paths, provider_id, &models, overwrite) {
-            Ok(summary) => self.reload(Some(&format!(
-                "{} {}, {} {}",
-                self.language.pick("Added", "新增"),
-                summary.added,
-                self.language.pick("updated", "更新"),
-                summary.updated
-            ))),
+            Ok(summary) => {
+                let mut message = format!(
+                    "{} {}, {} {}",
+                    self.language.pick("Added", "新增"),
+                    summary.added,
+                    self.language.pick("updated", "更新"),
+                    summary.updated
+                );
+                match fallback {
+                    Some(MetadataFallback::Unreachable) => message.push_str(self.language.pick(
+                        "; models.dev unavailable or timed out, used default metadata",
+                        "；models.dev 不可达或超时，已使用默认元数据",
+                    )),
+                    Some(MetadataFallback::Unmatched(count)) => {
+                        message.push_str(&match self.language {
+                            Language::English => format!(
+                                "; no models.dev match for {count} model(s), used default metadata"
+                            ),
+                            Language::Chinese => {
+                                format!("；{count} 个模型无 models.dev 匹配，已使用默认元数据")
+                            }
+                        })
+                    }
+                    Some(MetadataFallback::Manual) => message.push_str(self.language.pick(
+                        "; skipped online metadata, used default metadata",
+                        "；已跳过在线元数据并使用默认元数据",
+                    )),
+                    None => {}
+                }
+                self.reload(Some(&message));
+            }
             Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
         }
     }
@@ -505,8 +529,9 @@ impl App {
         self.overlay = Some(Overlay::Loading {
             message: self
                 .language
-                .pick("Importing OpenCode configuration", "正在导入 OpenCode 配置")
+                .pick("Reading OpenCode configuration", "正在读取 OpenCode 配置")
                 .into(),
+            cancelable: true,
         });
     }
 
@@ -528,6 +553,7 @@ impl App {
                 .language
                 .pick("Importing OpenCode configuration", "正在导入 OpenCode 配置")
                 .into(),
+            cancelable: false,
         });
     }
 

@@ -52,9 +52,14 @@
 
         app.overlay = Some(Overlay::Loading {
             message: "loading".into(),
+            cancelable: false,
         });
         app.on_overlay_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(matches!(app.overlay, Some(Overlay::Loading { .. })));
+        assert!(app
+            .notice
+            .as_ref()
+            .is_some_and(|notice| notice.message.contains("cannot be cancelled")));
 
         app.overlay = None;
         app.language = super::i18n::Language::Chinese;

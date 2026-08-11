@@ -405,7 +405,10 @@ pub(super) fn render_overlay(
                 theme,
             );
         }
-        Overlay::Loading { message } => {
+        Overlay::Loading {
+            message,
+            cancelable,
+        } => {
             let rect = modal_rect(area, 52, 7);
             let spinner = ["|", "/", "-", "\\"][tick % 4];
             let body = Paragraph::new(vec![
@@ -420,10 +423,14 @@ pub(super) fn render_overlay(
                     Span::raw(message),
                 ]),
                 Line::from(Span::styled(
-                    language.pick(
-                        "Please wait; this request cannot be cancelled",
-                        "请稍候，当前请求无法取消",
-                    ),
+                    if *cancelable {
+                        language.pick("Esc cancel", "Esc 取消")
+                    } else {
+                        language.pick(
+                            "Please wait; this request cannot be cancelled",
+                            "请稍候，当前请求无法取消",
+                        )
+                    },
                     Style::default().fg(theme.muted),
                 )),
             ])
@@ -432,6 +439,41 @@ pub(super) fn render_overlay(
                 frame,
                 rect,
                 language.pick(" Model catalog ", " 模型目录 "),
+                body,
+                theme.accent,
+                theme,
+            );
+        }
+        Overlay::MetadataLoading { .. } => {
+            let rect = modal_rect(area, 62, 8);
+            let spinner = ["|", "/", "-", "\\"][tick % 4];
+            let body = Paragraph::new(vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled(
+                        format!("{spinner} "),
+                        Style::default()
+                            .fg(theme.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(language.pick(
+                        "Fetching models.dev metadata (up to 10 seconds)",
+                        "正在获取 models.dev 模型信息（最长 10 秒）",
+                    )),
+                ]),
+                Line::from(Span::styled(
+                    language.pick(
+                        "Esc skips online metadata and imports with defaults",
+                        "按 Esc 跳过在线元数据并使用默认参数导入",
+                    ),
+                    Style::default().fg(theme.muted),
+                )),
+            ])
+            .alignment(Alignment::Center);
+            render_modal(
+                frame,
+                rect,
+                language.pick(" Model metadata ", " 模型信息 "),
                 body,
                 theme.accent,
                 theme,
