@@ -68,7 +68,10 @@ pub fn apply_opencode_import(
         selections
             .entry(ambiguity.provider_id.clone())
             .or_default()
-            .insert(ambiguity.model_id.clone(), candidate.model.clone());
+            .insert(
+                ambiguity.model_id.clone(),
+                ModelCatalog::selected_candidate(candidate, &ambiguity.model_id),
+            );
     }
     import_source(
         paths,
@@ -356,7 +359,7 @@ fn merge_model(
             .get(provider_id)
             .and_then(|models| models.get(id))
             .cloned()
-            .or_else(|| catalog.and_then(|catalog| catalog.resolve(provider_id, id).cloned()))
+            .or_else(|| catalog.and_then(|catalog| catalog.resolve(provider_id, id)))
     } else {
         Some(options.defaults.model(id))
     };

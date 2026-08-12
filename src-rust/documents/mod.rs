@@ -222,37 +222,95 @@ pub struct ModelCatalog {
 }
 
 impl ModelCatalog {
-    pub fn resolve(&self, provider_id: &str, model_id: &str) -> Option<&CatalogModel> {
-        if let Some(model) = self
-            .providers
-            .get(provider_id)
-            .and_then(|models| models.iter().find(|model| model.id == model_id))
-        {
-            return Some(model);
+    pub fn resolve(&self, provider_id: &str, model_id: &str) -> Option<CatalogModel> {
+        match self.resolution(provider_id, model_id) {
+            CatalogResolution::Resolved(model) => Some(rebind_model(&model, model_id)),
+            CatalogResolution::Ambiguous(_) | CatalogResolution::Missing => None,
         }
-
-        let mut matches = self
-            .providers
-            .values()
-            .flatten()
-            .filter(|model| model.id == model_id);
-        let first = matches.next()?;
-        matches
-            .all(|model| model.config == first.config)
-            .then_some(first)
     }
 
     pub fn ambiguous_candidates(&self, provider_id: &str, model_id: &str) -> Vec<CatalogCandidate> {
-        if self.resolve(provider_id, model_id).is_some() {
-            return Vec::new();
+        match self.resolution(provider_id, model_id) {
+            CatalogResolution::Ambiguous(candidates) => candidates,
+            CatalogResolution::Resolved(_) | CatalogResolution::Missing => Vec::new(),
         }
+    }
+
+    pub fn selected_candidate(candidate: &CatalogCandidate, model_id: &str) -> CatalogModel {
+        rebind_model(&candidate.model, model_id)
+    }
+
+    fn resolution(&self, provider_id: &str, model_id: &str) -> CatalogResolution {
+        let strong_key = strong_model_key(model_id);
+        let suffix_key = suffix_fallback_key(&strong_key);
+        let compact_key = compact_model_id(&strong_key);
+        let unknown_prefix_keys = unknown_prefix_keys(&strong_key);
+
+        for candidates in [
+            self.candidates(Some(provider_id), |id| id == model_id),
+            self.candidates(None, |id| id == model_id),
+            self.candidates(Some(provider_id), |id| strong_model_key(id) == strong_key),
+            self.candidates(None, |id| strong_model_key(id) == strong_key),
+        ] {
+            match resolve_candidates(candidates) {
+                CatalogResolution::Missing => {}
+                resolution => return resolution,
+            }
+        }
+
+        if let Some(suffix_key) = suffix_key {
+            for candidates in [
+                self.candidates(Some(provider_id), |id| strong_model_key(id) == suffix_key),
+                self.candidates(None, |id| strong_model_key(id) == suffix_key),
+            ] {
+                match resolve_candidates(candidates) {
+                    CatalogResolution::Missing => {}
+                    resolution => return resolution,
+                }
+            }
+        }
+
+        for candidates in [
+            self.candidates(Some(provider_id), |id| {
+                compact_model_id(&strong_model_key(id)) == compact_key
+            }),
+            self.candidates(None, |id| {
+                compact_model_id(&strong_model_key(id)) == compact_key
+            }),
+        ] {
+            if candidates.len() == 1 {
+                return CatalogResolution::Resolved(candidates[0].model.clone());
+            }
+        }
+
+        for key in unknown_prefix_keys {
+            for candidates in [
+                self.candidates(Some(provider_id), |id| strong_model_key(id) == key),
+                self.candidates(None, |id| strong_model_key(id) == key),
+            ] {
+                if candidates.len() == 1 {
+                    return CatalogResolution::Resolved(candidates[0].model.clone());
+                }
+            }
+        }
+        CatalogResolution::Missing
+    }
+
+    fn candidates(
+        &self,
+        provider_id: Option<&str>,
+        matches: impl Fn(&str) -> bool + Copy,
+    ) -> Vec<CatalogCandidate> {
         self.providers
             .iter()
+            .filter(|(source_provider_id, _)| {
+                provider_id.is_none_or(|provider_id| source_provider_id.as_str() == provider_id)
+            })
             .flat_map(|(source_provider_id, models)| {
                 models
                     .iter()
-                    .filter(move |model| model.id == model_id)
-                    .map(|model| CatalogCandidate {
+                    .filter(move |model| matches(&model.id))
+                    .map(move |model| CatalogCandidate {
                         provider_id: source_provider_id.clone(),
                         model: model.clone(),
                     })
@@ -301,6 +359,150 @@ impl ModelCatalog {
             }
         }
     }
+}
+
+#[derive(Clone, Debug)]
+enum CatalogResolution {
+    Resolved(CatalogModel),
+    Ambiguous(Vec<CatalogCandidate>),
+    Missing,
+}
+
+fn resolve_candidates(candidates: Vec<CatalogCandidate>) -> CatalogResolution {
+    let Some(first) = candidates.first() else {
+        return CatalogResolution::Missing;
+    };
+    if candidates.len() == 1
+        || candidates
+            .iter()
+            .skip(1)
+            .all(|candidate| same_metadata(&candidate.model.config, &first.model.config))
+    {
+        CatalogResolution::Resolved(first.model.clone())
+    } else {
+        CatalogResolution::Ambiguous(candidates)
+    }
+}
+
+fn same_metadata(left: &Value, right: &Value) -> bool {
+    let mut left = left.clone();
+    let mut right = right.clone();
+    if let Some(object) = left.as_object_mut() {
+        object.remove("id");
+    }
+    if let Some(object) = right.as_object_mut() {
+        object.remove("id");
+    }
+    left == right
+}
+
+fn rebind_model(model: &CatalogModel, model_id: &str) -> CatalogModel {
+    let mut model = model.clone();
+    model.id = model_id.into();
+    if let Some(config) = model.config.as_object_mut() {
+        config.insert("id".into(), Value::String(model_id.into()));
+    }
+    model
+}
+
+fn suffix_fallback_key(model_id: &str) -> Option<String> {
+    let mut fallback = model_id.to_owned();
+    let mut stripped_any = false;
+    while let Some(stripped) = strip_safe_suffix(&fallback) {
+        fallback.truncate(stripped);
+        stripped_any = true;
+    }
+    (stripped_any && !fallback.is_empty()).then_some(fallback)
+}
+
+fn unknown_prefix_keys(model_id: &str) -> Vec<String> {
+    let segments = model_id.split('-').collect::<Vec<_>>();
+    (1..=segments.len().saturating_sub(1).min(2))
+        .filter_map(|count| {
+            let stripped = segments[count..].join("-");
+            (!stripped.is_empty()).then_some(stripped)
+        })
+        .collect()
+}
+
+fn strong_model_key(model_id: &str) -> String {
+    let model_id = model_id
+        .rsplit('/')
+        .next()
+        .unwrap_or(model_id)
+        .to_lowercase();
+    let model_id = ["z-ai-", "zai-org-", "zai-"]
+        .iter()
+        .find_map(|prefix| model_id.strip_prefix(prefix))
+        .unwrap_or(&model_id);
+
+    let mut canonical = String::with_capacity(model_id.len());
+    let chars = model_id.chars().collect::<Vec<_>>();
+    for (index, character) in chars.iter().copied().enumerate() {
+        let previous_is_digit = index > 0 && chars[index - 1].is_ascii_digit();
+        let next_is_digit = chars
+            .get(index + 1)
+            .is_some_and(|next| next.is_ascii_digit());
+        let replacement = match character {
+            '_' => Some('-'),
+            '.' | ',' if previous_is_digit && next_is_digit => Some('-'),
+            'p' if previous_is_digit && next_is_digit => Some('-'),
+            _ => None,
+        };
+        if let Some(replacement) = replacement {
+            if !canonical.ends_with(replacement) {
+                canonical.push(replacement);
+            }
+        } else {
+            canonical.push(character);
+        }
+    }
+
+    canonical
+}
+
+fn strip_safe_suffix(model_id: &str) -> Option<usize> {
+    for suffix in ["-fp8", "-int4", "-gguf"] {
+        if let Some(stripped) = model_id.strip_suffix(suffix) {
+            return Some(stripped.len());
+        }
+    }
+    let (base, suffix) = model_id.rsplit_once('-')?;
+    is_date_snapshot(suffix).then_some(base.len())
+}
+
+fn is_date_snapshot(value: &str) -> bool {
+    if !matches!(value.len(), 4 | 8) || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    if value.len() == 4 {
+        let first = value[..2].parse::<u8>().unwrap_or(0);
+        let second = value[2..].parse::<u8>().unwrap_or(0);
+        return valid_month_day(first, second, None)
+            || (1..=99).contains(&first) && (1..=12).contains(&second);
+    }
+    let year = value[..4].parse::<u16>().unwrap_or(0);
+    let month = value[4..6].parse::<u8>().unwrap_or(0);
+    let day = value[6..].parse::<u8>().unwrap_or(0);
+    year > 0 && valid_month_day(month, day, Some(year))
+}
+
+fn valid_month_day(month: u8, day: u8, year: Option<u16>) -> bool {
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year.is_none_or(|year| year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=max_day).contains(&day)
+}
+
+fn compact_model_id(model_id: &str) -> String {
+    model_id
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .collect()
 }
 
 #[derive(Clone, Debug)]

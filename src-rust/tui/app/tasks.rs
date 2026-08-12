@@ -132,8 +132,8 @@ impl App {
                     }
                 }
                 for ambiguity in &mut ambiguous {
-                    for candidate in &mut ambiguity.candidates {
-                        if let Some(cost) = ratio_prices.get(&candidate.model.id) {
+                    if let Some(cost) = ratio_prices.get(&ambiguity.model_id) {
+                        for candidate in &mut ambiguity.candidates {
                             if let Some(object) = candidate.model.config.as_object_mut() {
                                 object.insert("cost".into(), cost.to_cost_json());
                             }

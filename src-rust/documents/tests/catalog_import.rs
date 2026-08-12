@@ -100,6 +100,265 @@ fn models_dev_catalog_parser_maps_supported_fields_and_skips_unusable_models() {
 }
 
 #[test]
+fn model_catalog_matches_conservative_canonical_ids_and_preserves_requested_id() {
+    let mut catalog = ModelCatalog::default();
+    catalog.insert(
+        "upstream".into(),
+        vec![
+            catalog_model("glm-5.2", 200_000, 32_000, 1.0),
+            catalog_model("deepseek-v4-flash", 384_000, 64_000, 0.14),
+        ],
+    );
+
+    for requested in [
+        "z-ai/glm5.2",
+        "GLM-5.2",
+        "zai-org-glm5p2",
+        "host-glm_5.2",
+    ] {
+        let model = catalog.resolve("custom", requested).unwrap();
+        assert_eq!(model.id, requested);
+        assert_eq!(model.config["id"], requested);
+        assert_eq!(model.config["contextWindow"], 200_000);
+    }
+    for requested in [
+        "Deepseek-V4-Flash-0731",
+        "deepseek-v4-flash-2507",
+        "deepseek-v4-flash-20250929-fp8",
+    ] {
+        let model = catalog.resolve("custom", requested).unwrap();
+        assert_eq!(model.id, requested);
+        assert_eq!(model.config["id"], requested);
+        assert_eq!(model.config["contextWindow"], 384_000);
+    }
+
+    assert!(catalog.resolve("custom", "GLM-5.2-1M").is_none());
+    assert!(catalog.resolve("custom", "glm-5.2-20b").is_none());
+    assert!(catalog.resolve("custom", "deepseek-v4-flash-0231").is_none());
+    assert!(catalog.resolve("custom", "deepseek-v4-flash-20250229").is_none());
+    assert!(catalog
+        .resolve("custom", "host-prefix-not-glm-5.2-suffix")
+        .is_none());
+    assert!(catalog.resolve("custom", "host-other-5.2").is_none());
+}
+
+#[test]
+fn model_catalog_prefers_exact_match_over_canonical_fallback() {
+    let mut catalog = ModelCatalog::default();
+    catalog.insert(
+        "current".into(),
+        vec![catalog_model("GLM-5.2", 111_000, 11_000, 1.0)],
+    );
+    catalog.insert(
+        "other".into(),
+        vec![
+            catalog_model("glm-5.2", 222_000, 22_000, 2.0),
+            catalog_model("deepseek-v4-flash", 384_000, 64_000, 0.14),
+        ],
+    );
+    catalog.insert(
+        "snapshot".into(),
+        vec![catalog_model(
+            "deepseek-v4-flash-0731",
+            512_000,
+            96_000,
+            0.2,
+        )],
+    );
+
+    let exact = catalog.resolve("current", "GLM-5.2").unwrap();
+    assert_eq!(exact.config["contextWindow"], 111_000);
+
+    let exact_snapshot = catalog
+        .resolve("custom", "deepseek-v4-flash-0731")
+        .unwrap();
+    assert_eq!(exact_snapshot.config["contextWindow"], 512_000);
+    assert!(catalog
+        .ambiguous_candidates("custom", "deepseek-v4-flash-0731")
+        .is_empty());
+}
+
+#[test]
+fn model_catalog_prefers_specific_suffix_and_falls_back_one_way() {
+    let mut catalog = ModelCatalog::default();
+    catalog.insert(
+        "upstream".into(),
+        vec![
+            catalog_model("deepseek-v4-flash", 384_000, 64_000, 0.14),
+            catalog_model("deepseek-v4-flash-0731", 512_000, 96_000, 0.2),
+        ],
+    );
+
+    let specific = catalog
+        .resolve("custom", "DEEPSEEK-V4-FLASH-0731")
+        .unwrap();
+    assert_eq!(specific.config["contextWindow"], 512_000);
+    assert_eq!(specific.id, "DEEPSEEK-V4-FLASH-0731");
+
+    let mut base_only = ModelCatalog::default();
+    base_only.insert(
+        "upstream".into(),
+        vec![catalog_model("deepseek-v4-flash", 384_000, 64_000, 0.14)],
+    );
+    let fallback = base_only
+        .resolve("custom", "deepseek-v4-flash-0731-fp8")
+        .unwrap();
+    assert_eq!(fallback.config["contextWindow"], 384_000);
+    assert_eq!(fallback.id, "deepseek-v4-flash-0731-fp8");
+
+    let mut specific_only = ModelCatalog::default();
+    specific_only.insert(
+        "upstream".into(),
+        vec![catalog_model(
+            "deepseek-v4-flash-0731",
+            512_000,
+            96_000,
+            0.2,
+        )],
+    );
+    assert!(specific_only
+        .resolve("custom", "deepseek-v4-flash")
+        .is_none());
+}
+
+#[test]
+fn model_catalog_suffix_variants_prefer_specific_then_base() {
+    for suffix in ["fp8", "int4", "gguf"] {
+        let requested = format!("deepseek-v4-flash-{suffix}");
+        let mut catalog = ModelCatalog::default();
+        catalog.insert(
+            "upstream".into(),
+            vec![
+                catalog_model("deepseek-v4-flash", 384_000, 64_000, 0.14),
+                catalog_model(&requested, 512_000, 96_000, 0.2),
+            ],
+        );
+        assert_eq!(
+            catalog
+                .resolve("custom", &requested.to_uppercase())
+                .unwrap()
+                .config["contextWindow"],
+            512_000
+        );
+
+        let mut base_only = ModelCatalog::default();
+        base_only.insert(
+            "upstream".into(),
+            vec![catalog_model("deepseek-v4-flash", 384_000, 64_000, 0.14)],
+        );
+        assert_eq!(
+            base_only
+                .resolve("custom", &requested)
+                .unwrap()
+                .config["contextWindow"],
+            384_000
+        );
+    }
+}
+
+#[test]
+fn model_catalog_stronger_ambiguity_stops_weaker_fallback() {
+    let mut catalog = ModelCatalog::default();
+    catalog.insert(
+        "current".into(),
+        vec![
+            catalog_model("deepseek-v4-flash-0731", 400_000, 40_000, 0.1),
+            catalog_model("DEEPSEEK-V4-FLASH-0731", 500_000, 50_000, 0.2),
+        ],
+    );
+    catalog.insert(
+        "other".into(),
+        vec![catalog_model("deepseek-v4-flash", 384_000, 64_000, 0.14)],
+    );
+
+    assert!(catalog
+        .resolve("current", "DeepSeek-V4-Flash-0731")
+        .is_none());
+    let candidates = catalog.ambiguous_candidates("current", "DeepSeek-V4-Flash-0731");
+    assert_eq!(candidates.len(), 2);
+    let ids = candidates
+        .iter()
+        .map(|candidate| candidate.model.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        ids,
+        ["DEEPSEEK-V4-FLASH-0731", "deepseek-v4-flash-0731"]
+            .into_iter()
+            .collect()
+    );
+}
+
+#[test]
+fn model_catalog_cross_provider_specific_ambiguity_does_not_fall_back() {
+    let mut catalog = ModelCatalog::default();
+    catalog.insert(
+        "base".into(),
+        vec![catalog_model("deepseek-v4-flash", 384_000, 64_000, 0.14)],
+    );
+    catalog.insert(
+        "one".into(),
+        vec![catalog_model(
+            "deepseek-v4-flash-0731",
+            400_000,
+            40_000,
+            0.1,
+        )],
+    );
+    catalog.insert(
+        "two".into(),
+        vec![catalog_model(
+            "DeepSeek-V4-Flash-0731",
+            500_000,
+            50_000,
+            0.2,
+        )],
+    );
+
+    assert!(catalog
+        .resolve("custom", "DEEPSEEK-V4-FLASH-0731")
+        .is_none());
+    let candidates = catalog.ambiguous_candidates("custom", "DEEPSEEK-V4-FLASH-0731");
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates
+        .iter()
+        .all(|candidate| candidate.model.id.to_lowercase().ends_with("-0731")));
+}
+
+#[test]
+fn model_catalog_does_not_stack_weak_prefix_and_suffix_fallbacks() {
+    let mut catalog = ModelCatalog::default();
+    catalog.insert(
+        "upstream".into(),
+        vec![catalog_model("deepseek-v4-flash", 384_000, 64_000, 0.14)],
+    );
+
+    assert!(catalog
+        .resolve("custom", "host-deepseek-v4-flash-0731")
+        .is_none());
+    assert!(catalog
+        .resolve("custom", "host-deepseekv4flash-0731")
+        .is_none());
+}
+
+#[test]
+fn model_catalog_auto_resolves_identical_metadata_across_providers() {
+    let model = catalog_model("glm-5.2", 200_000, 32_000, 1.0);
+    let mut alias = model.clone();
+    alias.id = "glm5.2".into();
+    alias.config["id"] = json!("glm5.2");
+    let mut catalog = ModelCatalog::default();
+    catalog.insert("one".into(), vec![model]);
+    catalog.insert("two".into(), vec![alias]);
+
+    let resolved = catalog.resolve("custom", "Z-AI/GLM5.2").unwrap();
+    assert_eq!(resolved.id, "Z-AI/GLM5.2");
+    assert_eq!(resolved.config["id"], "Z-AI/GLM5.2");
+    assert!(catalog
+        .ambiguous_candidates("custom", "Z-AI/GLM5.2")
+        .is_empty());
+}
+
+#[test]
 fn thinking_level_map_maps_effort_values_and_omits_unsupported() {
     // reasoning:false (helper default) → no map
     let no_reasoning = parse_models_dev_catalog(&json!({
@@ -306,6 +565,35 @@ fn opencode_import_uses_live_catalog_metadata_when_unambiguous() {
 }
 
 #[test]
+fn opencode_import_uses_canonical_metadata_and_preserves_source_model_id() {
+    let (_root, paths) = fixture();
+    write_opencode(
+        &paths,
+        json!({
+            "provider": {
+                "custom": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "models": {"z-ai/glm5.2": {}}
+                }
+            }
+        }),
+    );
+    let mut catalog = ModelCatalog::default();
+    catalog.insert(
+        "upstream".into(),
+        vec![catalog_model("glm-5.2", 200_000, 32_000, 1.0)],
+    );
+
+    let summary = import_opencode_with_catalog(&paths, &catalog).unwrap();
+    assert_eq!(summary.metadata, 1);
+    assert_eq!(summary.unresolved, 0);
+    let models = read_json(&paths.models);
+    let model = &models["providers"]["custom"]["models"][0];
+    assert_eq!(model["id"], "z-ai/glm5.2");
+    assert_eq!(model["contextWindow"], 200_000);
+}
+
+#[test]
 fn opencode_import_ignores_empty_model_name() {
     let (_root, paths) = fixture();
     write_opencode(
@@ -381,6 +669,60 @@ fn opencode_import_can_select_providers_and_use_custom_defaults() {
     assert_eq!(model["maxTokens"], PI_DEFAULT_MAX_TOKENS);
     assert_eq!(model["cost"]["output"], 3.5);
     assert_eq!(model["cost"]["input"], 0.0);
+}
+
+#[test]
+fn opencode_selected_ambiguity_rebinds_the_source_model_id() {
+    let (_root, paths) = fixture();
+    write_opencode(
+        &paths,
+        json!({
+            "provider": {
+                "custom": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "models": {"DEEPSEEK-V4-FLASH-0731": {}}
+                }
+            }
+        }),
+    );
+    let mut catalog = ModelCatalog::default();
+    catalog.insert(
+        "one".into(),
+        vec![catalog_model(
+            "deepseek-v4-flash-0731",
+            400_000,
+            40_000,
+            0.1,
+        )],
+    );
+    catalog.insert(
+        "two".into(),
+        vec![catalog_model(
+            "DeepSeek-V4-Flash-0731",
+            500_000,
+            50_000,
+            0.2,
+        )],
+    );
+
+    let plan = prepare_opencode_with_catalog(&paths, catalog, &["custom".into()]).unwrap();
+    assert_eq!(plan.ambiguous.len(), 1);
+    assert_eq!(
+        plan.ambiguous[0]
+            .candidates
+            .iter()
+            .map(|candidate| candidate.model.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["DeepSeek-V4-Flash-0731", "deepseek-v4-flash-0731"]
+            .into_iter()
+            .collect()
+    );
+
+    apply_opencode_import(&paths, plan, &[0]).unwrap();
+    let models = read_json(&paths.models);
+    let model = &models["providers"]["custom"]["models"][0];
+    assert_eq!(model["id"], "DEEPSEEK-V4-FLASH-0731");
+    assert_eq!(model["contextWindow"], 400_000);
 }
 
 #[test]

@@ -359,7 +359,10 @@ impl App {
                                 for (i, ambiguity) in ambiguities.iter().enumerate() {
                                     if let Some(&pick) = candidate_indices.get(i) {
                                         if let Some(candidate) = ambiguity.candidates.get(pick) {
-                                            final_models.push(candidate.model.clone());
+                                            final_models.push(ModelCatalog::selected_candidate(
+                                                candidate,
+                                                &ambiguity.model_id,
+                                            ));
                                         }
                                     }
                                 }

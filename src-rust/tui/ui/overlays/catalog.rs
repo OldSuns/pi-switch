@@ -183,6 +183,10 @@ pub(super) fn render_catalog_overlay(
                                 candidate.provider_id.clone(),
                                 Style::default().add_modifier(Modifier::BOLD),
                             )),
+                            Line::from(vec![
+                                Span::raw("    "),
+                                Span::styled(candidate.model.id.clone(), theme.value()),
+                            ]),
                             Line::from(Span::styled(
                                 format!("    {}", catalog_summary(&candidate.model, language)),
                                 theme.label(),

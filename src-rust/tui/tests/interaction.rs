@@ -596,6 +596,58 @@
     }
 
     #[test]
+    fn catalog_ambiguity_uses_requested_id_for_ratio_price() {
+        let (_root, mut app) = app();
+        write_empty_provider(&mut app);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(Ok(BackgroundResult::Catalog {
+                provider_id: "示例-provider".into(),
+                fetched: CatalogFetch {
+                    models: Vec::new(),
+                    ambiguous: vec![CatalogAmbiguity {
+                        provider_id: "示例-provider".into(),
+                        model_id: "gateway-model-0731".into(),
+                        candidates: vec![CatalogCandidate {
+                            provider_id: "catalog-provider".into(),
+                            model: catalog_model("catalog-model-0731", 200_000, 32_000, 1.0),
+                        }],
+                    }],
+                    unavailable: 0,
+                    ratio_prices: [(
+                        "gateway-model-0731".into(),
+                        RatioCost {
+                            input: 9.0,
+                            output: 18.0,
+                            cache_read: 1.0,
+                            cache_write: 2.0,
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                    ratio_config_used: true,
+                    catalog_unreachable: false,
+                },
+                overwrite: false,
+            }))
+            .unwrap();
+        app.task = Some(receiver);
+
+        app.tick();
+        let Some(Overlay::CatalogMatches { ambiguities, .. }) = &app.overlay else {
+            panic!("catalog matches overlay");
+        };
+        assert_eq!(ambiguities[0].candidates[0].model.config["cost"]["input"], 9.0);
+
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let providers: serde_json::Value =
+            serde_json::from_slice(&fs::read(&app.paths.providers).unwrap()).unwrap();
+        let model = &providers["providers"]["示例-provider"]["models"][0];
+        assert_eq!(model["id"], "gateway-model-0731");
+        assert_eq!(model["cost"]["input"], 9.0);
+    }
+
+    #[test]
     fn unmatched_fallback_notice_survives_catalog_selection() {
         let (_root, mut app) = app();
         write_empty_provider(&mut app);
@@ -605,7 +657,7 @@
                 model_id: "ambiguous-model".into(),
                 candidates: vec![CatalogCandidate {
                     provider_id: "catalog-provider".into(),
-                    model: catalog_model("ambiguous-model", 200_000, 32_000, 1.0),
+                    model: catalog_model("catalog-source-id", 200_000, 32_000, 1.0),
                 }],
             }],
             index: 0,
@@ -640,5 +692,9 @@
                 .unwrap()
                 .len(),
             2
+        );
+        assert_eq!(
+            providers["providers"]["示例-provider"]["models"][1]["id"],
+            "ambiguous-model"
         );
     }

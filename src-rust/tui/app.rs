@@ -5,8 +5,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::documents::{
     self, Backup, CatalogAmbiguity, CatalogFetch, CatalogModel, DoctorCheck, ImportSummary,
-    OpenCodeImportPlan, Paths, PreviewMessage, ProviderView, RatioCost, SessionPreview,
-    SessionSummary, Snapshot,
+    ModelCatalog, OpenCodeImportPlan, Paths, PreviewMessage, ProviderView, RatioCost,
+    SessionPreview, SessionSummary, Snapshot,
 };
 
 #[path = "app/actions.rs"]
