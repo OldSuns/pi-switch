@@ -596,6 +596,47 @@
     }
 
     #[test]
+    fn metadata_loading_closes_after_successful_import() {
+        let (_root, mut app) = app();
+        write_empty_provider(&mut app);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(Ok(BackgroundResult::Catalog {
+                provider_id: "示例-provider".into(),
+                fetched: CatalogFetch {
+                    models: vec![catalog_model("resolved-model", 200_000, 32_000, 1.0)],
+                    ambiguous: Vec::new(),
+                    unavailable: 0,
+                    ratio_prices: std::collections::BTreeMap::new(),
+                    ratio_config_used: false,
+                    catalog_unreachable: false,
+                },
+                overwrite: true,
+            }))
+            .unwrap();
+        app.task = Some(receiver);
+        app.overlay = Some(Overlay::MetadataLoading {
+            provider_id: "示例-provider".into(),
+            ids: vec!["resolved-model".into()],
+            overwrite: true,
+        });
+
+        app.tick();
+
+        assert!(app.task.is_none());
+        assert!(app.overlay.is_none(), "metadata loading overlay remained");
+        assert!(app
+            .notice
+            .as_ref()
+            .is_some_and(|notice| notice.message.contains("Added 1")));
+        let providers: serde_json::Value =
+            serde_json::from_slice(&fs::read(&app.paths.providers).unwrap()).unwrap();
+        let model = &providers["providers"]["示例-provider"]["models"][0];
+        assert_eq!(model["id"], "resolved-model");
+        assert_eq!(model["contextWindow"], 200_000);
+    }
+
+    #[test]
     fn catalog_ambiguity_uses_requested_id_for_ratio_price() {
         let (_root, mut app) = app();
         write_empty_provider(&mut app);

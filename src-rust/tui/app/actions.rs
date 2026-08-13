@@ -446,6 +446,7 @@ impl App {
                     )),
                     None => {}
                 }
+                self.overlay = None;
                 self.reload(Some(&message));
             }
             Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
