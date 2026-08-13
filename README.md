@@ -52,6 +52,8 @@ npm run build:native:debug
 node ./bin/pi-switch.js
 ```
 
+贡献流程见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+
 ## 界面与快捷键
 
 全局导航：`j/k` 或方向键移动；菜单中 `Enter` / `l` 进入内容，各内容页按自己的方向键切换焦点；`?` 帮助；`q` 退出（多数界面 `Ctrl+C` 也退出，会话预览除外）。
@@ -205,7 +207,7 @@ npm run pack:check
 
 ## 许可
 
-MIT
+[MIT](./LICENSE)
 
 ## 致谢
 
