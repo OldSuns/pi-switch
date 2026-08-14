@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::documents::{format_session_time, session_display_title};
 
-use super::super::super::app::{App, Focus, Page, SessionViewMode};
+use super::super::super::app::{App, Focus, Page, SessionGroup, SessionViewMode};
 use super::super::super::input::truncate_width;
 use super::super::super::markdown::{
     full_tree_width, MarkdownLine, MarkdownLineKind, MarkdownStyle,
@@ -44,13 +44,24 @@ pub(in crate::tui::ui) fn render_sessions(
         .split(area);
     app.session_list_left = sections[0].x;
     app.session_preview_left = sections[1].x;
-    render_session_list(frame, app, sections[0], theme);
-    render_session_preview(frame, app, sections[1], theme);
+    let groups = app.session_groups();
+    let selected_session_index = groups
+        .iter()
+        .flat_map(|group| &group.sessions)
+        .nth(app.session_cursor)
+        .copied();
+    render_session_list(frame, app, sections[0], theme, &groups);
+    render_session_preview(frame, app, sections[1], theme, selected_session_index);
 }
 
-fn render_session_list(frame: &mut Frame<'_>, app: &mut App, area: Rect, theme: Theme) {
+fn render_session_list(
+    frame: &mut Frame<'_>,
+    app: &mut App,
+    area: Rect,
+    theme: Theme,
+    groups: &[SessionGroup],
+) {
     app.session_list_top = area.y.saturating_add(1);
-    let groups = app.session_groups();
     let active = app.focus == Focus::Content && app.page == Page::Sessions;
     let filter_hint = if app.session_filtering || !app.session_filter.is_empty() {
         format!(
@@ -68,6 +79,9 @@ fn render_session_list(frame: &mut Frame<'_>, app: &mut App, area: Rect, theme: 
         }
         if app.user_only_preview {
             parts.push(app.language.pick("user-only", "仅用户"));
+        }
+        if app.sessions_loading() {
+            parts.push(app.language.pick("loading…", "加载中…"));
         }
         if parts.is_empty() {
             String::new()
@@ -88,7 +102,7 @@ fn render_session_list(frame: &mut Frame<'_>, app: &mut App, area: Rect, theme: 
         vec![ListItem::new(Line::from(Span::styled(
             format!(
                 "  {}",
-                if !app.sessions_loaded {
+                if app.sessions_loading() {
                     app.language.pick("Loading…", "加载中…")
                 } else if app.named_only || !app.session_filter.is_empty() {
                     app.language.pick("No matching sessions", "没有匹配的会话")
@@ -107,7 +121,7 @@ fn render_session_list(frame: &mut Frame<'_>, app: &mut App, area: Rect, theme: 
             as usize;
         let session_text_width = header_text_width.saturating_sub(2);
         let mut items: Vec<ListItem> = Vec::new();
-        for group in &groups {
+        for group in groups {
             // Group header row — never selectable.
             let header_text =
                 group_header_text(&group.cwd, group.sessions.len(), header_text_width, app);
@@ -223,7 +237,13 @@ fn group_header_text(cwd: &str, count: usize, max_width: usize, app: &App) -> St
     )
 }
 
-fn render_session_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect, theme: Theme) {
+fn render_session_preview(
+    frame: &mut Frame<'_>,
+    app: &mut App,
+    area: Rect,
+    theme: Theme,
+    selected_session_index: Option<usize>,
+) {
     let preview_focused = app.focus == Focus::SessionPreview;
     let view = match app.session_view_mode {
         SessionViewMode::Tree => app.language.pick("Tree", "树预览"),
@@ -258,7 +278,7 @@ fn render_session_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect, them
 
     let mut header_lines = Vec::new();
     let mut lines = Vec::new();
-    if let Some(session) = app.selected_session() {
+    if let Some(session) = selected_session_index.and_then(|index| app.sessions.get(index)) {
         header_lines.push(filled_text_line(
             session_display_title(session),
             line_width,
@@ -310,9 +330,20 @@ fn render_session_preview(frame: &mut Frame<'_>, app: &mut App, area: Rect, them
     app.set_preview_geometry(line_width, body_area.height.max(1));
 
     match (&app.preview, &app.preview_layout) {
-        (None, _) if app.selected_session().is_none() => {
+        (None, _) if selected_session_index.is_none() => {
             lines.push(filled_text_line(
                 app.language.pick("Select a session", "选择一个会话"),
+                line_width,
+                theme.label().bg(theme.background),
+            ));
+        }
+        (None, _)
+            if selected_session_index
+                .and_then(|index| app.sessions.get(index))
+                .is_some_and(|session| app.preview_loading_for(&session.path)) =>
+        {
+            lines.push(filled_text_line(
+                app.language.pick("Loading preview…", "预览加载中…"),
                 line_width,
                 theme.label().bg(theme.background),
             ));

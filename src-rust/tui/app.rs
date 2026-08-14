@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::{sync::mpsc, thread};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -253,6 +254,22 @@ pub(super) enum MetadataFallback {
     Manual,
 }
 
+pub(super) struct SessionListTask {
+    receiver: mpsc::Receiver<documents::Result<Vec<SessionSummary>>>,
+    success_message: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PreviewRequest {
+    path: PathBuf,
+    user_only: bool,
+}
+
+pub(super) struct PreviewTask {
+    request: PreviewRequest,
+    receiver: mpsc::Receiver<documents::Result<SessionPreview>>,
+}
+
 pub(super) enum BackgroundResult {
     ModelIds {
         provider_id: String,
@@ -278,6 +295,8 @@ pub(super) struct App {
     pub(super) session_cursor: usize,
     pub(super) sessions: Vec<SessionSummary>,
     pub(super) sessions_loaded: bool,
+    pub(super) session_task: Option<SessionListTask>,
+    pub(super) session_reload_pending: bool,
     pub(super) session_filter: String,
     pub(super) session_filtering: bool,
     pub(super) named_only: bool,
@@ -288,12 +307,14 @@ pub(super) struct App {
     pub(super) preview_collapsed: BTreeSet<String>,
     pub(super) preview_child_history: BTreeMap<String, String>,
     pub(super) preview_layout: Option<PreviewLayout>,
+    pub(super) preview_task: Option<PreviewTask>,
+    pub(super) preview_pending: Option<PreviewRequest>,
+    pub(super) preview_loaded: Option<PreviewRequest>,
     pub(super) preview_scroll: u16,
     pub(super) preview_body_top: u16,
     pub(super) session_list_left: u16,
     pub(super) session_list_top: u16,
     pub(super) session_preview_left: u16,
-    pub(super) preview_path: Option<String>,
     pub(super) preview_message_cursor: usize,
     pub(super) preview_wrap_width: usize,
     pub(super) preview_viewport_height: u16,
@@ -363,6 +384,8 @@ impl App {
             session_cursor: 0,
             sessions: Vec::new(),
             sessions_loaded: false,
+            session_task: None,
+            session_reload_pending: false,
             session_filter: String::new(),
             session_filtering: false,
             named_only: false,
@@ -373,12 +396,14 @@ impl App {
             preview_collapsed: BTreeSet::new(),
             preview_child_history: BTreeMap::new(),
             preview_layout: None,
+            preview_task: None,
+            preview_pending: None,
+            preview_loaded: None,
             preview_scroll: 0,
             preview_body_top: 0,
             session_list_left: 0,
             session_list_top: 0,
             session_preview_left: 0,
-            preview_path: None,
             preview_message_cursor: 0,
             preview_wrap_width: 40,
             preview_viewport_height: 10,

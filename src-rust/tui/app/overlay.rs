@@ -138,8 +138,8 @@ impl App {
                                 }
                             };
                             self.sessions.retain(|session| session.path != path);
+                            self.invalidate_active_session_load();
                             self.clamp_session_selection();
-                            self.preview_path = None;
                             self.refresh_preview();
                             self.notice(NoticeKind::Success, message);
                         }

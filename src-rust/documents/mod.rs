@@ -35,9 +35,10 @@ pub use providers::{
 };
 pub use session_tree::{load_preview, PreviewMessage, PreviewTreePosition, SessionPreview};
 pub use sessions::{
-    delete_session, format_session_time, list_sessions, session_display_title, session_matches,
-    DeleteMethod, SessionSummary,
+    delete_session, format_session_time, session_display_title, session_matches, DeleteMethod,
+    SessionSummary,
 };
+pub(crate) use sessions::{list_sessions_in, sessions_root};
 #[cfg(test)]
 use settings::check_updates_field;
 pub use settings::{set_check_updates, set_fetch_model_metadata, set_language, set_model_defaults};

@@ -172,10 +172,7 @@ fn render_page(frame: &mut Frame<'_>, app: &mut App, area: Rect, theme: Theme) {
     match app.page {
         Page::Home => render_home(frame, app, area, theme),
         Page::Profiles => render_profiles_page(frame, app, area, theme),
-        Page::Sessions => {
-            app.ensure_sessions_loaded();
-            render_sessions(frame, app, area, theme);
-        }
+        Page::Sessions => render_sessions(frame, app, area, theme),
         Page::Settings => render_settings(frame, app, area, theme),
     }
 }

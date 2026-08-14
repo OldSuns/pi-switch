@@ -1,32 +1,33 @@
 use super::*;
-use std::cmp::Reverse;
+use std::{cmp::Reverse, collections::HashMap};
 
 impl App {
     pub(in crate::tui) fn session_groups(&self) -> Vec<SessionGroup> {
-        let mut groups: Vec<SessionGroup> = Vec::new();
+        let mut groups = Vec::<SessionGroup>::new();
+        let mut group_indices = HashMap::<String, usize>::new();
         for (index, session) in self.sessions.iter().enumerate() {
             if !documents::session_matches(session, &self.session_filter, self.named_only) {
                 continue;
             }
-            let cwd = session.cwd.clone();
-            if let Some(group) = groups.iter_mut().find(|g| g.cwd == cwd) {
-                group.sessions.push(index);
+            if let Some(group_index) = group_indices.get(session.cwd.as_str()).copied() {
+                groups[group_index].sessions.push(index);
             } else {
+                let group_index = groups.len();
+                group_indices.insert(session.cwd.clone(), group_index);
                 groups.push(SessionGroup {
-                    cwd,
+                    cwd: session.cwd.clone(),
                     sessions: vec![index],
                 });
             }
         }
-        // Order groups by the most-recently-modified session within each group (descending).
         groups.sort_by_key(|group| {
-            let max_modified = group
-                .sessions
-                .iter()
-                .filter_map(|&i| self.sessions.get(i))
-                .map(|s| s.modified)
-                .max();
-            Reverse(max_modified)
+            Reverse(
+                group
+                    .sessions
+                    .first()
+                    .and_then(|index| self.sessions.get(*index))
+                    .map(|session| session.modified),
+            )
         });
         groups
     }
@@ -63,38 +64,126 @@ impl App {
         None
     }
 
+    pub(in crate::tui) fn sessions_loading(&self) -> bool {
+        self.session_task.is_some()
+    }
+
+    pub(in crate::tui) fn preview_loading_for(&self, path: &std::path::Path) -> bool {
+        let matches_current = |request: &PreviewRequest| {
+            request.path == path && request.user_only == self.user_only_preview
+        };
+        self.preview_task
+            .as_ref()
+            .is_some_and(|task| matches_current(&task.request))
+            || self.preview_pending.as_ref().is_some_and(matches_current)
+    }
+
     pub(in crate::tui) fn ensure_sessions_loaded(&mut self) {
-        if self.sessions_loaded {
+        if self.sessions_loaded || self.session_task.is_some() {
             return;
         }
         self.reload_sessions(None);
     }
 
     pub(in crate::tui) fn reload_sessions(&mut self, message: Option<&str>) {
-        let selected_path = self
-            .selected_session()
-            .map(|session| session.path.display().to_string());
-        match documents::list_sessions() {
-            Ok(sessions) => {
-                self.sessions = sessions;
+        if let Some(task) = self.session_task.as_mut() {
+            self.session_reload_pending = true;
+            if let Some(message) = message {
+                task.success_message = Some(message.to_owned());
+            }
+            return;
+        }
+        self.start_session_load(message.map(str::to_owned));
+    }
+
+    fn start_session_load(&mut self, success_message: Option<String>) {
+        self.session_reload_pending = false;
+        let root = match documents::sessions_root() {
+            Ok(root) => root,
+            Err(error) => {
                 self.sessions_loaded = true;
+                self.show_session_load_error(error.to_string());
+                return;
+            }
+        };
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = sender.send(documents::list_sessions_in(&root));
+        });
+        self.sessions_loaded = false;
+        self.session_task = Some(SessionListTask {
+            receiver,
+            success_message,
+        });
+    }
+
+    pub(in crate::tui) fn poll_session_tasks(&mut self) {
+        let list_result = self
+            .session_task
+            .as_ref()
+            .map(|task| task.receiver.try_recv());
+        match list_result {
+            Some(Ok(result)) => {
+                let task = self.session_task.take().expect("session task exists");
+                if self.session_reload_pending {
+                    self.start_session_load(task.success_message);
+                } else {
+                    self.finish_session_load(result, task.success_message);
+                }
+            }
+            Some(Err(mpsc::TryRecvError::Disconnected)) => {
+                let task = self.session_task.take().expect("session task exists");
+                if self.session_reload_pending {
+                    self.start_session_load(task.success_message);
+                } else {
+                    self.sessions_loaded = true;
+                    self.show_session_load_error(
+                        self.language
+                            .pick(
+                                "Session loading task ended unexpectedly",
+                                "会话加载任务意外结束",
+                            )
+                            .to_owned(),
+                    );
+                }
+            }
+            Some(Err(mpsc::TryRecvError::Empty)) | None => {}
+        }
+        self.poll_preview_task();
+    }
+
+    fn finish_session_load(
+        &mut self,
+        result: documents::Result<Vec<SessionSummary>>,
+        success_message: Option<String>,
+    ) {
+        self.sessions_loaded = true;
+        match result {
+            Ok(sessions) => {
+                let selected_path = self.selected_session().map(|session| session.path.clone());
+                self.sessions = sessions;
                 self.session_cursor = selected_path
                     .and_then(|path| {
-                        self.visible_sessions().into_iter().position(|index| {
-                            self.sessions[index].path.display().to_string() == path
-                        })
+                        self.visible_sessions()
+                            .into_iter()
+                            .position(|index| self.sessions[index].path == path)
                     })
                     .unwrap_or(0);
                 self.clamp_session_selection();
-                self.refresh_preview();
-                if let Some(message) = message {
+                self.reload_selected_preview();
+                if let Some(message) = success_message {
                     self.notice(NoticeKind::Success, message);
                 }
             }
-            Err(error) => {
-                self.sessions_loaded = true;
-                self.overlay = Some(Overlay::Error(error.to_string()));
-            }
+            Err(error) => self.show_session_load_error(error.to_string()),
+        }
+    }
+
+    fn show_session_load_error(&mut self, message: String) {
+        if self.page == Page::Sessions && self.overlay.is_none() {
+            self.overlay = Some(Overlay::Error(message));
+        } else {
+            self.notice(NoticeKind::Warning, message);
         }
     }
 
@@ -107,50 +196,146 @@ impl App {
         };
     }
 
-    pub(in crate::tui) fn refresh_preview(&mut self) {
-        let Some(session) = self.selected_session() else {
-            self.preview = None;
-            self.preview_visible.clear();
-            self.preview_collapsed.clear();
-            self.preview_child_history.clear();
-            self.preview_layout = None;
-            self.preview_path = None;
-            self.preview_scroll = 0;
-            self.preview_body_top = 0;
-            self.preview_message_cursor = 0;
+    pub(in crate::tui) fn invalidate_active_session_load(&mut self) {
+        if self.session_task.is_some() {
+            self.session_reload_pending = true;
+        }
+    }
+
+    fn reload_selected_preview(&mut self) {
+        let Some(request) = self.current_preview_request() else {
+            self.preview_pending = None;
+            self.clear_preview();
             if self.focus == Focus::SessionPreview {
                 self.focus = Focus::Content;
             }
             return;
         };
-        let path = session.path.display().to_string();
-        match documents::load_preview(&session.path, self.user_only_preview) {
-            Ok(preview) => {
-                self.preview = Some(preview);
-                self.preview_visible.clear();
-                self.preview_collapsed.clear();
-                self.preview_child_history.clear();
-                self.preview_layout = None;
-                self.preview_path = Some(path);
-                self.preview_scroll = 0;
-                self.preview_body_top = 0;
-                self.rebuild_preview_visibility();
-            }
-            Err(error) => {
-                self.preview = None;
-                self.preview_visible.clear();
-                self.preview_collapsed.clear();
-                self.preview_child_history.clear();
-                self.preview_layout = None;
-                self.preview_path = Some(path);
-                self.preview_body_top = 0;
-                self.preview_message_cursor = 0;
-                if self.focus == Focus::SessionPreview {
-                    self.focus = Focus::Content;
-                }
-                self.notice(NoticeKind::Warning, error.to_string());
-            }
+        self.clear_preview();
+        if self.preview_task.is_some() {
+            self.preview_pending = Some(request);
+        } else {
+            self.start_preview_task(request);
         }
+    }
+
+    pub(in crate::tui) fn refresh_preview(&mut self) {
+        let Some(request) = self.current_preview_request() else {
+            self.preview_pending = None;
+            self.clear_preview();
+            if self.focus == Focus::SessionPreview {
+                self.focus = Focus::Content;
+            }
+            return;
+        };
+        if self.preview_loaded.as_ref() == Some(&request) && self.preview.is_some() {
+            return;
+        }
+        if let Some(task) = self.preview_task.as_ref() {
+            if task.request == request {
+                self.preview_pending = None;
+            } else {
+                self.preview_pending = Some(request);
+            }
+            self.clear_preview();
+            return;
+        }
+        self.preview_pending = None;
+        self.clear_preview();
+        self.start_preview_task(request);
+    }
+
+    fn current_preview_request(&self) -> Option<PreviewRequest> {
+        self.selected_session().map(|session| PreviewRequest {
+            path: session.path.clone(),
+            user_only: self.user_only_preview,
+        })
+    }
+
+    fn start_preview_task(&mut self, request: PreviewRequest) {
+        let worker_request = request.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = documents::load_preview(&worker_request.path, worker_request.user_only);
+            let _ = sender.send(result);
+        });
+        self.preview_task = Some(PreviewTask { request, receiver });
+    }
+
+    fn poll_preview_task(&mut self) {
+        let result = self
+            .preview_task
+            .as_ref()
+            .map(|task| task.receiver.try_recv());
+        match result {
+            Some(Ok(result)) => {
+                let task = self.preview_task.take().expect("preview task exists");
+                if self.current_preview_request().as_ref() == Some(&task.request) {
+                    match result {
+                        Ok(preview) => self.apply_preview(task.request, preview),
+                        Err(error) => self.fail_preview(error.to_string()),
+                    }
+                }
+                self.start_pending_preview();
+            }
+            Some(Err(mpsc::TryRecvError::Disconnected)) => {
+                let task = self.preview_task.take().expect("preview task exists");
+                if self.current_preview_request().as_ref() == Some(&task.request) {
+                    self.fail_preview(
+                        self.language
+                            .pick(
+                                "Session preview task ended unexpectedly",
+                                "会话预览任务意外结束",
+                            )
+                            .to_owned(),
+                    );
+                }
+                self.start_pending_preview();
+            }
+            Some(Err(mpsc::TryRecvError::Empty)) | None => {}
+        }
+    }
+
+    fn start_pending_preview(&mut self) {
+        let Some(request) = self.preview_pending.take() else {
+            return;
+        };
+        if self.current_preview_request().as_ref() == Some(&request) {
+            self.clear_preview();
+            self.start_preview_task(request);
+        }
+    }
+
+    fn apply_preview(&mut self, request: PreviewRequest, preview: SessionPreview) {
+        self.preview = Some(preview);
+        self.preview_loaded = Some(request);
+        self.preview_visible.clear();
+        self.preview_collapsed.clear();
+        self.preview_child_history.clear();
+        self.preview_layout = None;
+        self.preview_scroll = 0;
+        self.preview_body_top = 0;
+        self.rebuild_preview_visibility();
+    }
+
+    fn fail_preview(&mut self, message: String) {
+        self.clear_preview();
+        if self.focus == Focus::SessionPreview {
+            self.focus = Focus::Content;
+        }
+        self.notice(NoticeKind::Warning, message);
+    }
+
+    fn clear_preview(&mut self) {
+        self.preview = None;
+        self.preview_loaded = None;
+        self.preview_visible.clear();
+        self.preview_collapsed.clear();
+        self.preview_child_history.clear();
+        self.preview_layout = None;
+        self.preview_scroll = 0;
+        self.preview_body_top = 0;
+        self.preview_message_cursor = 0;
     }
 
     pub(in crate::tui) fn in_sessions(&self) -> bool {

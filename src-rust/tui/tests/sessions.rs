@@ -1,3 +1,241 @@
+    fn wait_for_sessions(app: &mut App) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while app.session_task.is_some() || !app.sessions_loaded {
+            assert!(std::time::Instant::now() < deadline, "session load timed out");
+            app.tick();
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn wait_for_preview(app: &mut App) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while app.preview_task.is_some() || app.preview_pending.is_some() {
+            assert!(std::time::Instant::now() < deadline, "preview load timed out");
+            app.tick();
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn wait_for_sessions_and_preview(app: &mut App) {
+        wait_for_sessions(app);
+        wait_for_preview(app);
+    }
+
+    fn session_summary(
+        path: std::path::PathBuf,
+        id: &str,
+        cwd: &str,
+        modified: SystemTime,
+    ) -> crate::documents::SessionSummary {
+        crate::documents::SessionSummary {
+            path,
+            id: id.into(),
+            cwd: cwd.into(),
+            name: None,
+            created: modified,
+            modified,
+            message_count: 1,
+            first_message: id.into(),
+            search_text: format!("{id} {cwd}"),
+        }
+    }
+
+    #[test]
+    fn entering_sessions_starts_loading_without_blocking_for_results() {
+        let _env_lock = SESSION_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let (_root, mut app) = app();
+        let sessions_root = _root.join(".pi/agent/sessions/--proj--");
+        fs::create_dir_all(&sessions_root).unwrap();
+        let session_path = sessions_root.join("demo.jsonl");
+        fs::write(
+            &session_path,
+            r#"{"type":"session","version":3,"id":"demo-1","timestamp":"2026-01-02T00:00:00.000Z","cwd":"/tmp/demo"}
+{"type":"message","id":"u1","parentId":null,"timestamp":"2026-01-02T00:01:00.000Z","message":{"role":"user","content":"hello","timestamp":1}}
+"#,
+        )
+        .unwrap();
+        env::set_var(
+            "PI_CODING_AGENT_SESSION_DIR",
+            _root.join(".pi/agent/sessions"),
+        );
+
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let started = std::time::Instant::now();
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let elapsed = started.elapsed();
+
+        assert!(!app.sessions_loaded, "switch took {elapsed:?}");
+        assert!(app.session_task.is_some());
+        assert!(app.sessions.is_empty());
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(buffer_string(&terminal).contains("Loading"));
+
+        wait_for_sessions_and_preview(&mut app);
+        assert_eq!(app.sessions.len(), 1);
+
+        app.reload_sessions(Some("Reloaded sessions"));
+        fs::write(
+            &session_path,
+            r#"{"type":"session","version":3,"id":"demo-1","timestamp":"2026-01-02T00:00:00.000Z","cwd":"/tmp/demo"}
+{"type":"message","id":"u2","parentId":null,"timestamp":"2026-01-02T00:02:00.000Z","message":{"role":"user","content":"updated preview","timestamp":2}}
+"#,
+        )
+        .unwrap();
+        app.reload_sessions(Some("Reloaded sessions"));
+        assert!(!app.sessions_loaded);
+        assert!(app.session_task.is_some());
+        assert!(app.session_reload_pending);
+        assert_eq!(app.sessions.len(), 1);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(buffer_string(&terminal).contains("loading"));
+        wait_for_sessions_and_preview(&mut app);
+        assert!(app.preview.as_ref().is_some_and(|preview| {
+            preview
+                .messages
+                .iter()
+                .any(|message| message.text == "updated preview")
+        }));
+        env::remove_var("PI_CODING_AGENT_SESSION_DIR");
+    }
+
+    #[test]
+    fn rapid_selection_ignores_stale_preview_errors_and_loads_latest() {
+        let (_root, mut app) = app();
+        fs::create_dir_all(&*_root).unwrap();
+        let latest_path = _root.join("latest.jsonl");
+        fs::write(
+            &latest_path,
+            r#"{"type":"session","version":3,"id":"latest","timestamp":"2026-01-02T00:00:00.000Z","cwd":"/tmp/demo"}
+{"type":"message","id":"u2","parentId":null,"timestamp":"2026-01-02T00:01:00.000Z","message":{"role":"user","content":"latest preview","timestamp":2}}
+"#,
+        )
+        .unwrap();
+        app.page = Page::Sessions;
+        app.focus = Focus::Content;
+        app.sessions_loaded = true;
+        app.sessions = vec![
+            session_summary(
+                _root.join("missing.jsonl"),
+                "stale",
+                "/tmp/demo",
+                UNIX_EPOCH + Duration::from_secs(2),
+            ),
+            session_summary(
+                latest_path,
+                "latest",
+                "/tmp/demo",
+                UNIX_EPOCH + Duration::from_secs(1),
+            ),
+        ];
+
+        app.refresh_preview();
+        assert!(app.preview_task.is_some());
+        assert!(app.preview_pending.is_none());
+        app.move_session_selection(1);
+        assert!(app.preview_task.is_some());
+        assert!(app.preview_pending.is_some());
+        assert!(app.preview.is_none());
+
+        wait_for_preview(&mut app);
+
+        assert_eq!(app.selected_session().unwrap().id, "latest");
+        assert!(app.preview.as_ref().is_some_and(|preview| {
+            preview
+                .messages
+                .iter()
+                .any(|message| message.text == "latest preview")
+        }));
+        assert!(app.notice.is_none());
+    }
+
+    #[test]
+    fn failed_background_reload_preserves_sessions_and_respects_current_page() {
+        let _env_lock = SESSION_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let (_root, mut app) = app();
+        fs::create_dir_all(&*_root).unwrap();
+        let invalid_root = _root.join("not-a-directory");
+        fs::write(&invalid_root, "file").unwrap();
+        env::set_var("PI_CODING_AGENT_SESSION_DIR", &invalid_root);
+        app.sessions = vec![session_summary(
+            _root.join("existing.jsonl"),
+            "existing",
+            "/work/existing",
+            UNIX_EPOCH + Duration::from_secs(1),
+        )];
+        app.sessions_loaded = true;
+        app.page = Page::Sessions;
+
+        app.reload_sessions(None);
+        assert_eq!(app.sessions.len(), 1);
+        app.page = Page::Home;
+        wait_for_sessions(&mut app);
+        assert_eq!(app.sessions.len(), 1);
+        assert!(app.overlay.is_none());
+        assert!(app.notice.is_some());
+
+        app.notice = None;
+        app.page = Page::Sessions;
+        app.reload_sessions(None);
+        wait_for_sessions(&mut app);
+        assert_eq!(app.sessions.len(), 1);
+        assert!(matches!(app.overlay, Some(Overlay::Error(_))));
+        env::remove_var("PI_CODING_AGENT_SESSION_DIR");
+    }
+
+    #[test]
+    fn reload_to_empty_returns_preview_focus_to_session_list() {
+        let _env_lock = SESSION_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let (_root, mut app) = app();
+        let sessions_root = _root.join("sessions");
+        fs::create_dir_all(&sessions_root).unwrap();
+        env::set_var("PI_CODING_AGENT_SESSION_DIR", &sessions_root);
+        app.sessions = vec![session_summary(
+            _root.join("removed.jsonl"),
+            "removed",
+            "/work/removed",
+            UNIX_EPOCH + Duration::from_secs(1),
+        )];
+        app.sessions_loaded = true;
+        app.page = Page::Sessions;
+        app.focus = Focus::SessionPreview;
+
+        app.reload_sessions(None);
+        wait_for_sessions_and_preview(&mut app);
+
+        assert!(app.sessions.is_empty());
+        assert!(app.focus == Focus::Content);
+        env::remove_var("PI_CODING_AGENT_SESSION_DIR");
+    }
+
+    #[test]
+    fn many_session_groups_keep_recent_order_and_filtered_selection() {
+        let (_root, mut app) = app();
+        app.sessions = (0..1_000)
+            .rev()
+            .map(|index| {
+                let id = format!("session-{index:04}");
+                session_summary(
+                    _root.join(format!("{id}.jsonl")),
+                    &id,
+                    &format!("/work/{index:04}"),
+                    UNIX_EPOCH + Duration::from_secs(index),
+                )
+            })
+            .collect();
+
+        let groups = app.session_groups();
+        assert_eq!(groups.len(), 1_000);
+        assert_eq!(groups[0].cwd, "/work/0999");
+        assert_eq!(app.selected_session().unwrap().id, "session-0999");
+
+        app.session_filter = "session-0042".into();
+        let groups = app.session_groups();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].cwd, "/work/0042");
+        assert_eq!(app.selected_session().unwrap().id, "session-0042");
+    }
+
     #[test]
     fn sessions_page_lists_filters_and_confirms_delete() {
         let _env_lock = SESSION_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
@@ -23,6 +261,7 @@
         app.page = Page::Sessions;
         app.focus = Focus::Content;
         app.reload_sessions(None);
+        wait_for_sessions_and_preview(&mut app);
         assert_eq!(app.sessions.len(), 1);
         assert_eq!(app.sessions[0].name.as_deref(), Some("Demo Session"));
         assert!(app
@@ -31,6 +270,7 @@
             .is_some_and(|preview| preview.messages.iter().any(|m| m.role == "user")));
 
         app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        wait_for_preview(&mut app);
         assert!(app.user_only_preview);
         assert!(app
             .preview
@@ -74,11 +314,19 @@
         assert!(content.contains("Demo Session") || content.contains("demo"));
         assert!(content.contains("Preview") || content.contains("预览"));
 
+        app.reload_sessions(None);
+        assert!(app.session_task.is_some());
         app.on_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         assert!(matches!(
             app.overlay,
             Some(Overlay::ConfirmDeleteSession { .. })
         ));
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.session_reload_pending);
+        assert!(app.sessions.is_empty());
+        wait_for_sessions_and_preview(&mut app);
+        assert!(app.sessions.is_empty());
+        assert!(!session_path.exists());
 
         env::remove_var("PI_CODING_AGENT_SESSION_DIR");
     }
@@ -107,6 +355,7 @@
         app.page = Page::Sessions;
         app.focus = Focus::Content;
         app.reload_sessions(None);
+        wait_for_sessions_and_preview(&mut app);
         assert_eq!(app.preview_message_count(), 3);
         app.on_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
         assert_eq!(app.session_view_mode, crate::tui::app::SessionViewMode::Full);
@@ -246,7 +495,6 @@
             crate::documents::PreviewMessage::new("a1", Some("u1".into()), "assistant", "short"),
         ]));
         app.preview_visible = vec![0, 1];
-        app.preview_path = Some(_root.join("demo.jsonl").display().to_string());
         app.preview_message_cursor = 0;
         app.session_view_mode = crate::tui::app::SessionViewMode::Full;
 
@@ -308,6 +556,7 @@
         app.page = Page::Sessions;
         app.focus = Focus::Content;
         app.reload_sessions(None);
+        wait_for_sessions_and_preview(&mut app);
         assert_eq!(app.preview_message_count(), 6);
         assert_eq!(app.preview.as_ref().unwrap().branch_points, 1);
         app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
@@ -419,7 +668,6 @@
         app.preview = Some(preview);
         app.preview_visible = vec![0, 1];
         app.preview_message_cursor = 1;
-        app.preview_path = Some(_root.join("deep.jsonl").display().to_string());
 
         let mut terminal = Terminal::new(TestBackend::new(64, 20)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -472,6 +720,7 @@
         app.page = Page::Sessions;
         app.focus = Focus::Content;
         app.reload_sessions(None);
+        wait_for_sessions_and_preview(&mut app);
 
         assert_eq!(app.sessions.len(), 3);
 
@@ -510,6 +759,19 @@
         app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(app.session_cursor, 1);
         assert_eq!(app.selected_session().unwrap().id, "alpha-1");
+        wait_for_preview(&mut app);
+        assert!(app.preview.as_ref().is_some_and(|preview| {
+            preview
+                .messages
+                .iter()
+                .any(|message| message.text == "alpha one")
+        }));
+
+        app.reload_sessions(None);
+        app.move_session_selection(1);
+        assert_eq!(app.selected_session().unwrap().id, "alpha-2");
+        wait_for_sessions_and_preview(&mut app);
+        assert_eq!(app.selected_session().unwrap().id, "alpha-2");
 
         env::remove_var("PI_CODING_AGENT_SESSION_DIR");
     }

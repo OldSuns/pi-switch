@@ -57,10 +57,6 @@ pub(super) fn sessions_root_from(
         .unwrap_or_else(|| super::pi_agent_dir_from(home, agent_dir).join("sessions"))
 }
 
-pub fn list_sessions() -> Result<Vec<SessionSummary>> {
-    list_sessions_in(&sessions_root()?)
-}
-
 pub fn list_sessions_in(root: &Path) -> Result<Vec<SessionSummary>> {
     if !root.exists() {
         return Ok(Vec::new());

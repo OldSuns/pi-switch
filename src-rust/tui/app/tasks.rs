@@ -20,6 +20,7 @@ impl App {
 
     pub(in crate::tui) fn tick(&mut self) {
         self.tick_count = self.tick_count.wrapping_add(1);
+        self.poll_session_tasks();
         if let Some(notice) = self.notice.as_mut() {
             notice.ticks = notice.ticks.saturating_sub(1);
             if notice.ticks == 0 {
