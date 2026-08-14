@@ -66,7 +66,7 @@ pub(super) fn render_overlay(
             let rect = modal_rect(area, 72, 10);
             let body = Paragraph::new(vec![
                 Line::from(Span::styled(
-                    language.pick("Provider library rebuilt", "提供商库已重建"),
+                    language.pick("Configuration warning", "配置警告"),
                     Style::default()
                         .fg(theme.warning)
                         .add_modifier(Modifier::BOLD),

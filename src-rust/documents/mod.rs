@@ -84,8 +84,9 @@ pub enum AppError {
 #[derive(Clone, Debug)]
 pub struct Paths {
     pub providers: PathBuf,
-    pub models: PathBuf,
-    pub settings: PathBuf,
+    pub pi_models: PathBuf,
+    pub pi_settings: PathBuf,
+    pub app_settings: PathBuf,
     pub opencode: PathBuf,
     pub backups: PathBuf,
     pub update: PathBuf,
@@ -96,14 +97,21 @@ impl Paths {
     pub fn discover() -> Result<Self> {
         let home = dirs::home_dir()
             .ok_or_else(|| AppError::Invalid("home directory is unavailable".into()))?;
-        Ok(Self::from_home(&home))
+        let agent_dir = pi_agent_dir(&home);
+        Ok(Self::from_roots(&home, &agent_dir))
     }
 
+    #[cfg(test)]
     pub(crate) fn from_home(home: &Path) -> Self {
+        Self::from_roots(home, &home.join(".pi/agent"))
+    }
+
+    pub(crate) fn from_roots(home: &Path, agent_dir: &Path) -> Self {
         Self {
             providers: home.join(".pi-switch/providers.json"),
-            models: home.join(".pi/agent/models.json"),
-            settings: home.join(".pi/agent/settings.json"),
+            pi_models: agent_dir.join("models.json"),
+            pi_settings: agent_dir.join("settings.json"),
+            app_settings: home.join(".pi-switch/settings.json"),
             opencode: home.join(".config/opencode/opencode.json"),
             backups: home.join(".pi-switch/backups"),
             update: home.join(".pi-switch/update.json"),
@@ -112,11 +120,23 @@ impl Paths {
     }
 }
 
+pub(crate) fn pi_agent_dir(home: &Path) -> PathBuf {
+    pi_agent_dir_from(home, std::env::var_os("PI_CODING_AGENT_DIR"))
+}
+
+pub(crate) fn pi_agent_dir_from(home: &Path, configured: Option<std::ffi::OsString>) -> PathBuf {
+    configured
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".pi/agent"))
+}
+
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     pub providers_path: String,
-    pub models_path: String,
-    pub settings_path: String,
+    pub pi_models_path: String,
+    pub pi_settings_path: String,
+    pub app_settings_path: String,
     pub providers: Vec<ProviderView>,
     pub default_provider: Option<String>,
     pub default_model: Option<String>,

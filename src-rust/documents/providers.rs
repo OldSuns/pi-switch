@@ -43,7 +43,7 @@ pub fn save_provider(
         enabled.remove(old);
     }
 
-    let mut settings = read_document(&paths.settings, json!({}))?;
+    let mut settings = read_document(&paths.pi_settings, json!({}))?;
     let mut settings_changed = false;
     if let Some(old) = previous_id {
         if was_in_pi && !draft.in_pi {
@@ -51,7 +51,7 @@ pub fn save_provider(
         } else if old != draft.id
             && string_field(&settings, "defaultProvider")?.as_deref() == Some(old)
         {
-            root_object_mut(&mut settings, &paths.settings)?
+            root_object_mut(&mut settings, &paths.pi_settings)?
                 .insert("defaultProvider".into(), Value::String(draft.id.clone()));
             settings_changed = true;
         }
@@ -77,7 +77,7 @@ pub fn set_provider_in_pi(paths: &Paths, id: &str, in_pi: bool) -> Result<()> {
     } else {
         enabled.remove(id);
     }
-    let mut settings = read_document(&paths.settings, json!({}))?;
+    let mut settings = read_document(&paths.pi_settings, json!({}))?;
     let settings_changed = !in_pi && clear_default_for_provider(&mut settings, paths, id)?;
     write_provider_changes(
         paths,
@@ -96,7 +96,7 @@ pub fn remove_provider(paths: &Paths, id: &str) -> Result<()> {
         )));
     }
     providers_object_mut(&mut models)?.remove(id);
-    let mut settings = read_document(&paths.settings, json!({}))?;
+    let mut settings = read_document(&paths.pi_settings, json!({}))?;
     let settings_changed = clear_default_for_provider(&mut settings, paths, id)?;
     write_provider_changes(
         paths,
@@ -229,12 +229,12 @@ pub fn save_model(
         models.push(Value::Object(model));
     }
     sync_library_provider_to_pi(&library, &mut pi_models, provider_id)?;
-    let mut settings = read_document(&paths.settings, json!({}))?;
+    let mut settings = read_document(&paths.pi_settings, json!({}))?;
     let settings_changed = if let Some(old) = previous_id.filter(|old| *old != draft.id) {
         if string_field(&settings, "defaultProvider")?.as_deref() == Some(provider_id)
             && string_field(&settings, "defaultModel")?.as_deref() == Some(old)
         {
-            root_object_mut(&mut settings, &paths.settings)?
+            root_object_mut(&mut settings, &paths.pi_settings)?
                 .insert("defaultModel".into(), Value::String(draft.id.clone()));
             true
         } else {
@@ -265,11 +265,11 @@ pub fn remove_model(paths: &Paths, provider_id: &str, model_id: &str) -> Result<
         })?;
     models.remove(index);
     sync_library_provider_to_pi(&library, &mut pi_models, provider_id)?;
-    let mut settings = read_document(&paths.settings, json!({}))?;
+    let mut settings = read_document(&paths.pi_settings, json!({}))?;
     let selected = string_field(&settings, "defaultProvider")?.as_deref() == Some(provider_id)
         && string_field(&settings, "defaultModel")?.as_deref() == Some(model_id);
     if selected {
-        let object = root_object_mut(&mut settings, &paths.settings)?;
+        let object = root_object_mut(&mut settings, &paths.pi_settings)?;
         object.remove("defaultProvider");
         object.remove("defaultModel");
     }
@@ -284,7 +284,7 @@ pub fn remove_model(paths: &Paths, provider_id: &str, model_id: &str) -> Result<
 
 pub fn set_default(paths: &Paths, provider_id: &str, model_id: &str) -> Result<()> {
     let lock = WriteLock::acquire(paths)?;
-    let models = read_document(&paths.models, json!({ "providers": {} }))?;
+    let models = read_document(&paths.pi_models, json!({ "providers": {} }))?;
     let provider = providers_object(&models)?
         .get(provider_id)
         .ok_or_else(|| AppError::Invalid(format!("provider '{provider_id}' is not added to Pi")))?;
@@ -294,9 +294,9 @@ pub fn set_default(paths: &Paths, provider_id: &str, model_id: &str) -> Result<(
             "model '{model_id}' does not belong to provider '{provider_id}'"
         )));
     }
-    let mut settings = read_document(&paths.settings, json!({}))?;
-    let object = root_object_mut(&mut settings, &paths.settings)?;
+    let mut settings = read_document(&paths.pi_settings, json!({}))?;
+    let object = root_object_mut(&mut settings, &paths.pi_settings)?;
     object.insert("defaultProvider".into(), Value::String(provider_id.into()));
     object.insert("defaultModel".into(), Value::String(model_id.into()));
-    write_document(paths, &lock, &paths.settings, &settings).map(|_| ())
+    write_document(paths, &lock, &paths.pi_settings, &settings).map(|_| ())
 }

@@ -15,8 +15,9 @@
             assert!(menu.contains("Sessions"));
             assert!(menu.contains("Settings"));
             if width == 120 {
-                assert!(menu.contains("Models file"));
-                assert!(menu.contains("Settings file"));
+                assert!(menu.contains("Pi models"));
+                assert!(menu.contains("Pi settings"));
+                assert!(menu.contains("pi-switch settings"));
             }
 
             app.page = Page::Profiles;
@@ -35,6 +36,11 @@
             assert!(settings.contains("Configuration"));
             assert!(settings.contains("Actions"));
             assert!(settings.contains("Enter/Space run"));
+            if width == 120 {
+                assert!(settings.contains("Pi models"));
+                assert!(settings.contains("Pi settings"));
+                assert!(settings.contains("pi-switch settings"));
+            }
             if height >= 24 {
                 assert!(settings.contains("Fetch model metadata from models.dev"));
                 assert!(!settings.contains("Default model parameters"));

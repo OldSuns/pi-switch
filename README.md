@@ -28,7 +28,7 @@ npm install -g @oldsuns/pi-switch
 pi-switch
 ```
 
-首次运行会自动把现有的 `~/.pi/agent/models.json` 全量导入本地库，**不修改** Pi 配置；随后即可在 Profiles 中勾选要同步到 Pi 的 provider / model。
+首次运行会自动把现有 Pi agent 目录中的 `models.json` 全量导入本地库，**不修改** Pi 配置；随后即可在 Profiles 中勾选要同步到 Pi 的 provider / model。Pi agent 目录使用非空 `PI_CODING_AGENT_DIR`，未设置时为 `~/.pi/agent`。
 
 CLI：
 
@@ -101,7 +101,7 @@ Model 表单：`id`、`name`、API override、reasoning、文本/图像输入、
 
 预览按 Pi 官方 session 的 `id` / `parentId` 构建树。默认 Tree 模式参考 Pi 原生 `/tree`：每个节点只占一行，显示 `User:` / `Pi:` 和单行摘要；只有真实分叉才增加缩进并使用 `├─` / `└─`，串行消息保持同一 lane。深层分支不会为所有消息预留固定宽度；仅在当前节点过深时水平平移树正文，并固定保留左侧光标 gutter。按 `v` 可切换到完整阅读模式，显示完整 Markdown 正文；每条消息按自身树深度分配前缀，树栏最多约占三分之一宽度。`Ctrl+Left/Right` 在分支段层级间移动，`Alt+Left/Right` 切换相邻分支，`Tab` 仅折叠真实分叉点。可见消息挂到最近可见祖先，`session_info`、tool 等 bookkeeping 节点不会伪装成对话消息。黄标题 = 手动命名；白标题 = 使用第一条用户消息。
 
-Session 根目录优先级：`PI_CODING_AGENT_SESSION_DIR` → `PI_CODING_AGENT_DIR/sessions` → `~/.pi/agent/sessions/`。
+Session 根目录优先级：非空 `PI_CODING_AGENT_SESSION_DIR` → `<Pi agent dir>/sessions`。
 
 剪贴板：Windows `clip`、macOS `pbcopy`、Linux `wl-copy` / `xclip` / `xsel`。
 
@@ -116,14 +116,14 @@ Session 根目录优先级：`PI_CODING_AGENT_SESSION_DIR` → `PI_CODING_AGENT_
 | 默认模型参数 | 仅关闭实时元数据时显示，用于导入缺省 |
 | 重载配置 | 从磁盘重读 |
 | 验证配置 | doctor |
-| 浏览备份 | 恢复 version 2 备份 |
+| 浏览备份 | 恢复 version 3 或兼容的 version 2 备份 |
 | 从 OpenCode 导入 | 只读导入 `opencode.json` |
 
 `Enter` / `Space` 执行当前项。
 
 ## Provider 库与 Pi 同步
 
-- `~/.pi-switch/providers.json` 是完整本地库；`~/.pi/agent/models.json` 只含当前已同步到 Pi 的子集。
+- `~/.pi-switch/providers.json` 是完整本地库；`<Pi agent dir>/models.json` 只含当前已同步到 Pi 的子集。
 - 首次运行把现有 `models.json` 全量导入本地库，不修改 Pi 配置。
 - 已同步 provider 的编辑与 model 变更会同步两份文件；不同步项只更新本地库。
 - 在线导入 model **不会**隐式同步到 Pi。
@@ -149,29 +149,39 @@ Session 根目录优先级：`PI_CODING_AGENT_SESSION_DIR` → `PI_CODING_AGENT_
 
 ## 配置路径与 Settings 字段
 
+`<Pi agent dir>` 使用非空 `PI_CODING_AGENT_DIR`，未设置时为 `~/.pi/agent`。`PI_CODING_AGENT_SESSION_DIR` 只覆盖 Session 根目录，优先级仍高于 `<Pi agent dir>/sessions`。
+
 | 路径 | 角色 |
 |------|------|
 | `~/.pi-switch/providers.json` | 完整本地 provider 库（`version: 1`） |
-| `~/.pi/agent/models.json` | 已同步到 Pi 的 provider 子集 |
-| `~/.pi/agent/settings.json` | 默认模型 + pi-switch 设置 |
+| `~/.pi-switch/settings.json` | pi-switch 私有设置；无自定义值时可不存在 |
+| `<Pi agent dir>/models.json` | 已同步到 Pi 的 provider 子集 |
+| `<Pi agent dir>/settings.json` | Pi 设置，包括默认 provider / model |
 | `~/.config/opencode/opencode.json` | OpenCode 只读导入源 |
-| `~/.pi-switch/backups/` | version 2 备份（providers + models + settings），最多 10 份 |
+| `~/.pi-switch/backups/` | version 3 备份（providers + models + Pi settings + pi-switch settings），最多 10 份 |
 | `~/.pi-switch/write.lock` | 写入互斥锁 |
 | `~/.pi-switch/update.json` | npm 新版本检查缓存（`lastCheck` + `latest` + `dismissed`，每 24h 最多联网一次） |
 
-`settings.json` 中与 pi-switch 相关的字段：
+Pi `settings.json` 中由 pi-switch 管理的字段：
 
 | 字段 | 含义 |
 |------|------|
 | `defaultProvider` + `defaultModel` | 默认模型（成对存在或同时缺省） |
-| `piSwitch.language` | `en` \| `zh-CN` |
-| `piSwitch.fetchModelMetadata` | 是否拉 models.dev（默认 `true`） |
-| `piSwitch.checkForUpdates` | 是否启动时检查 npm 新版本（默认 `true`） |
-| `piSwitch.modelDefaults` | 关闭实时元数据时的导入缺省（context / maxTokens / cost） |
+
+`~/.pi-switch/settings.json` 的字段：
+
+| 字段 | 含义 |
+|------|------|
+| `language` | `en` \| `zh-CN` |
+| `fetchModelMetadata` | 是否拉 models.dev（默认 `true`） |
+| `checkForUpdates` | 是否启动时检查 npm 新版本（默认 `true`） |
+| `modelDefaults` | 关闭实时元数据时的导入缺省（context / maxTokens / cost） |
+
+升级时若 Pi `settings.json` 仍包含旧 `piSwitch` 对象，启动或重载会自动迁移到 `~/.pi-switch/settings.json`，本地已有字段优先，旧对象只补齐缺失字段；迁移成功后从 Pi settings 删除旧对象。两份文件中的未知字段都会保留。
 
 ## 数据安全
 
-- 写前备份 `providers.json`、`models.json`、`settings.json` 到 `~/.pi-switch/backups/`（version 2）；最多保留最近 10 份。旧版双文件备份不支持恢复。
+- 写前备份 `providers.json`、Pi `models.json` / `settings.json` 和 pi-switch `settings.json` 到 `~/.pi-switch/backups/`（version 3）；最多保留最近 10 份。现有 version 2 备份仍可恢复并自动拆分设置，version 1 备份不支持恢复。
 - 写入使用 `write.lock` 互斥；异常残留锁时 `doctor` 会提示。
 - `providers.json` 损坏时归档为 `corrupt-providers-*.json`，再从当前 Pi 配置重建，启动时显示归档路径。
 - 原子写入，只 patch 目标字段，保留未知 JSON；格式错误时停止写入并显示错误。

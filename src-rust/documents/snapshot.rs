@@ -1,9 +1,12 @@
-use super::settings::check_updates_field;
+use super::settings::{
+    check_updates_field, fetch_model_metadata_field, language_field, load_settings,
+    model_defaults_field,
+};
 use super::*;
 
 pub fn load_snapshot(paths: &Paths) -> Result<Snapshot> {
-    let (library, models, warning) = load_provider_documents(paths)?;
-    let settings = read_document(&paths.settings, json!({}))?;
+    let settings = load_settings(paths)?;
+    let (library, models, provider_warning) = load_provider_documents(paths)?;
     let enabled = providers_object(&models)?;
     let mut views = providers_object(&library)?
         .iter()
@@ -17,26 +20,27 @@ pub fn load_snapshot(paths: &Paths) -> Result<Snapshot> {
 
     Ok(Snapshot {
         providers_path: paths.providers.display().to_string(),
-        models_path: paths.models.display().to_string(),
-        settings_path: paths.settings.display().to_string(),
+        pi_models_path: paths.pi_models.display().to_string(),
+        pi_settings_path: paths.pi_settings.display().to_string(),
+        app_settings_path: paths.app_settings.display().to_string(),
         providers: views,
-        default_provider: string_field(&settings, "defaultProvider")?,
-        default_model: string_field(&settings, "defaultModel")?,
-        language: language_field(&settings)?,
-        fetch_model_metadata: fetch_model_metadata_field(&settings)?,
-        check_updates: check_updates_field(&settings)?,
-        model_defaults: model_defaults_field(&settings)?,
-        warning,
+        default_provider: string_field(&settings.pi, "defaultProvider")?,
+        default_model: string_field(&settings.pi, "defaultModel")?,
+        language: language_field(&settings.app)?,
+        fetch_model_metadata: fetch_model_metadata_field(&settings.app)?,
+        check_updates: check_updates_field(&settings.app)?,
+        model_defaults: model_defaults_field(&settings.app)?,
+        warning: merge_warnings(provider_warning, settings.warning),
     })
 }
 
 fn load_provider_documents(paths: &Paths) -> Result<(Value, Value, Option<String>)> {
-    let models = read_document(&paths.models, json!({ "providers": {} }))?;
+    let models = read_document(&paths.pi_models, json!({ "providers": {} }))?;
     validate_provider_document(&models)?;
     if !paths.providers.exists() {
         let lock = WriteLock::acquire(paths)?;
         if !paths.providers.exists() {
-            let models = read_document(&paths.models, json!({ "providers": {} }))?;
+            let models = read_document(&paths.pi_models, json!({ "providers": {} }))?;
             validate_provider_document(&models)?;
             let library = local_library_from_models(&models);
             write_initial_document(&paths.providers, &library)?;
@@ -61,7 +65,7 @@ fn load_provider_documents(paths: &Paths) -> Result<(Value, Value, Option<String
                 drop(lock);
                 return load_provider_documents(paths);
             }
-            let models = read_document(&paths.models, json!({ "providers": {} }))?;
+            let models = read_document(&paths.pi_models, json!({ "providers": {} }))?;
             validate_provider_document(&models)?;
             let archived = archive_corrupt_provider_store(paths)?;
             let rebuilt = local_library_from_models(&models);
@@ -89,7 +93,7 @@ fn load_provider_documents(paths: &Paths) -> Result<(Value, Value, Option<String
     }
     if changed {
         let lock = WriteLock::acquire(paths)?;
-        let models = read_document(&paths.models, json!({ "providers": {} }))?;
+        let models = read_document(&paths.pi_models, json!({ "providers": {} }))?;
         let mut library = read_document(&paths.providers, json!({}))?;
         validate_provider_document(&models)?;
         validate_local_library(&library)?;
@@ -126,10 +130,7 @@ pub(super) fn validate_provider_document(value: &Value) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn validate_settings_document(settings: &Value, models: &Value) -> Result<()> {
-    language_field(settings)?;
-    fetch_model_metadata_field(settings)?;
-    model_defaults_field(settings)?;
+pub(super) fn validate_pi_settings(settings: &Value, models: &Value) -> Result<()> {
     let provider = string_field(settings, "defaultProvider")?;
     let model = string_field(settings, "defaultModel")?;
     match (provider, model) {
@@ -160,7 +161,7 @@ pub(super) fn lock_provider_documents(paths: &Paths) -> Result<(WriteLock, Value
     let _ = load_provider_documents(paths)?;
     let lock = WriteLock::acquire(paths)?;
     let mut library = read_document(&paths.providers, json!({}))?;
-    let models = read_document(&paths.models, json!({ "providers": {} }))?;
+    let models = read_document(&paths.pi_models, json!({ "providers": {} }))?;
     validate_local_library(&library)?;
     validate_provider_document(&models)?;
     let local = providers_object_mut(&mut library)?;
@@ -180,7 +181,7 @@ pub(super) fn clear_default_for_provider(
     if string_field(settings, "defaultProvider")?.as_deref() != Some(id) {
         return Ok(false);
     }
-    let object = root_object_mut(settings, &paths.settings)?;
+    let object = root_object_mut(settings, &paths.pi_settings)?;
     object.remove("defaultProvider");
     object.remove("defaultModel");
     Ok(true)
@@ -194,11 +195,11 @@ pub(super) fn write_provider_changes(
     library: &Value,
 ) -> Result<()> {
     let models_changed = models
-        .map(|value| write_document(paths, lock, &paths.models, value))
+        .map(|value| write_document(paths, lock, &paths.pi_models, value))
         .transpose()?
         .unwrap_or(false);
     let settings_changed = settings
-        .map(|value| write_document(paths, lock, &paths.settings, value))
+        .map(|value| write_document(paths, lock, &paths.pi_settings, value))
         .transpose()
         .map_err(|error| {
             if models_changed {
@@ -223,87 +224,10 @@ pub(super) fn write_provider_changes(
         })
 }
 
-fn language_field(settings: &Value) -> Result<String> {
-    let Some(value) = settings.get("piSwitch") else {
-        return Ok("en".into());
-    };
-    let object = value
-        .as_object()
-        .ok_or_else(|| AppError::Invalid("settings piSwitch must be an object".into()))?;
-    match object.get("language") {
-        None => Ok("en".into()),
-        Some(Value::String(value)) if matches!(value.as_str(), "en" | "zh-CN") => Ok(value.clone()),
-        Some(_) => Err(AppError::Invalid(
-            "settings piSwitch.language must be 'en' or 'zh-CN'".into(),
-        )),
-    }
-}
-
-pub(super) fn pi_switch_object(settings: &Value) -> Result<Option<&Map<String, Value>>> {
-    settings
-        .get("piSwitch")
-        .map(|value| {
-            value
-                .as_object()
-                .ok_or_else(|| AppError::Invalid("settings piSwitch must be an object".into()))
-        })
-        .transpose()
-}
-
-fn fetch_model_metadata_field(settings: &Value) -> Result<bool> {
-    match pi_switch_object(settings)?.and_then(|value| value.get("fetchModelMetadata")) {
-        None => Ok(true),
-        Some(Value::Bool(value)) => Ok(*value),
-        Some(_) => Err(AppError::Invalid(
-            "settings piSwitch.fetchModelMetadata must be a boolean".into(),
-        )),
-    }
-}
-
-fn model_defaults_field(settings: &Value) -> Result<ModelDefaults> {
-    let Some(value) = pi_switch_object(settings)?.and_then(|value| value.get("modelDefaults"))
-    else {
-        return Ok(ModelDefaults::default());
-    };
-    let object = value.as_object().ok_or_else(|| {
-        AppError::Invalid("settings piSwitch.modelDefaults must be an object".into())
-    })?;
-    Ok(ModelDefaults {
-        context_window: optional_positive_u64(object, "contextWindow")?,
-        max_tokens: optional_positive_u64(object, "maxTokens")?,
-        input_cost: optional_nonnegative_f64(object, "inputCost")?,
-        output_cost: optional_nonnegative_f64(object, "outputCost")?,
-        cache_read_cost: optional_nonnegative_f64(object, "cacheReadCost")?,
-        cache_write_cost: optional_nonnegative_f64(object, "cacheWriteCost")?,
-    })
-}
-
-fn optional_positive_u64(object: &Map<String, Value>, field: &str) -> Result<Option<u64>> {
-    match object.get(field) {
-        None => Ok(None),
-        Some(value) => value
-            .as_u64()
-            .filter(|value| *value > 0)
-            .map(Some)
-            .ok_or_else(|| {
-                AppError::Invalid(format!(
-                    "settings piSwitch.modelDefaults.{field} must be a positive integer"
-                ))
-            }),
-    }
-}
-
-fn optional_nonnegative_f64(object: &Map<String, Value>, field: &str) -> Result<Option<f64>> {
-    match object.get(field) {
-        None => Ok(None),
-        Some(value) => value
-            .as_f64()
-            .filter(|value| *value >= 0.0)
-            .map(Some)
-            .ok_or_else(|| {
-                AppError::Invalid(format!(
-                    "settings piSwitch.modelDefaults.{field} must be a non-negative number"
-                ))
-            }),
+fn merge_warnings(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(format!("{first}\n\n{second}")),
+        (Some(warning), None) | (None, Some(warning)) => Some(warning),
+        (None, None) => None,
     }
 }

@@ -14,7 +14,8 @@ use serde_json::{json, Map, Value};
 use std::fs::File;
 
 use super::{
-    snapshot::{validate_local_library, validate_provider_document, validate_settings_document},
+    settings::{split_legacy_settings, validate_app_settings},
+    snapshot::{validate_local_library, validate_pi_settings, validate_provider_document},
     AppError, Backup, Paths, Result,
 };
 
@@ -33,21 +34,8 @@ pub fn list_backups(paths: &Paths) -> Result<Vec<Backup>> {
                 return None;
             }
             let value: Value = serde_json::from_slice(&fs::read(entry.path()).ok()?).ok()?;
-            let object = value.as_object()?;
-            let restorable = object.get("version").and_then(Value::as_u64) == Some(2)
-                && object.get("providers").is_some_and(Value::is_object)
-                && object.get("models").is_some_and(Value::is_object)
-                && object.get("settings").is_some_and(Value::is_object);
-            if !restorable {
-                return None;
-            }
-            let providers = object.get("providers")?;
-            let models = object.get("models")?;
-            let settings = object.get("settings")?;
-            (validate_local_library(providers).is_ok()
-                && validate_provider_document(models).is_ok()
-                && validate_settings_document(settings, models).is_ok())
-            .then(|| Backup {
+            backup_documents(&value, &entry.path()).ok()?;
+            Some(Backup {
                 path: entry.path().display().to_string(),
                 name,
             })
@@ -65,53 +53,97 @@ pub fn restore_backup(paths: &Paths, backup: &Backup) -> Result<()> {
         ));
     }
     let snapshot = read_document(&backup_path, json!({}))?;
+    let documents = backup_documents(&snapshot, &backup_path)?;
+    let lock = WriteLock::acquire(paths)?;
+    let models_changed = write_document(paths, &lock, &paths.pi_models, &documents.models)?;
+    let pi_settings_changed =
+        write_document(paths, &lock, &paths.pi_settings, &documents.pi_settings)
+            .map_err(|error| partial_restore_error(models_changed, "Pi settings", error))?;
+    let app_settings_changed =
+        write_document(paths, &lock, &paths.app_settings, &documents.app_settings).map_err(
+            |error| {
+                partial_restore_error(
+                    models_changed || pi_settings_changed,
+                    "pi-switch settings",
+                    error,
+                )
+            },
+        )?;
+    write_document(paths, &lock, &paths.providers, &documents.providers)
+        .map(|_| ())
+        .map_err(|error| {
+            partial_restore_error(
+                models_changed || pi_settings_changed || app_settings_changed,
+                "providers.json",
+                error,
+            )
+        })
+}
+
+struct BackupDocuments {
+    providers: Value,
+    models: Value,
+    pi_settings: Value,
+    app_settings: Value,
+}
+
+fn backup_documents(snapshot: &Value, path: &Path) -> Result<BackupDocuments> {
     let object = snapshot.as_object().ok_or_else(|| {
-        AppError::Invalid(format!(
-            "{} must contain a backup object",
-            backup_path.display()
-        ))
+        AppError::Invalid(format!("{} must contain a backup object", path.display()))
     })?;
-    if object.get("version").and_then(Value::as_u64) != Some(2) {
+    let version = object.get("version").and_then(Value::as_u64);
+    if !matches!(version, Some(2 | 3)) {
         return Err(AppError::Invalid(
             "legacy backups without the local provider library are not supported".into(),
         ));
     }
-    let providers = object.get("providers").cloned().ok_or_else(|| {
-        AppError::Invalid(format!("{} is missing providers", backup_path.display()))
-    })?;
-    let models = object
-        .get("models")
-        .cloned()
-        .ok_or_else(|| AppError::Invalid(format!("{} is missing models", backup_path.display())))?;
-    let settings = object.get("settings").cloned().ok_or_else(|| {
-        AppError::Invalid(format!("{} is missing settings", backup_path.display()))
-    })?;
+    let providers = required_backup_field(object, path, "providers")?;
+    let models = required_backup_field(object, path, "models")?;
+    let (pi_settings, app_settings) = match version {
+        Some(2) => {
+            split_legacy_settings(required_backup_field(object, path, "settings")?, json!({}))?
+        }
+        Some(3) => (
+            required_backup_field(object, path, "piSettings")?,
+            required_backup_field(object, path, "appSettings")?,
+        ),
+        _ => unreachable!(),
+    };
+    if object.get("version").and_then(Value::as_u64) == Some(3)
+        && pi_settings.get("piSwitch").is_some()
+    {
+        return Err(AppError::Invalid(
+            "version 3 backup Pi settings must not contain piSwitch".into(),
+        ));
+    }
     validate_local_library(&providers)?;
     validate_provider_document(&models)?;
-    validate_settings_document(&settings, &models)?;
-    let lock = WriteLock::acquire(paths)?;
-    let models_changed = write_document(paths, &lock, &paths.models, &models)?;
-    let settings_changed =
-        write_document(paths, &lock, &paths.settings, &settings).map_err(|error| {
-            if models_changed {
-                AppError::Partial(format!(
-                    "models.json restored; settings.json failed: {error}"
-                ))
-            } else {
-                error
-            }
-        })?;
-    write_document(paths, &lock, &paths.providers, &providers)
-        .map(|_| ())
-        .map_err(|error| {
-            if models_changed || settings_changed {
-                AppError::Partial(format!(
-                    "Pi configuration restored; providers.json failed: {error}"
-                ))
-            } else {
-                error
-            }
-        })
+    validate_pi_settings(&pi_settings, &models)?;
+    validate_app_settings(&app_settings)?;
+    Ok(BackupDocuments {
+        providers,
+        models,
+        pi_settings,
+        app_settings,
+    })
+}
+
+fn required_backup_field(object: &Map<String, Value>, path: &Path, field: &str) -> Result<Value> {
+    object
+        .get(field)
+        .filter(|value| value.is_object())
+        .cloned()
+        .ok_or_else(|| AppError::Invalid(format!("{} is missing {field}", path.display())))
+}
+
+fn partial_restore_error(changed: bool, target: &str, error: AppError) -> AppError {
+    if changed {
+        AppError::Partial(format!(
+            "backup restore partially completed; {target} failed: {error}"
+        ))
+    } else {
+        error
+    }
 }
 
 pub(super) fn read_document(path: &Path, missing: Value) -> Result<Value> {
@@ -235,17 +267,27 @@ fn write_json(target: &Path, value: &Value) -> Result<()> {
 }
 
 pub(super) fn create_backup(paths: &Paths) -> Result<()> {
-    if !paths.providers.exists() && !paths.models.exists() && !paths.settings.exists() {
+    if !paths.providers.exists()
+        && !paths.pi_models.exists()
+        && !paths.pi_settings.exists()
+        && !paths.app_settings.exists()
+    {
         return Ok(());
     }
     fs::create_dir_all(&paths.backups).map_err(|source| io_error(&paths.backups, source))?;
     let (timestamp, backup) = unique_backup_path(paths, "backup");
+    let models = read_document(&paths.pi_models, json!({ "providers": {} }))?;
+    let (pi_settings, app_settings) = split_legacy_settings(
+        read_document(&paths.pi_settings, json!({}))?,
+        read_document(&paths.app_settings, json!({}))?,
+    )?;
     let snapshot = json!({
-        "version": 2,
+        "version": 3,
         "createdAt": timestamp.to_rfc3339(),
         "providers": read_document(&paths.providers, json!({ "version": 1, "providers": {} }))?,
-        "models": read_document(&paths.models, json!({ "providers": {} }))?,
-        "settings": read_document(&paths.settings, json!({}))?,
+        "models": models,
+        "piSettings": pi_settings,
+        "appSettings": app_settings,
     });
     write_json(&backup, &snapshot)?;
     prune_backups(paths)

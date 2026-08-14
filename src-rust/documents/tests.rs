@@ -29,8 +29,37 @@ fn fixture() -> (TempDir, Paths) {
         FIXTURE_ID.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(root.join(".pi/agent")).unwrap();
+    fs::create_dir_all(root.join(".pi-switch")).unwrap();
     let paths = Paths::from_home(&root);
     (TempDir(root), paths)
+}
+
+#[test]
+fn pi_paths_share_the_configured_agent_directory() {
+    let home = PathBuf::from("/home/test");
+    let default_agent = home.join(".pi/agent");
+    assert_eq!(pi_agent_dir_from(&home, None), default_agent);
+    assert_eq!(
+        pi_agent_dir_from(&home, Some("".into())),
+        home.join(".pi/agent")
+    );
+
+    let configured = PathBuf::from("/custom/pi-agent");
+    let paths = Paths::from_roots(&home, &configured);
+    assert_eq!(paths.pi_models, configured.join("models.json"));
+    assert_eq!(paths.pi_settings, configured.join("settings.json"));
+    assert_eq!(
+        sessions::sessions_root_from(&home, None, Some(configured.clone().into_os_string())),
+        configured.join("sessions")
+    );
+    assert_eq!(
+        sessions::sessions_root_from(
+            &home,
+            Some("/custom/sessions".into()),
+            Some(configured.into_os_string()),
+        ),
+        PathBuf::from("/custom/sessions")
+    );
 }
 
 fn model_draft(id: &str) -> ModelDraft {

@@ -3,24 +3,61 @@ use super::*;
 pub fn doctor(paths: &Paths) -> Vec<DoctorCheck> {
     let mut checks = Vec::new();
     checks.push(check(
+        true,
+        "Pi agent directory",
+        paths
+            .pi_models
+            .parent()
+            .unwrap_or(paths.pi_models.as_path())
+            .display()
+            .to_string(),
+    ));
+    checks.push(check(
         paths.providers.exists(),
         "providers.json",
         paths.providers.display().to_string(),
     ));
     checks.push(check(
-        paths.models.exists(),
-        "models.json",
-        if paths.models.exists() {
-            paths.models.display().to_string()
+        paths.pi_models.exists(),
+        "Pi models",
+        if paths.pi_models.exists() {
+            paths.pi_models.display().to_string()
         } else {
             format!(
                 "not found at {}; Pi may not be initialized",
-                paths.models.display()
+                paths.pi_models.display()
+            )
+        },
+    ));
+    checks.push(check(
+        true,
+        "Pi settings",
+        if paths.pi_settings.exists() {
+            paths.pi_settings.display().to_string()
+        } else {
+            format!(
+                "not found at {}; Pi defaults apply",
+                paths.pi_settings.display()
+            )
+        },
+    ));
+    checks.push(check(
+        true,
+        "pi-switch settings",
+        if paths.app_settings.exists() {
+            paths.app_settings.display().to_string()
+        } else {
+            format!(
+                "not found at {}; pi-switch defaults apply",
+                paths.app_settings.display()
             )
         },
     ));
     match load_snapshot(paths) {
         Ok(snapshot) => {
+            if let Some(warning) = snapshot.warning.as_deref() {
+                checks.push(check(false, "Configuration warning", warning));
+            }
             let enabled = snapshot
                 .providers
                 .iter()
@@ -79,7 +116,7 @@ pub fn doctor(paths: &Paths) -> Vec<DoctorCheck> {
                 ));
             }
         }
-        Err(error) => checks.push(check(false, "Provider documents", error.to_string())),
+        Err(error) => checks.push(check(false, "Configuration documents", error.to_string())),
     }
     let (legacy, corrupt) = backup_diagnostics(paths);
     checks.push(check(
@@ -122,7 +159,7 @@ fn backup_diagnostics(paths: &Paths) -> (usize, usize) {
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
                 .and_then(|value| value.get("version").and_then(Value::as_u64));
-            if version != Some(2) {
+            if !matches!(version, Some(2 | 3)) {
                 legacy += 1;
             }
         }

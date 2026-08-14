@@ -11,7 +11,7 @@ use ratatui::{
 };
 
 use super::super::app::{App, Focus, Page, SettingsAction};
-use super::super::input::pad_width;
+use super::super::input::{pad_width, truncate_width};
 use super::Theme;
 
 pub(super) fn render_menu(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
@@ -123,20 +123,6 @@ pub(super) fn render_home(frame: &mut Frame<'_>, app: &App, area: Rect, theme: T
         ));
         lines
     };
-    let paths = vec![
-        Line::default(),
-        label_line(
-            theme,
-            app.language.pick("Models file", "模型文件"),
-            app.snapshot.models_path.clone(),
-        ),
-        label_line(
-            theme,
-            app.language.pick("Settings file", "设置文件"),
-            app.snapshot.settings_path.clone(),
-        ),
-    ];
-
     let direction = if inner.width >= 76 {
         Direction::Horizontal
     } else {
@@ -150,6 +136,27 @@ pub(super) fn render_home(frame: &mut Frame<'_>, app: &App, area: Rect, theme: T
             [Constraint::Percentage(50), Constraint::Percentage(50)]
         })
         .split(inner);
+    let paths = vec![
+        Line::default(),
+        path_line(
+            theme,
+            app.language.pick("Pi models", "Pi 模型"),
+            &app.snapshot.pi_models_path,
+            sections[1].width,
+        ),
+        path_line(
+            theme,
+            app.language.pick("Pi settings", "Pi 设置"),
+            &app.snapshot.pi_settings_path,
+            sections[1].width,
+        ),
+        path_line(
+            theme,
+            app.language.pick("pi-switch settings", "pi-switch 设置"),
+            &app.snapshot.app_settings_path,
+            sections[1].width,
+        ),
+    ];
     render_section(
         frame,
         sections[0],
@@ -186,20 +193,29 @@ pub(super) fn render_settings(frame: &mut Frame<'_>, app: &App, area: Rect, them
         .split(inner);
     let paths = vec![
         Line::default(),
-        label_line(
+        path_line(
             theme,
-            app.language.pick("Models file", "模型文件"),
-            app.snapshot.models_path.clone(),
+            app.language.pick("Pi models", "Pi 模型"),
+            &app.snapshot.pi_models_path,
+            sections[0].width,
         ),
-        label_line(
+        path_line(
             theme,
-            app.language.pick("Settings file", "设置文件"),
-            app.snapshot.settings_path.clone(),
+            app.language.pick("Pi settings", "Pi 设置"),
+            &app.snapshot.pi_settings_path,
+            sections[0].width,
         ),
-        label_line(
+        path_line(
+            theme,
+            app.language.pick("pi-switch settings", "pi-switch 设置"),
+            &app.snapshot.app_settings_path,
+            sections[0].width,
+        ),
+        path_line(
             theme,
             app.language.pick("OpenCode file", "OpenCode 文件"),
-            app.paths.opencode.display().to_string(),
+            &app.paths.opencode.display().to_string(),
+            sections[0].width,
         ),
     ];
     render_section(
@@ -271,6 +287,16 @@ fn label_line(theme: Theme, label: &str, value: String) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("  {}", pad_width(label, 14)), theme.label()),
         Span::styled(value, theme.value()),
+    ])
+}
+
+fn path_line(theme: Theme, label: &str, value: &str, area_width: u16) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("  {}", pad_width(label, 18)), theme.label()),
+        Span::styled(
+            truncate_width(value, area_width.saturating_sub(22) as usize),
+            theme.value(),
+        ),
     ])
 }
 

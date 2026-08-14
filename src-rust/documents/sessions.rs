@@ -33,20 +33,28 @@ pub enum DeleteMethod {
 }
 
 pub fn sessions_root() -> Result<PathBuf> {
-    if let Ok(dir) = env::var("PI_CODING_AGENT_SESSION_DIR") {
-        let path = PathBuf::from(dir);
-        if !path.as_os_str().is_empty() {
-            return Ok(path);
-        }
+    let session_dir = env::var_os("PI_CODING_AGENT_SESSION_DIR");
+    if let Some(path) = session_dir.filter(|dir| !dir.is_empty()).map(PathBuf::from) {
+        return Ok(path);
     }
-    let agent_dir = if let Ok(dir) = env::var("PI_CODING_AGENT_DIR") {
-        PathBuf::from(dir)
-    } else {
-        let home = dirs::home_dir()
-            .ok_or_else(|| AppError::Invalid("home directory is unavailable".into()))?;
-        home.join(".pi/agent")
-    };
-    Ok(agent_dir.join("sessions"))
+    let home = dirs::home_dir()
+        .ok_or_else(|| AppError::Invalid("home directory is unavailable".into()))?;
+    Ok(sessions_root_from(
+        &home,
+        None,
+        env::var_os("PI_CODING_AGENT_DIR"),
+    ))
+}
+
+pub(super) fn sessions_root_from(
+    home: &Path,
+    session_dir: Option<std::ffi::OsString>,
+    agent_dir: Option<std::ffi::OsString>,
+) -> PathBuf {
+    session_dir
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| super::pi_agent_dir_from(home, agent_dir).join("sessions"))
 }
 
 pub fn list_sessions() -> Result<Vec<SessionSummary>> {

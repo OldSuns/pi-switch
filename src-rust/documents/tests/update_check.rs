@@ -111,11 +111,12 @@ fn corrupt_cache_is_ignored() {
 #[test]
 fn set_check_updates_persists_and_round_trips_through_snapshot() {
     let (_root, paths) = fixture();
-    fs::write(&paths.models, r#"{"providers":{}}"#).unwrap();
-    fs::write(&paths.settings, r#"{}"#).unwrap();
+    fs::write(&paths.pi_models, r#"{"providers":{}}"#).unwrap();
+    fs::write(&paths.pi_settings, r#"{}"#).unwrap();
 
-    // defaults to true when unset
+    // defaults to true when unset without forcing a settings file.
     assert!(load_snapshot(&paths).unwrap().check_updates);
+    assert!(!paths.app_settings.exists());
 
     set_check_updates(&paths, false).unwrap();
     assert!(!load_snapshot(&paths).unwrap().check_updates);
@@ -123,13 +124,14 @@ fn set_check_updates_persists_and_round_trips_through_snapshot() {
     set_check_updates(&paths, true).unwrap();
     assert!(load_snapshot(&paths).unwrap().check_updates);
 
-    let settings = read_json(&paths.settings);
-    assert_eq!(settings["piSwitch"]["checkForUpdates"], json!(true));
+    let settings = read_json(&paths.app_settings);
+    assert_eq!(settings["checkForUpdates"], json!(true));
+    assert_eq!(read_json(&paths.pi_settings), json!({}));
 }
 
 #[test]
 fn check_updates_field_rejects_non_boolean() {
-    let value = json!({ "piSwitch": { "checkForUpdates": "yes" } });
+    let value = json!({ "checkForUpdates": "yes" });
     assert!(check_updates_field(&value).is_err());
 }
 

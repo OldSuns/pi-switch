@@ -553,7 +553,7 @@ fn opencode_import_uses_live_catalog_metadata_when_unambiguous() {
     let summary = import_opencode_with_catalog(&paths, &catalog).unwrap();
     assert_eq!(summary.metadata, 1);
     assert_eq!(summary.unresolved, 0);
-    let models = read_json(&paths.models);
+    let models = read_json(&paths.pi_models);
     let model = &models["providers"]["custom"]["models"][0];
     assert_eq!(model["name"], "Local display name");
     assert_eq!(model["reasoning"], true);
@@ -587,7 +587,7 @@ fn opencode_import_uses_canonical_metadata_and_preserves_source_model_id() {
     let summary = import_opencode_with_catalog(&paths, &catalog).unwrap();
     assert_eq!(summary.metadata, 1);
     assert_eq!(summary.unresolved, 0);
-    let models = read_json(&paths.models);
+    let models = read_json(&paths.pi_models);
     let model = &models["providers"]["custom"]["models"][0];
     assert_eq!(model["id"], "z-ai/glm5.2");
     assert_eq!(model["contextWindow"], 200_000);
@@ -615,7 +615,7 @@ fn opencode_import_ignores_empty_model_name() {
 
     import_opencode_with_catalog(&paths, &catalog).unwrap();
 
-    let models = read_json(&paths.models);
+    let models = read_json(&paths.pi_models);
     assert_eq!(
         models["providers"]["caroline"]["models"][0]["name"],
         "deepseek-v4-pro"
@@ -662,7 +662,7 @@ fn opencode_import_can_select_providers_and_use_custom_defaults() {
     assert_eq!(summary.defaults, 1);
     assert_eq!(summary.metadata, 0);
     assert_eq!(summary.unresolved, 0);
-    let models = read_json(&paths.models);
+    let models = read_json(&paths.pi_models);
     assert!(models["providers"].get("one").is_none());
     let model = &models["providers"]["two"]["models"][0];
     assert_eq!(model["contextWindow"], 256_000);
@@ -719,7 +719,7 @@ fn opencode_selected_ambiguity_rebinds_the_source_model_id() {
     );
 
     apply_opencode_import(&paths, plan, &[0]).unwrap();
-    let models = read_json(&paths.models);
+    let models = read_json(&paths.pi_models);
     let model = &models["providers"]["custom"]["models"][0];
     assert_eq!(model["id"], "DEEPSEEK-V4-FLASH-0731");
     assert_eq!(model["contextWindow"], 400_000);
@@ -770,7 +770,7 @@ fn opencode_import_applies_the_selected_provider_price() {
     let summary = apply_opencode_import(&paths, plan, &[1]).unwrap();
     assert_eq!(summary.metadata, 1);
     assert_eq!(summary.unresolved, 0);
-    let models = read_json(&paths.models);
+    let models = read_json(&paths.pi_models);
     let model = &models["providers"]["custom"]["models"][0];
     assert_eq!(model["cost"]["input"], 2.0);
     assert_eq!(model["contextWindow"], 200_000);

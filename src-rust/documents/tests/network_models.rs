@@ -308,7 +308,7 @@ fn metadata_resolution_honors_one_shared_timeout() {
 fn invalid_shapes_and_stale_edits_fail_explicitly() {
     let (_root, paths) = fixture();
     fs::write(
-            &paths.models,
+            &paths.pi_models,
             r#"{"providers":{"bad":{"baseUrl":"https://example.test","api":"openai-completions","models":[{"id":7}]}}}"#,
         )
         .unwrap();
@@ -318,7 +318,7 @@ fn invalid_shapes_and_stale_edits_fail_explicitly() {
         .contains("string ID"));
 
     fs::write(
-        &paths.models,
+        &paths.pi_models,
         r#"{"providers":{"bad":{"headers":{"User-Agent":7}}}}"#,
     )
     .unwrap();
@@ -328,7 +328,7 @@ fn invalid_shapes_and_stale_edits_fail_explicitly() {
         .contains("header 'User-Agent' must be a string"));
 
     fs::write(
-        &paths.models,
+        &paths.pi_models,
         r#"{"providers":{"bad":{"headers":{"User-Agent":"one","user-agent":"two"}}}}"#,
     )
     .unwrap();
@@ -337,14 +337,14 @@ fn invalid_shapes_and_stale_edits_fail_explicitly() {
         .to_string()
         .contains("multiple User-Agent headers with different casing"));
 
-    fs::write(&paths.models, r#"{"providers":{"bad":{"compat":[]}}}"#).unwrap();
+    fs::write(&paths.pi_models, r#"{"providers":{"bad":{"compat":[]}}}"#).unwrap();
     assert!(load_snapshot(&paths)
         .unwrap_err()
         .to_string()
         .contains("compat must be an object"));
 
     fs::write(
-        &paths.models,
+        &paths.pi_models,
         r#"{"providers":{"bad":{"compat":{"sendSessionAffinityHeaders":"yes"}}}}"#,
     )
     .unwrap();
@@ -353,7 +353,7 @@ fn invalid_shapes_and_stale_edits_fail_explicitly() {
         .to_string()
         .contains("compat.sendSessionAffinityHeaders must be a boolean"));
 
-    fs::write(&paths.models, r#"{"providers":{}}"#).unwrap();
+    fs::write(&paths.pi_models, r#"{"providers":{}}"#).unwrap();
     let result = save_provider(
         &paths,
         Some("deleted-elsewhere"),
@@ -370,7 +370,7 @@ fn invalid_shapes_and_stale_edits_fail_explicitly() {
     );
     assert!(result.unwrap_err().to_string().contains("no longer exists"));
     assert_eq!(
-        read_document(&paths.models, json!({})).unwrap(),
+        read_document(&paths.pi_models, json!({})).unwrap(),
         json!({"providers": {}})
     );
 }
@@ -379,12 +379,12 @@ fn invalid_shapes_and_stale_edits_fail_explicitly() {
 fn model_crud_and_provider_copy_preserve_metadata_and_defaults() {
     let (_root, paths) = fixture();
     fs::write(
-            &paths.models,
+            &paths.pi_models,
             r#"{"rootFuture":4,"providers":{"p":{"baseUrl":"https://example.test/v1","api":"openai-completions","apiKey":"$KEY","providerFuture":true,"models":[{"id":"alpha","name":"alpha","modelFuture":7,"cost":{"input":1},"compat":{"thinkingFormat":"deepseek"}}]}}}"#,
         )
         .unwrap();
     fs::write(
-        &paths.settings,
+        &paths.pi_settings,
         r#"{"defaultProvider":"p","defaultModel":"alpha","theme":"keep"}"#,
     )
     .unwrap();
@@ -433,7 +433,7 @@ fn model_crud_and_provider_copy_preserve_metadata_and_defaults() {
     );
     assert_eq!(duplicate_provider(&paths, "p").unwrap(), "p-copy");
 
-    let models = read_json(&paths.models);
+    let models = read_json(&paths.pi_models);
     assert_eq!(models["rootFuture"], 4);
     assert_eq!(models["providers"]["p"]["providerFuture"], true);
     assert_eq!(models["providers"]["p"]["models"][0]["id"], "beta");
@@ -462,11 +462,11 @@ fn model_crud_and_provider_copy_preserve_metadata_and_defaults() {
         "deepseek"
     );
     assert_eq!(models["providers"]["p-copy"]["models"][0]["id"], "beta");
-    let settings = read_json(&paths.settings);
+    let settings = read_json(&paths.pi_settings);
     assert_eq!(settings["defaultModel"], "beta");
 
     remove_model(&paths, "p", "beta").unwrap();
-    let settings = read_json(&paths.settings);
+    let settings = read_json(&paths.pi_settings);
     assert!(settings.get("defaultProvider").is_none());
     assert!(settings.get("defaultModel").is_none());
     assert_eq!(settings["theme"], "keep");
@@ -633,7 +633,7 @@ fn compute_ratio_prices_rounds_floating_point_artifacts() {
 fn model_cost_fields_round_trip_and_preserve_through_untouched_edits() {
     let (_root, paths) = fixture();
     fs::write(
-        &paths.models,
+        &paths.pi_models,
         r#"{"providers":{"p":{"baseUrl":"https://e.test/v1","api":"openai-completions","apiKey":"$K","models":[{"id":"m","contextWindow":128000,"maxTokens":16384}]}}}"#,
     )
     .unwrap();
@@ -645,7 +645,7 @@ fn model_cost_fields_round_trip_and_preserve_through_untouched_edits() {
     priced.cache_read_cost = Some(0.5);
     priced.cache_write_cost = Some(0.0);
     save_model(&paths, "p", Some("m"), &priced).unwrap();
-    let models = read_json(&paths.models);
+    let models = read_json(&paths.pi_models);
     assert_eq!(models["providers"]["p"]["models"][0]["cost"]["input"], 1.0);
     assert_eq!(models["providers"]["p"]["models"][0]["cost"]["output"], 2.0);
     assert_eq!(models["providers"]["p"]["models"][0]["cost"]["cacheRead"], 0.5);
@@ -656,7 +656,7 @@ fn model_cost_fields_round_trip_and_preserve_through_untouched_edits() {
     renamed.context_window = Some(128_000);
     renamed.max_tokens = Some(16_384);
     save_model(&paths, "p", Some("m"), &renamed).unwrap();
-    let models = read_json(&paths.models);
+    let models = read_json(&paths.pi_models);
     assert_eq!(models["providers"]["p"]["models"][0]["id"], "m2");
     assert_eq!(models["providers"]["p"]["models"][0]["cost"]["input"], 1.0);
 }
@@ -665,7 +665,7 @@ fn model_cost_fields_round_trip_and_preserve_through_untouched_edits() {
 fn thinking_level_map_roundtrips_through_save_and_load() {
     let (_root, paths) = fixture();
     fs::write(
-        &paths.models,
+        &paths.pi_models,
         r#"{"providers":{"p":{"baseUrl":"https://e.test/v1","api":"openai-completions","apiKey":"$K","models":[{"id":"m","thinkingLevelMap":{"off":"none","low":"low","medium":"medium","high":"high","max":"max"}}]}}}"#,
     )
     .unwrap();
@@ -678,7 +678,7 @@ fn thinking_level_map_roundtrips_through_save_and_load() {
     }
     draft.thinking_level_map = Some(map);
     save_model(&paths, "p", Some("m"), &draft).unwrap();
-    let models = read_json(&paths.models);
+    let models = read_json(&paths.pi_models);
     let saved = &models["providers"]["p"]["models"][0]["thinkingLevelMap"];
     for level in ["off", "low", "medium", "high", "max"] {
         assert_eq!(saved[level], Value::String(level.into()));
@@ -689,7 +689,7 @@ fn thinking_level_map_roundtrips_through_save_and_load() {
 fn thinking_level_map_partial_fill_writes_only_set_levels() {
     let (_root, paths) = fixture();
     fs::write(
-        &paths.models,
+        &paths.pi_models,
         r#"{"providers":{"p":{"baseUrl":"https://e.test/v1","api":"openai-completions","apiKey":"$K","models":[{"id":"m"}]}}}"#,
     )
     .unwrap();
@@ -699,7 +699,7 @@ fn thinking_level_map_partial_fill_writes_only_set_levels() {
     map.insert("off".into(), Value::String("none".into()));
     draft.thinking_level_map = Some(map);
     save_model(&paths, "p", Some("m"), &draft).unwrap();
-    let models = read_json(&paths.models);
+    let models = read_json(&paths.pi_models);
     let saved = &models["providers"]["p"]["models"][0]["thinkingLevelMap"];
     assert_eq!(saved["off"], "none");
     assert!(saved.get("low").is_none());
@@ -710,7 +710,7 @@ fn thinking_level_map_partial_fill_writes_only_set_levels() {
 fn thinking_level_map_none_removes_existing_key() {
     let (_root, paths) = fixture();
     fs::write(
-        &paths.models,
+        &paths.pi_models,
         r#"{"providers":{"p":{"baseUrl":"https://e.test/v1","api":"openai-completions","apiKey":"$K","models":[{"id":"m","thinkingLevelMap":{"off":"none"}}]}}}"#,
     )
     .unwrap();
@@ -718,7 +718,7 @@ fn thinking_level_map_none_removes_existing_key() {
     // None means "remove the key" (unlike cost, where None preserves).
     let draft = model_draft("m");
     save_model(&paths, "p", Some("m"), &draft).unwrap();
-    let models = read_json(&paths.models);
+    let models = read_json(&paths.pi_models);
     assert!(models["providers"]["p"]["models"][0]
         .as_object()
         .unwrap()
@@ -730,7 +730,7 @@ fn thinking_level_map_none_removes_existing_key() {
 fn thinking_level_map_appears_on_previously_unset_model() {
     let (_root, paths) = fixture();
     fs::write(
-        &paths.models,
+        &paths.pi_models,
         r#"{"providers":{"p":{"baseUrl":"https://e.test/v1","api":"openai-completions","apiKey":"$K","models":[{"id":"m"}]}}}"#,
     )
     .unwrap();
@@ -741,7 +741,7 @@ fn thinking_level_map_appears_on_previously_unset_model() {
     map.insert("high".into(), Value::String("high".into()));
     draft.thinking_level_map = Some(map);
     save_model(&paths, "p", Some("m"), &draft).unwrap();
-    let models = read_json(&paths.models);
+    let models = read_json(&paths.pi_models);
     let saved = &models["providers"]["p"]["models"][0]["thinkingLevelMap"];
     assert_eq!(saved["low"], "low");
     assert_eq!(saved["high"], "high");
@@ -752,7 +752,7 @@ fn thinking_level_map_appears_on_previously_unset_model() {
 fn thinking_level_map_rejects_non_object_shape() {
     let (_root, paths) = fixture();
     fs::write(
-        &paths.models,
+        &paths.pi_models,
         r#"{"providers":{"p":{"baseUrl":"https://e.test/v1","api":"openai-completions","apiKey":"$K","models":[{"id":"m","thinkingLevelMap":"bad"}]}}}"#,
     )
     .unwrap();

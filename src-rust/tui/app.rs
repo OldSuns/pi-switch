@@ -331,8 +331,9 @@ impl App {
             Err(error) => {
                 let snapshot = Snapshot {
                     providers_path: paths.providers.display().to_string(),
-                    models_path: paths.models.display().to_string(),
-                    settings_path: paths.settings.display().to_string(),
+                    pi_models_path: paths.pi_models.display().to_string(),
+                    pi_settings_path: paths.pi_settings.display().to_string(),
+                    app_settings_path: paths.app_settings.display().to_string(),
                     providers: Vec::new(),
                     default_provider: None,
                     default_model: None,

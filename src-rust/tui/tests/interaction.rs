@@ -91,9 +91,9 @@
     fn corrupt_provider_library_opens_a_blocking_warning_once() {
         let (_root, app) = app();
         fs::create_dir_all(app.paths.providers.parent().unwrap()).unwrap();
-        fs::create_dir_all(app.paths.models.parent().unwrap()).unwrap();
+        fs::create_dir_all(app.paths.pi_models.parent().unwrap()).unwrap();
         fs::write(&app.paths.providers, "{broken").unwrap();
-        fs::write(&app.paths.models, r#"{"providers":{}}"#).unwrap();
+        fs::write(&app.paths.pi_models, r#"{"providers":{}}"#).unwrap();
 
         let mut rebuilt = App::new(app.paths.clone());
         assert!(matches!(rebuilt.overlay, Some(Overlay::Warning(_))));
@@ -168,7 +168,7 @@
     fn provider_and_model_space_actions_are_scoped_by_focus() {
         let (_root, mut app) = app();
         fs::create_dir_all(app.paths.providers.parent().unwrap()).unwrap();
-        fs::create_dir_all(app.paths.models.parent().unwrap()).unwrap();
+        fs::create_dir_all(app.paths.pi_models.parent().unwrap()).unwrap();
         let provider = json!({
             "baseUrl": "https://example.test/v1",
             "api": "openai-completions",
@@ -184,12 +184,12 @@
         )
         .unwrap();
         fs::write(
-            &app.paths.models,
+            &app.paths.pi_models,
             serde_json::to_vec_pretty(&json!({"providers":{"示例-provider":provider}})).unwrap(),
         )
         .unwrap();
         fs::write(
-            &app.paths.settings,
+            &app.paths.pi_settings,
             r#"{"defaultProvider":"示例-provider","defaultModel":"model-a"}"#,
         )
         .unwrap();
@@ -208,7 +208,7 @@
         app.focus = Focus::Models;
         app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         let settings: serde_json::Value =
-            serde_json::from_slice(&fs::read(&app.paths.settings).unwrap()).unwrap();
+            serde_json::from_slice(&fs::read(&app.paths.pi_settings).unwrap()).unwrap();
         assert_eq!(settings["defaultProvider"], "示例-provider");
         assert_eq!(settings["defaultModel"], "model-a");
 
@@ -221,7 +221,7 @@
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(!app.snapshot.providers[0].in_pi);
         let models: serde_json::Value =
-            serde_json::from_slice(&fs::read(&app.paths.models).unwrap()).unwrap();
+            serde_json::from_slice(&fs::read(&app.paths.pi_models).unwrap()).unwrap();
         assert!(models["providers"].get("示例-provider").is_none());
 
         app.focus = Focus::Models;
