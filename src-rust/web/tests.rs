@@ -230,6 +230,125 @@ fn provider_and_model_edits_preserve_unknown_fields_and_sync_the_same_value() {
 }
 
 #[test]
+fn model_duplication_preserves_extensions_source_default_and_sync_state() {
+    for in_pi in [false, true] {
+        let mut fixture = Fixture::new();
+        fixture.create_provider("local", in_pi);
+        let source = json!({
+            "id": "chat", "name": "Original",
+            "cost": { "input": 1, "output": 3, "futureCost": { "tier": [1, 2] } },
+            "headers": { "X-Model": "keep" },
+            "compat": { "futureOption": true },
+            "futureModel": { "nested": ["keep", { "value": 7 }] },
+        });
+        let mut library = read_json(&fixture.core.paths.providers);
+        library["providers"]["local"]["models"] = json!([source]);
+        write_json(&fixture.core.paths.providers, &library);
+        if in_pi {
+            write_json(
+                &fixture.core.paths.pi_models,
+                &json!({ "providers": { "local": library["providers"]["local"] } }),
+            );
+        }
+        write_json(
+            &fixture.core.paths.pi_settings,
+            &json!({ "theme": "mocha" }),
+        );
+        if in_pi {
+            fixture.call(json!({
+                "action": "model.default", "providerId": "local", "modelId": "chat",
+            }));
+        }
+        let settings_before = fs::read(&fixture.core.paths.pi_settings).unwrap();
+        let backups_before = documents::list_backups(&fixture.core.paths).unwrap().len();
+        let mut draft = model_draft("chat-copy");
+        draft["name"] = json!("Edited copy");
+        draft["inputCost"] = json!(2.5);
+        let result = fixture.call(json!({
+            "action": "model.duplicate", "providerId": "local",
+            "sourceModelId": "chat", "draft": draft,
+        }));
+        let library = read_json(&fixture.core.paths.providers);
+        let provider = &library["providers"]["local"];
+        assert_eq!(provider["models"].as_array().unwrap().len(), 2);
+        assert_eq!(provider["models"][0], source);
+        let copied = &provider["models"][1];
+        assert_eq!(copied["id"], "chat-copy");
+        assert_eq!(copied["name"], "Edited copy");
+        assert_eq!(copied["contextWindow"], 128_000);
+        assert_eq!(copied["cost"]["input"], 2.5);
+        assert_eq!(copied["cost"]["output"], source["cost"]["output"]);
+        assert_eq!(copied["cost"]["futureCost"], source["cost"]["futureCost"]);
+        for field in ["headers", "compat", "futureModel"] {
+            assert_eq!(copied[field], source[field]);
+        }
+        let pi_models = read_json(&fixture.core.paths.pi_models);
+        if in_pi {
+            assert_eq!(pi_models["providers"]["local"], *provider);
+            assert_eq!(result["snapshot"]["defaultModel"], "chat");
+        } else {
+            assert!(pi_models["providers"].get("local").is_none());
+            assert!(result["snapshot"]["defaultModel"].is_null());
+        }
+        assert_eq!(result["snapshot"]["providers"][0]["inPi"], in_pi);
+        assert_eq!(
+            fs::read(&fixture.core.paths.pi_settings).unwrap(),
+            settings_before
+        );
+        assert_eq!(
+            documents::list_backups(&fixture.core.paths).unwrap().len(),
+            backups_before + 1
+        );
+    }
+}
+
+#[test]
+fn model_duplication_rejects_missing_sources_collisions_and_bad_requests_without_writing() {
+    let mut fixture = Fixture::new();
+    fixture.create_provider("local", true);
+    fixture.create_model("local", "chat");
+    fixture.call(json!({ "action": "model.default", "providerId": "local", "modelId": "chat" }));
+    let paths = [
+        fixture.core.paths.providers.clone(),
+        fixture.core.paths.pi_models.clone(),
+        fixture.core.paths.pi_settings.clone(),
+    ];
+    let before: Vec<_> = paths.iter().map(|path| fs::read(path).unwrap()).collect();
+    let backups_before = documents::list_backups(&fixture.core.paths).unwrap().len();
+    for (source_id, target_id, expected) in [
+        ("missing", "copy", "no longer exists"),
+        ("chat", "chat", "already exists"),
+    ] {
+        let error = fixture
+            .core
+            .dispatch(&json!({
+                "action": "model.duplicate", "providerId": "local",
+                "sourceModelId": source_id, "draft": model_draft(target_id),
+            }))
+            .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+    for request in [
+        json!({ "action": "model.duplicate", "providerId": "missing", "sourceModelId": "chat", "draft": model_draft("copy") }),
+        json!({ "action": "model.duplicate", "providerId": "local", "sourceModelId": null, "draft": model_draft("copy") }),
+        json!({ "action": "model.duplicate", "providerId": "local", "sourceModelId": "chat", "previousId": "chat", "draft": model_draft("copy") }),
+        json!({ "action": "model.duplicate", "providerId": "local", "sourceModelId": "chat", "draft": { "id": "copy", "input": [] } }),
+    ] {
+        assert!(
+            fixture.core.dispatch(&request).is_err(),
+            "accepted {request}"
+        );
+    }
+    for (path, contents) in paths.iter().zip(before) {
+        assert_eq!(fs::read(path).unwrap(), contents);
+    }
+    assert_eq!(
+        documents::list_backups(&fixture.core.paths).unwrap().len(),
+        backups_before
+    );
+}
+
+#[test]
 fn malformed_boundary_types_and_unknown_fields_fail_before_writing() {
     let mut fixture = Fixture::new();
     fixture.create_provider("local", true);

@@ -86,6 +86,16 @@ impl WebCore {
                 )?;
                 self.snapshot_result()
             }
+            "model.duplicate" => {
+                let draft = input::model_draft(&request.object("draft")?)?;
+                documents::duplicate_model(
+                    &self.paths,
+                    request.string("providerId")?,
+                    request.string("sourceModelId")?,
+                    &draft,
+                )?;
+                self.snapshot_result()
+            }
             "model.remove" => {
                 documents::remove_model(
                     &self.paths,
@@ -183,6 +193,7 @@ fn action_fields(action: &str) -> Result<&'static [&'static str]> {
         "provider.duplicate" | "provider.remove" | "models.fetch" => &["providerId"],
         "provider.sync" => &["providerId", "inPi"],
         "model.save" => &["providerId", "previousId", "draft"],
+        "model.duplicate" => &["providerId", "sourceModelId", "draft"],
         "model.remove" | "model.default" => &["providerId", "modelId"],
         "settings.language" | "settings.metadata" | "settings.updates" | "settings.defaults" => {
             &["value"]

@@ -10,6 +10,7 @@ export function themeName() {
 
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
+  document.querySelector('meta[name="color-scheme"]').content = theme;
   document.querySelector('meta[name="theme-color"]').content =
     getComputedStyle(document.documentElement).getPropertyValue("--base").trim();
 }
@@ -20,4 +21,4 @@ export function setTheme(theme) {
   applyTheme(theme);
 }
 
-applyTheme(localStorage.getItem(STORAGE_KEY) ?? "dark");
+applyTheme(localStorage.getItem(STORAGE_KEY) ?? getTheme());

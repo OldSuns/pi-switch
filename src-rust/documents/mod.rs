@@ -31,8 +31,8 @@ pub use network::resolve_metadata;
 pub use network::{dismiss_update, install_update, read_dismissed_update};
 pub use opencode::{apply_opencode_import, list_opencode_providers, prepare_opencode_import};
 pub use providers::{
-    duplicate_provider, import_models, remove_model, remove_provider, save_model, save_provider,
-    set_default, set_provider_in_pi,
+    duplicate_model, duplicate_provider, import_models, remove_model, remove_provider, save_model,
+    save_provider, set_default, set_provider_in_pi,
 };
 pub use session_tree::{load_preview, PreviewMessage, PreviewTreePosition, SessionPreview};
 pub use sessions::{

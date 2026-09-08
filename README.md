@@ -159,8 +159,8 @@ Session 根目录优先级：非空 `PI_CODING_AGENT_SESSION_DIR` → `<Pi agent
    - `GET /api/pricing`  
    成功则按 NewAPI 换算覆盖模型 `cost`（`1 USD = 500_000 quota`，每 1M tokens 成本 ≈ `ratio × 2` USD）；失败静默忽略。
 3. 若开启 models.dev 元数据：请求 `https://models.dev/api.json`，补全 `contextWindow`、`maxTokens`、`cost`、reasoning 等。  
-   - **在线导入**遇到同 model ID 多源歧义时：**自动取第一个候选**，不弹选择框；缺少可用元数据的模型跳过并提示计数。  
-   - 导入列表会标注价格来源：`ratio_config` 或 `models.dev`。  
+   - **在线导入**遇到同 model ID 多源歧义时：需要选择元数据来源；缺少匹配元数据或 models.dev 不可达时，选中的模型使用 Settings 中的默认参数导入，并明确提示。
+   - 先选择服务商返回的模型 ID，再为选中项获取元数据和价格；TUI 与 Web 使用相同流程。
    - 网关价格在 catalog 元数据之上叠加。
 4. 关闭实时元数据：使用 Settings 中的默认参数；空字段回落 Pi 官方默认（context window `128000`、max tokens `16384`、cost `0`）。
 

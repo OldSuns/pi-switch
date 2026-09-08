@@ -1,6 +1,9 @@
 import { h, t, icon, initials, tint, number, tokens, modelName, emptyState, date } from "./ui.js";
 import { pageHeader } from "./shell.js";
 
+const RECENT_SESSION_LIMIT = 3;
+const PROVIDER_OVERVIEW_LIMIT = 4;
+
 function stat(label, value, name, note, color = "") {
   return `<article class="stat-card"><div class="stat-heading"><span>${label}</span>${icon(name)}</div><div class="stat-value ${color}">${value}</div><div class="stat-note">${note}</div></article>`;
 }
@@ -33,7 +36,7 @@ function defaultCard(snapshot) {
 }
 
 function recentSessions(state) {
-  const recent = [...state.sessions].sort((left, right) => new Date(right.modifiedAt) - new Date(left.modifiedAt)).slice(0, 4);
+  const recent = [...state.sessions].sort((left, right) => new Date(right.modifiedAt) - new Date(left.modifiedAt)).slice(0, RECENT_SESSION_LIMIT);
   let content;
   if (state.sessionsError) {
     content = '<div class="panel-body"><div class="banner error" role="alert">' + h(state.sessionsError) + "</div></div>";
@@ -46,7 +49,7 @@ function recentSessions(state) {
       <span class="recent-session-icon">${icon("messages")}</span><span class="recent-session-content"><span class="item-title">${h(session.title)}</span><span class="recent-session-meta"><span class="recent-workspace" title="${h(session.cwd)}">${icon("folder")}${h(session.cwd.split(/[/\\]/).filter(Boolean).at(-1) || session.cwd)}</span><span>${session.messageCount} ${t("条消息", "messages")}</span><span>${date(session.modifiedAt, true)}</span></span></span>${icon("chevron")}
     </a>`).join("");
   }
-  return `<section class="panel"><div class="panel-header"><h2>${icon("messages")}${t("最近会话", "Recent sessions")}</h2><a class="text-button" href="#sessions">${t("查看全部", "View all")}${icon("arrow")}</a></div>${content}</section>`;
+  return `<section class="panel recent-card"><div class="panel-header"><h2>${icon("messages")}${t("最近会话", "Recent sessions")}</h2><a class="text-button" href="#sessions">${t("查看全部", "View all")}${icon("arrow")}</a></div>${content}</section>`;
 }
 
 export function overview(state) {
@@ -67,7 +70,7 @@ export function overview(state) {
       ${defaultCard(snapshot)}
       ${recentSessions(state)}
       <section class="panel"><div class="panel-header"><h2>${t("Provider 概览", "Your providers")}<span class="count">${providers.length}</span></h2><a href="#profiles" class="text-button">${t("管理配置", "Manage")}${icon("arrow")}</a></div>
-        ${providers.length ? providers.slice(0, 5).map((provider) => `<a class="provider-summary" href="#profiles?provider=${encodeURIComponent(provider.id)}">
+        ${providers.length ? providers.slice(0, PROVIDER_OVERVIEW_LIMIT).map((provider) => `<a class="provider-summary" href="#profiles?provider=${encodeURIComponent(provider.id)}">
           <span class="avatar ${tint(provider.id)}">${initials(provider.id)}</span><div><div class="item-title">${h(provider.id)}</div><div class="item-subtitle">${h(provider.baseUrl || provider.api)}</div></div><span class="provider-count">${provider.models.length} models</span><span class="badge ${provider.inPi ? "success" : ""}">${provider.inPi ? icon("check") + t("已同步", "Synced") : t("仅本地", "Local only")}</span>
         </a>`).join("") : emptyState(t("添加你的第一个 Provider", "Add your first provider"), t("手动添加，或从已有的 OpenCode 配置导入。", "Add a provider or import an existing OpenCode configuration."), "box", `<button class="btn" data-action="opencode">${icon("download")}${t("从 OpenCode 导入", "Import from OpenCode")}</button>`)}
       </section>

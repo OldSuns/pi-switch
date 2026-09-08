@@ -2,14 +2,14 @@ import { h, t, icon, setLanguage, emptyState } from "./ui.js";
 import { shell, pages } from "./shell.js";
 import { overview } from "./overview.js";
 import { profiles, selectedProvider } from "./profiles.js";
-import { sessions } from "./sessions.js";
+import { sessions, reconcilePreview } from "./sessions.js";
 import { settings } from "./settings.js";
 import * as dialogs from "./dialogs.js";
 import { setTheme } from "./appearance.js";
 
 const state = {
   snapshot: null, page: "overview", providerId: null, providerQuery: "", providerFilter: "all", modelQuery: "", modelId: null,
-  sessions: [], sessionsLoaded: false, sessionsError: null, sessionId: null, sessionQuery: "", namedOnly: false,
+  sessions: [], sessionsLoaded: false, sessionsLoading: false, sessionsError: null, sessionId: null, sessionQuery: "", namedOnly: false,
   preview: null, previewLoading: false, previewError: null, previewMode: "tree", messageId: null, userOnly: false, folded: new Set(),
   checks: null, busy: false, connected: false, navOpen: false, lastSaved: null,
 };
@@ -52,6 +52,9 @@ function render({ resetScroll = false, focusMain = false } = {}) {
   if (!state.snapshot) return;
   const main = document.getElementById("main");
   const scrollTop = resetScroll ? 0 : main?.scrollTop ?? 0;
+  const sessionScroll = resetScroll ? [] : [...app.querySelectorAll("[data-session-scroll]")].map((element) => ({
+    name: element.dataset.sessionScroll, session: element.dataset.sessionId, top: element.scrollTop, left: element.scrollLeft,
+  }));
   const active = document.activeElement;
   const activeId = app.contains(active) ? active.id : null;
   const activeSelector = app.contains(active) ? focusSelector(active) : null;
@@ -66,6 +69,13 @@ function render({ resetScroll = false, focusMain = false } = {}) {
   }
   document.title = "pi-switch · " + t(pages[state.page].zh, pages[state.page].en);
   document.getElementById("main").scrollTop = scrollTop;
+  for (const position of sessionScroll) {
+    const element = app.querySelector('[data-session-scroll="' + position.name + '"]');
+    if (element && element.dataset.sessionId === position.session) {
+      element.scrollTop = position.top;
+      element.scrollLeft = position.left;
+    }
+  }
   if (activeId) {
     const next = document.getElementById(activeId);
     next?.focus({ preventScroll: true });
@@ -88,17 +98,22 @@ function route() {
   const parameters = new URLSearchParams(query);
   if (parameters.has("provider")) state.providerId = parameters.get("provider");
   if (state.snapshot && !selectedProvider(state)) state.providerId = state.snapshot.providers[0]?.id ?? null;
-  const sessionId = parameters.get("session");
-  if (state.page === "sessions" && sessionId && sessionId !== state.sessionId) {
+  const sessionId = state.page === "sessions" ? parameters.get("session") || null : null;
+  const sessionChanged = sessionId !== state.sessionId;
+  if (sessionChanged) {
     state.sessionId = sessionId;
-    if (state.sessionsLoaded) void loadPreview();
+    resetPreview();
   }
   render({ resetScroll: previousPage !== state.page, focusMain: previousPage !== state.page });
+  if (sessionId && state.sessionsLoaded && (sessionChanged || (!state.preview && !state.previewLoading && !state.previewError))) {
+    void loadPreview();
+  }
 }
 
-function navigate(page, key, value) {
+function navigate(page, key, value, { replace = false } = {}) {
   const next = "#" + page + (key && value ? "?" + key + "=" + encodeURIComponent(value) : "");
-  if (location.hash === next) route();
+  if (replace) { history.replaceState(null, "", next); route(); }
+  else if (location.hash === next) route();
   else location.hash = next;
 }
 
@@ -222,47 +237,67 @@ async function refresh() {
 
 async function loadSessions() {
   const requestVersion = ++sessionVersion;
+  state.sessionsLoading = true;
+  state.sessionsError = null;
+  render();
   try {
     const result = await api("sessions.list");
     if (requestVersion !== sessionVersion) return;
     state.sessions = result.sessions;
-    state.sessionsError = null;
     if (state.sessionId && !state.sessions.some((session) => session.id === state.sessionId)) {
-      state.sessionId = null;
-      state.preview = null;
+      resetPreview();
     }
-    if (state.sessionId && state.page === "sessions") void loadPreview();
   } catch (error) {
     if (requestVersion !== sessionVersion) return;
     state.sessionsError = error.message;
   } finally {
-    if (requestVersion === sessionVersion) { state.sessionsLoaded = true; render(); }
+    if (requestVersion === sessionVersion) {
+      state.sessionsLoaded = true;
+      state.sessionsLoading = false;
+      render();
+    }
+  }
+  if (requestVersion === sessionVersion && !state.sessionsError && state.sessionId) {
+    await loadPreview();
   }
 }
 
+function resetPreview() {
+  ++previewVersion;
+  state.preview = null;
+  state.previewLoading = false;
+  state.previewError = null;
+  state.messageId = null;
+  state.folded = new Set();
+}
+
 async function loadPreview() {
-  if (!state.sessionId) return;
+  if (!state.sessionId || !state.sessions.some((session) => session.id === state.sessionId)) return;
   const requestVersion = ++previewVersion;
   const id = state.sessionId;
+  const userOnly = state.userOnly;
   state.previewLoading = true;
   state.previewError = null;
-  state.preview = null;
   render();
+  let result;
+  let failure;
   try {
-    const preview = await api("sessions.preview", { id, userOnly: state.userOnly });
-    if (requestVersion !== previewVersion || id !== state.sessionId) return;
-    state.preview = preview;
-    state.folded = new Set();
-    state.messageId = preview.activeMessageId ?? preview.messages[0]?.id ?? null;
+    result = await api("sessions.preview", { id, userOnly });
   } catch (error) {
-    if (requestVersion === previewVersion) state.previewError = error.message;
-  } finally {
-    if (requestVersion === previewVersion) {
-      state.previewLoading = false;
-      render();
-      document.querySelector('.tree-item[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
-    }
+    failure = error;
   }
+  if (requestVersion !== previewVersion || id !== state.sessionId || userOnly !== state.userOnly) return;
+  state.previewLoading = false;
+  const previousMessageId = state.messageId;
+  const restoreMessageFocus = document.activeElement.matches(".message-node");
+  if (failure) {
+    state.previewError = failure.message;
+    if (state.preview) state.userOnly = state.preview.userOnly;
+  } else {
+    Object.assign(state, reconcilePreview(state, { ...result, userOnly }));
+  }
+  render();
+  if (!failure && previousMessageId !== state.messageId) revealMessage(restoreMessageFocus);
 }
 
 async function loadDialog(title, action, renderer, payload = {}) {
@@ -293,7 +328,9 @@ function editModel(model = null, copy = false, provider = selectedProvider(state
     while (provider.models.some((candidate) => candidate.id === model.id + suffix)) suffix = "-copy-" + index++;
     draft = { ...model, id: model.id + suffix };
   }
-  openDialog(dialogs.modelDialog(draft, copy, state.snapshot.apiTypes), { kind: "model", providerId: provider.id, previousId: model && !copy ? model.id : null });
+  openDialog(dialogs.modelDialog(draft, copy, state.snapshot.apiTypes), {
+    kind: "model", providerId: provider.id, previousId: model && !copy ? model.id : null, sourceModelId: copy ? model.id : null,
+  });
 }
 
 async function importModels(provider) {
@@ -369,14 +406,27 @@ async function copyText(value) {
   toast(t("已复制到剪贴板", "Copied to clipboard"));
 }
 
-function focusMessage(id) {
+function selectedMessageElement() {
+  return state.messageId && app.querySelector('.message-node[data-message="' + CSS.escape(state.messageId) + '"]');
+}
+
+function revealMessage(focus = false) {
+  const element = selectedMessageElement();
+  if (focus) element?.focus({ preventScroll: true });
+  element?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function focusMessage(id, { focus = true } = {}) {
   state.messageId = id;
-  const treeScroll = document.querySelector(".tree-list")?.scrollTop ?? 0;
   render();
-  const tree = document.querySelector(".tree-list");
-  if (tree) tree.scrollTop = treeScroll;
-  document.querySelector('.tree-item[aria-selected="true"]')?.focus({ preventScroll: true });
-  document.querySelector('.tree-item[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+  revealMessage(focus);
+}
+
+function setPreviewMode(mode) {
+  const restoreMessageFocus = document.activeElement.matches(".message-node");
+  state.previewMode = mode;
+  render();
+  revealMessage(restoreMessageFocus);
 }
 
 async function handleAction(action, target) {
@@ -475,17 +525,23 @@ async function handleAction(action, target) {
     case "model-defaults": openDialog(dialogs.defaultsDialog(state.snapshot.modelDefaults), { kind: "defaults" }); break;
     case "copy-path": await copyText(target.dataset.path); break;
     case "refresh-sessions": await loadSessions(); break;
-    case "select-session": state.sessionId = target.dataset.session; navigate("sessions", "session", state.sessionId); await loadPreview(); break;
+    case "select-session": navigate("sessions", "session", target.dataset.session); break;
+    case "clear-session": navigate("sessions"); break;
     case "reload-preview": await loadPreview(); break;
     case "named-only": state.namedOnly = target.checked; render(); break;
     case "user-only": state.userOnly = target.checked; await loadPreview(); break;
-    case "preview-mode": state.previewMode = target.dataset.mode; render(); break;
+    case "preview-mode": setPreviewMode(target.dataset.mode); break;
     case "select-message": focusMessage(target.dataset.message); break;
-    case "toggle-branch":
-      if (state.preview?.messages.find((message) => message.id === state.messageId)?.tree.hasChildren) {
-        if (state.folded.has(state.messageId)) state.folded.delete(state.messageId); else state.folded.add(state.messageId);
-        focusMessage(state.messageId);
-      } break;
+    case "toggle-branch": {
+      const id = target?.dataset.message ?? state.messageId;
+      if (state.preview?.messages.find((message) => message.id === id)?.tree.hasChildren) {
+        const folded = new Set(state.folded);
+        if (folded.has(id)) folded.delete(id); else folded.add(id);
+        state.folded = folded;
+        focusMessage(id, { focus: !target?.matches("button") });
+      }
+      break;
+    }
     case "copy-message": {
       const message = state.preview?.messages.find((item) => item.id === (target?.dataset.message ?? state.messageId));
       if (message) await copyText(message.text);
@@ -496,7 +552,7 @@ async function handleAction(action, target) {
       if (!session) break;
       confirm({ title: t("删除这个会话？", "Delete this session?"), description: t("将优先移到系统回收站；如果回收站不可用，则永久删除该会话文件。", "The session is moved to the system trash when available; otherwise its file is permanently deleted."), detail: session.title + "\n" + session.id, label: t("删除会话", "Delete session"), danger: true }, async () => {
         const result = await save("sessions.delete", { id: session.id }, null);
-        state.sessionId = null; state.preview = null; ++previewVersion;
+        if (state.sessionId === session.id) navigate("sessions", null, null, { replace: true });
         await loadSessions();
         toast(result.method === "trash" ? t("会话已移到回收站", "Session moved to trash") : t("会话文件已永久删除", "Session file permanently deleted"));
       }); break;
@@ -527,6 +583,7 @@ function dispatch(action, target) {
 document.addEventListener("click", (event) => {
   const target = event.target.closest("[data-action]");
   if (!target || target.disabled || target.matches('input,select')) return;
+  if (target.matches(".reading-message") && (event.target.closest("a,button,input,select,textarea") || window.getSelection().toString())) return;
   if (target.dataset.action === "skip-to-content") event.preventDefault();
   dispatch(target.dataset.action, target);
 });
@@ -562,7 +619,9 @@ document.addEventListener("submit", (event) => {
       }
       case "model": {
         const draft = dialogs.modelDraft(form);
-        await save("model.save", { providerId: context.providerId, previousId: context.previousId, draft }, t("模型已保存", "Model saved"));
+        const action = context.sourceModelId ? "model.duplicate" : "model.save";
+        const source = context.sourceModelId ? { sourceModelId: context.sourceModelId } : { previousId: context.previousId };
+        await save(action, { providerId: context.providerId, ...source, draft }, t("模型已保存", "Model saved"));
         state.modelId = draft.id; state.modelQuery = "";
         navigate("profiles", "provider", context.providerId); break;
       }
@@ -578,14 +637,15 @@ document.addEventListener("submit", (event) => {
 
 function moveList(direction) {
   const active = document.activeElement;
-  const selector = active.closest(".tree-list") ? ".tree-item" : active.closest(".session-list") ? ".session-option" : active.closest(".model-row") ? ".model-row" : state.page === "profiles" ? ".provider-option" : state.page === "sessions" ? ".session-option" : null;
+  if (active.closest(".message-node") && !active.matches(".message-node")) return false;
+  const selector = active.matches(".message-node") ? ".message-node" : active.closest(".session-list") ? ".session-option" : active.closest(".model-row") ? ".model-row" : state.page === "profiles" ? ".provider-option" : state.page === "sessions" ? ".session-option" : null;
   if (!selector) return false;
   const list = [...document.querySelectorAll(selector)];
   if (!list.length) return false;
   const current = list.findIndex((item) => item === active || item.contains(active));
   const next = list[Math.max(0, Math.min(list.length - 1, current + direction))];
   next.focus();
-  if (selector === ".tree-item") focusMessage(next.dataset.message);
+  if (selector === ".message-node") focusMessage(next.dataset.message);
   if (selector === ".model-row") dispatch("select-model", next);
   if (selector === ".provider-option") dispatch("select-provider", next);
   if (selector === ".session-option") dispatch("select-session", next);
@@ -615,8 +675,8 @@ document.addEventListener("keydown", (event) => {
     }
     return;
   }
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c" && event.target.closest(".tree-list") && !window.getSelection().toString()) {
-    event.preventDefault(); dispatch("copy-message"); return;
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c" && event.target.closest(".message-node") && !window.getSelection().toString()) {
+    event.preventDefault(); dispatch("copy-message", event.target.closest(".message-node")); return;
   }
   if (event.ctrlKey || event.metaKey || event.altKey || state.busy) return;
   const key = event.key;
@@ -632,11 +692,15 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (["ArrowLeft", "ArrowRight", "h", "l"].includes(key) && ["profiles", "sessions"].includes(state.page)) {
+    if (event.target.closest(".message-node") && !event.target.matches(".message-node")) return;
     event.preventDefault();
     const direction = key === "ArrowRight" || key === "l" ? 1 : -1;
-    if (event.target.closest(".tree-list")) treeDirection(direction);
+    if (event.target.matches(".message-node")) treeDirection(direction);
     else if (state.page === "profiles") document.querySelector(direction > 0 ? ".model-row" : '.provider-option[aria-current="true"]')?.focus();
-    else if (state.page === "sessions") document.querySelector(direction > 0 ? '.tree-item[aria-selected="true"]' : '.session-option[aria-current="true"]')?.focus();
+    else if (state.page === "sessions") {
+      if (direction > 0) revealMessage(true);
+      else document.querySelector('.session-option[aria-current="true"]')?.focus();
+    }
     return;
   }
   if (key === "Escape") {
@@ -646,7 +710,7 @@ document.addEventListener("keydown", (event) => {
   if (key === "b") { event.preventDefault(); dispatch("backups"); return; }
   if (key === "v") {
     event.preventDefault();
-    if (state.page === "sessions") { state.previewMode = state.previewMode === "tree" ? "reading" : "tree"; render(); }
+    if (state.page === "sessions") setPreviewMode(state.previewMode === "tree" ? "reading" : "tree");
     else dispatch("doctor");
     return;
   }
@@ -654,7 +718,8 @@ document.addEventListener("keydown", (event) => {
     if (key === "n") { event.preventDefault(); state.namedOnly = !state.namedOnly; render(); }
     if (key === "u") { event.preventDefault(); state.userOnly = !state.userOnly; void loadPreview(); }
     if (key === "d" || key === "Delete") { event.preventDefault(); dispatch("delete-session", event.target.closest(".session-option")); }
-    if (key === " " && event.target.matches(".tree-item")) { event.preventDefault(); dispatch("toggle-branch"); }
+    if (key === " " && event.target.matches(".message-node")) { event.preventDefault(); dispatch("toggle-branch"); }
+    if (key === "Enter" && event.target.matches(".reading-message")) { event.preventDefault(); dispatch("select-message", event.target); }
     return;
   }
   if (state.page !== "profiles") return;
@@ -675,6 +740,7 @@ document.addEventListener("keydown", (event) => {
 function focusSelector(element) {
   if (!element) return null;
   if (element.id) return "#" + CSS.escape(element.id);
+  if (element.matches(".message-node")) return '.message-node[data-message="' + CSS.escape(element.dataset.message) + '"]';
   if (element.matches(".model-row")) return '.model-row[data-model="' + CSS.escape(element.dataset.model) + '"]';
   if (element.dataset.action) {
     let selector = '[data-action="' + CSS.escape(element.dataset.action) + '"]';
