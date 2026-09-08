@@ -14,7 +14,7 @@ crossterm = "0.29"
 dirs = "6"
 napi = { version = "2", features = ["napi6"] }
 napi-derive = "2"
-pulldown-cmark = { version = "0.13.4", default-features = false }
+pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
 ratatui = "0.30"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json", "system-proxy"] }
 semver = "1"

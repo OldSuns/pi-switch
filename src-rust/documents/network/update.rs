@@ -14,53 +14,101 @@ use super::*;
 /// `Ok(None)` is returned: update checks are best-effort and must never
 /// disturb the UI.
 pub fn check_npm_update(cache_path: &Path) -> Result<Option<String>> {
+    // Automatic TUI checks retain their best-effort contract. User-requested
+    // Web checks use the strict entry point so failures stay distinguishable.
+    check_npm_update_with(cache_path, UpdateCheck::Automatic, fetch_npm_latest).or(Ok(None))
+}
+
+pub(crate) fn check_npm_update_strict(cache_path: &Path) -> Result<Option<String>> {
+    check_npm_update_with(cache_path, UpdateCheck::Manual, fetch_npm_latest)
+}
+
+#[derive(Clone, Copy)]
+enum UpdateCheck {
+    Automatic,
+    Manual,
+}
+
+fn check_npm_update_with(
+    cache_path: &Path,
+    mode: UpdateCheck,
+    fetch: impl FnOnce() -> Result<String>,
+) -> Result<Option<String>> {
     let current = env!("CARGO_PKG_VERSION");
     let now = now_millis();
 
     // Reuse the cached `latest` while it is still fresh, avoiding a network
     // round-trip on every launch.
-    if let Some(cached) = read_update_cache(cache_path) {
-        if now.saturating_sub(cached.last_check) < UPDATE_CACHE_TTL.as_millis() {
-            return Ok(newer_version(current, &cached.latest));
+    if matches!(mode, UpdateCheck::Automatic) {
+        if let Some(cached) = read_update_cache(cache_path) {
+            if now.saturating_sub(cached.last_check) < UPDATE_CACHE_TTL.as_millis() {
+                return strict_newer_version(current, &cached.latest);
+            }
         }
     }
 
-    let client = http_client()?;
-    let latest = match fetch_npm_latest(&client) {
-        Some(latest) => latest,
-        None => return Ok(None),
-    };
-    // Persist the fresh result so subsequent launches within the TTL skip the
-    // network call. A write failure must not surface as an error.
-    let _ = write_update_cache(cache_path, now, &latest);
-    Ok(newer_version(current, &latest))
+    let latest = fetch()?;
+    let available = strict_newer_version(current, &latest)?;
+    // An automatic check must still announce a fetched update if its cache is
+    // unwritable. Manual checks report that persistence failure to the caller.
+    if let (UpdateCheck::Manual, Err(source)) = (mode, write_update_cache(cache_path, now, &latest))
+    {
+        return Err(AppError::Io {
+            path: cache_path.into(),
+            source,
+        });
+    }
+    Ok(available)
+}
+
+fn strict_newer_version(current: &str, latest: &str) -> Result<Option<String>> {
+    let current = Version::parse(current)
+        .map_err(|error| AppError::Http(format!("invalid installed version: {error}")))?;
+    let latest = Version::parse(latest)
+        .map_err(|error| AppError::Http(format!("invalid npm version: {error}")))?;
+    Ok((latest > current).then(|| latest.to_string()))
 }
 
 /// Compare two version strings and return the `latest` when it is strictly
 /// greater than `current`. Both must parse as semver; any parse failure yields
 /// `None` (the npm `latest` tag is always plain semver, but defend against
 /// unexpected metadata by failing safe rather than panicking).
+#[cfg(test)]
 pub fn newer_version(current: &str, latest: &str) -> Option<String> {
-    let current = Version::parse(current).ok()?;
-    let latest = Version::parse(latest).ok()?;
-    (latest > current).then(|| latest.to_string())
+    strict_newer_version(current, latest).ok().flatten()
 }
 
-/// Fetch the npm `latest` manifest and extract its `version` field. Returns
-/// `None` on any transport, status, or parsing failure.
-fn fetch_npm_latest(client: &Client) -> Option<String> {
-    let response = client
+/// Fetch the npm `latest` manifest, preserving transport and manifest failures.
+fn fetch_npm_latest() -> Result<String> {
+    let response = http_client()?
         .get(NPM_LATEST_URL)
         .header("accept", "application/json")
         .send()
-        .ok()?;
+        .map_err(update_request_error)?;
     if !response.status().is_success() {
-        return None;
+        return Err(AppError::Http(format!(
+            "npm update check: HTTP {}",
+            response.status()
+        )));
     }
-    let body: Value = response.json().ok()?;
+    let body: Value = response
+        .json()
+        .map_err(|error| AppError::Http(format!("invalid npm manifest: {error}")))?;
     body.get("version")
         .and_then(Value::as_str)
         .map(str::to_owned)
+        .ok_or_else(|| AppError::Http("npm manifest is missing a string version".into()))
+}
+
+fn update_request_error(error: reqwest::Error) -> AppError {
+    let mut message = format!("npm update check: {error}");
+    let mut source = std::error::Error::source(&error);
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    AppError::Http(message)
 }
 
 struct CachedUpdate {
@@ -165,4 +213,72 @@ fn now_millis() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod strict_tests {
+    use super::*;
+
+    #[test]
+    fn manual_update_checks_surface_fetch_errors() {
+        let error = check_npm_update_with(
+            Path::new("unused-update-cache"),
+            UpdateCheck::Manual,
+            || Err(AppError::Http("registry unavailable".into())),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("registry unavailable"));
+    }
+
+    #[test]
+    fn malformed_registry_versions_are_errors_for_manual_checks() {
+        let error = check_npm_update_with(
+            Path::new("unused-update-cache"),
+            UpdateCheck::Manual,
+            || Ok("not-a-version".into()),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("invalid npm version"));
+    }
+
+    #[test]
+    fn manual_update_checks_bypass_fresh_cache() {
+        let cache = std::env::temp_dir().join(format!(
+            "pi-switch-web-update-test-{}-{}.json",
+            std::process::id(),
+            now_millis(),
+        ));
+        write_update_cache(&cache, now_millis(), "999.0.0").unwrap();
+        let automatic = check_npm_update_with(&cache, UpdateCheck::Automatic, || {
+            panic!("automatic check should use a fresh cache")
+        })
+        .unwrap();
+        assert_eq!(automatic.as_deref(), Some("999.0.0"));
+        let manual = check_npm_update_with(&cache, UpdateCheck::Manual, || {
+            Err(AppError::Http("forced network error".into()))
+        });
+        std::fs::remove_file(cache).unwrap();
+        assert!(manual
+            .unwrap_err()
+            .to_string()
+            .contains("forced network error"));
+    }
+
+    #[test]
+    fn automatic_checks_keep_fetched_updates_when_cache_writes_fail() {
+        let cache = std::env::temp_dir().join(format!(
+            "pi-switch-web-unwritable-cache-{}-{}",
+            std::process::id(),
+            now_millis(),
+        ));
+        // A directory used as the cache file fails consistently without
+        // changing OS permissions or relying on the test runner's privileges.
+        std::fs::create_dir(&cache).unwrap();
+        let automatic =
+            check_npm_update_with(&cache, UpdateCheck::Automatic, || Ok("999.0.0".into()));
+        let manual = check_npm_update_with(&cache, UpdateCheck::Manual, || Ok("999.0.0".into()));
+        std::fs::remove_dir(cache).unwrap();
+        assert_eq!(automatic.unwrap().as_deref(), Some("999.0.0"));
+        assert!(matches!(manual, Err(AppError::Io { .. })));
+    }
 }

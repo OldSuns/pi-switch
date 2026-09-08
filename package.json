@@ -1,7 +1,7 @@
 {
   "name": "@oldsuns/pi-switch",
   "version": "0.3.2",
-  "description": "A focused terminal UI for Pi provider and model configuration",
+  "description": "A local terminal and Web UI for Pi provider and model configuration",
   "type": "module",
   "bin": {
     "pi-switch": "./bin/pi-switch.js"
@@ -10,6 +10,11 @@
   "types": "./index.d.ts",
   "files": [
     "bin",
+    "web/public",
+    "web/server.js",
+    "web/start.js",
+    "web/native-client.js",
+    "web/native-worker.js",
     "index.js",
     "index.d.ts",
     "pi-switch-native.cjs",
@@ -26,8 +31,9 @@
     ]
   },
   "scripts": {
-    "build:native": "napi build --platform --release --dts native.d.ts",
-    "build:native:debug": "napi build --platform --dts native.d.ts",
+    "dev:web": "node ./bin/pi-switch.js --web",
+    "build:native": "napi build --platform --no-js --release --dts native.d.ts",
+    "build:native:debug": "napi build --platform --no-js --dts native.d.ts",
     "test": "cargo test --locked --lib",
     "check": "cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings",
     "pack:check": "npm pack --dry-run"

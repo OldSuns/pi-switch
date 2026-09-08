@@ -25,6 +25,7 @@ use storage::{
 
 pub use diagnostics::doctor;
 pub use network::check_npm_update;
+pub(crate) use network::check_npm_update_strict;
 pub use network::fetch_model_ids;
 pub use network::resolve_metadata;
 pub use network::{dismiss_update, install_update, read_dismissed_update};
@@ -38,7 +39,7 @@ pub use sessions::{
     delete_session, format_session_time, session_display_title, session_matches, DeleteMethod,
     SessionSummary,
 };
-pub(crate) use sessions::{list_sessions_in, sessions_root};
+pub(crate) use sessions::{delete_session_in, list_sessions_in, sessions_root};
 #[cfg(test)]
 use settings::check_updates_field;
 pub use settings::{set_check_updates, set_fetch_model_metadata, set_language, set_model_defaults};
@@ -78,7 +79,7 @@ pub enum AppError {
     Busy(PathBuf),
     #[error("provider update completed, but settings update failed: {0}")]
     Partial(String),
-    #[error("model catalog request failed: {0}")]
+    #[error("{0}")]
     Http(String),
 }
 
@@ -555,6 +556,29 @@ pub struct CatalogFetch {
     pub catalog_unreachable: bool,
 }
 
+impl CatalogFetch {
+    /// Gateway ratio prices take precedence over the shared metadata catalog,
+    /// including candidates that still need an explicit user selection.
+    pub fn apply_ratio_prices(&mut self) {
+        for model in &mut self.models {
+            if let Some(cost) = self.ratio_prices.get(&model.id) {
+                if let Some(object) = model.config.as_object_mut() {
+                    object.insert("cost".into(), cost.to_cost_json());
+                }
+            }
+        }
+        for ambiguity in &mut self.ambiguous {
+            if let Some(cost) = self.ratio_prices.get(&ambiguity.model_id) {
+                for candidate in &mut ambiguity.candidates {
+                    if let Some(object) = candidate.model.config.as_object_mut() {
+                        object.insert("cost".into(), cost.to_cost_json());
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModelImportSummary {
     pub added: usize,
@@ -606,7 +630,7 @@ pub struct ImportSummary {
     pub changed: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct OpenCodeImportPlan {
     source: Value,
     provider_ids: Vec<String>,

@@ -42,6 +42,7 @@ pub(super) use pricing::{
 };
 #[cfg(test)]
 pub(super) use pricing::{fetch_models_for_test, find_ratio, parse_models_dev_catalog};
+pub(crate) use update::check_npm_update_strict;
 #[cfg(test)]
 pub(super) use update::newer_version;
 pub use update::{check_npm_update, dismiss_update, install_update, read_dismissed_update};

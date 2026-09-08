@@ -112,35 +112,18 @@ impl App {
             }
             Ok(Ok(BackgroundResult::Catalog {
                 provider_id,
-                fetched,
+                mut fetched,
                 overwrite,
             })) => {
+                fetched.apply_ratio_prices();
                 let CatalogFetch {
-                    mut models,
-                    mut ambiguous,
+                    models,
+                    ambiguous,
                     unavailable,
-                    ratio_prices,
+                    ratio_prices: _,
                     ratio_config_used: _,
                     catalog_unreachable,
                 } = fetched;
-                // Apply ratio_config prices on top of catalog metadata for both
-                // resolved models and ambiguous candidates.
-                for model in &mut models {
-                    if let Some(cost) = ratio_prices.get(&model.id) {
-                        if let Some(object) = model.config.as_object_mut() {
-                            object.insert("cost".into(), cost.to_cost_json());
-                        }
-                    }
-                }
-                for ambiguity in &mut ambiguous {
-                    if let Some(cost) = ratio_prices.get(&ambiguity.model_id) {
-                        for candidate in &mut ambiguity.candidates {
-                            if let Some(object) = candidate.model.config.as_object_mut() {
-                                object.insert("cost".into(), cost.to_cost_json());
-                            }
-                        }
-                    }
-                }
                 let fallback = if catalog_unreachable {
                     Some(MetadataFallback::Unreachable)
                 } else if unavailable > 0 {
