@@ -349,6 +349,239 @@ fn model_duplication_rejects_missing_sources_collisions_and_bad_requests_without
 }
 
 #[test]
+fn profile_ordering_is_persisted_without_changing_pi_or_provider_configs() {
+    let mut fixture = Fixture::new();
+    fixture.create_provider("zeta", true);
+    fixture.create_provider("alpha", false);
+    fixture.create_model("zeta", "first");
+    fixture.create_model("zeta", "second");
+    fixture.call(json!({ "action": "model.default", "providerId": "zeta", "modelId": "first" }));
+    let pi_before = fs::read(&fixture.core.paths.pi_models).unwrap();
+    let settings_before = fs::read(&fixture.core.paths.pi_settings).unwrap();
+    let providers_before = read_json(&fixture.core.paths.providers)["providers"].clone();
+    let initial = fixture.call(json!({ "action": "snapshot" }));
+    let original_date = initial["ordering"]["models"]["zeta"]["addedAt"]["first"].clone();
+    assert!(original_date.is_string());
+    for mode in ["name-asc", "name-desc", "added-asc", "added-desc", "custom"] {
+        let result = fixture.call(json!({ "action": "providers.sort", "value": mode }));
+        assert_eq!(result["snapshot"]["ordering"]["providers"]["sort"], mode);
+        let result =
+            fixture.call(json!({ "action": "models.sort", "providerId": "zeta", "value": mode }));
+        assert_eq!(
+            result["snapshot"]["ordering"]["models"]["zeta"]["sort"],
+            mode
+        );
+    }
+    fixture.call(json!({ "action": "providers.reorder", "ids": ["zeta", "alpha"] }));
+    fixture.call(
+        json!({ "action": "models.reorder", "providerId": "zeta", "ids": ["second", "first"] }),
+    );
+    let mut reloaded = WebCore::new(
+        fixture.core.paths.clone(),
+        fixture.core.sessions_root.clone(),
+    );
+    let result = reloaded.dispatch(&json!({ "action": "snapshot" })).unwrap();
+    assert_eq!(
+        result["ordering"]["providers"]["order"],
+        json!(["zeta", "alpha"])
+    );
+    assert_eq!(
+        result["ordering"]["models"]["zeta"]["order"],
+        json!(["second", "first"])
+    );
+    assert_eq!(
+        result["ordering"]["models"]["zeta"]["addedAt"]["first"],
+        original_date
+    );
+    assert_eq!(fs::read(&fixture.core.paths.pi_models).unwrap(), pi_before);
+    assert_eq!(
+        fs::read(&fixture.core.paths.pi_settings).unwrap(),
+        settings_before
+    );
+    assert_eq!(
+        read_json(&fixture.core.paths.providers)["providers"],
+        providers_before
+    );
+}
+
+#[test]
+fn profile_ordering_keeps_legacy_and_external_dates_unknown() {
+    let mut fixture = Fixture::new();
+    let provider = json!({ "models": [{ "id": "legacy" }] });
+    write_json(
+        &fixture.core.paths.providers,
+        &json!({ "version": 1, "providers": { "old": provider } }),
+    );
+    write_json(
+        &fixture.core.paths.pi_models,
+        &json!({ "providers": { "old": provider } }),
+    );
+    let before = fs::read(&fixture.core.paths.providers).unwrap();
+    let initial = fixture.call(json!({ "action": "snapshot" }));
+    assert!(initial["ordering"]["providers"]["addedAt"]["old"].is_null());
+    assert!(initial["ordering"]["models"]["old"]["addedAt"]["legacy"].is_null());
+    assert_eq!(fs::read(&fixture.core.paths.providers).unwrap(), before);
+    fixture.call(json!({ "action": "model.save", "providerId": "old", "previousId": "legacy", "draft": model_draft("renamed") }));
+    let result = fixture.call(json!({ "action": "provider.save", "previousId": "old", "draft": provider_draft("new-name", true) }));
+    assert!(result["snapshot"]["ordering"]["providers"]["addedAt"]["new-name"].is_null());
+    assert!(result["snapshot"]["ordering"]["models"]["new-name"]["addedAt"]["renamed"].is_null());
+    let mut pi_models = read_json(&fixture.core.paths.pi_models);
+    pi_models["providers"]["external"] = json!({ "models": [{ "id": "from-pi" }] });
+    write_json(&fixture.core.paths.pi_models, &pi_models);
+    let result = fixture.call(json!({ "action": "snapshot" }));
+    assert!(result["ordering"]["providers"]["addedAt"]["external"].is_null());
+    assert!(result["ordering"]["models"]["external"]["addedAt"]["from-pi"].is_null());
+}
+
+#[test]
+fn profile_ordering_tracks_renames_copies_removals_and_backup_restore() {
+    let mut fixture = Fixture::new();
+    fixture.create_provider("local", true);
+    fixture.create_model("local", "first");
+    fixture.create_model("local", "second");
+    fixture.call(
+        json!({ "action": "models.reorder", "providerId": "local", "ids": ["second", "first"] }),
+    );
+    let date = json!("2001-02-03T04:05:06.000Z");
+    let mut library = read_json(&fixture.core.paths.providers);
+    library["ordering"]["providers"]["addedAt"]["local"] = date.clone();
+    library["ordering"]["models"]["local"]["addedAt"]["first"] = date.clone();
+    library["ordering"]["futureField"] = json!({ "keep": true });
+    write_json(&fixture.core.paths.providers, &library);
+    fixture.call(json!({ "action": "model.save", "providerId": "local", "previousId": "first", "draft": model_draft("renamed") }));
+    let renamed = fixture.call(json!({ "action": "provider.save", "previousId": "local", "draft": provider_draft("renamed-provider", true) }));
+    let ordering = &renamed["snapshot"]["ordering"];
+    assert_eq!(ordering["providers"]["addedAt"]["renamed-provider"], date);
+    assert_eq!(
+        ordering["models"]["renamed-provider"]["addedAt"]["renamed"],
+        date
+    );
+    assert_eq!(
+        ordering["models"]["renamed-provider"]["order"],
+        json!(["second", "renamed"])
+    );
+    assert!(ordering["models"].get("local").is_none());
+    assert_eq!(
+        read_json(&fixture.core.paths.providers)["ordering"]["futureField"],
+        json!({ "keep": true })
+    );
+    let copied = fixture.call(json!({ "action": "model.duplicate", "providerId": "renamed-provider", "sourceModelId": "renamed", "draft": model_draft("copied") }));
+    let copied_date =
+        &copied["snapshot"]["ordering"]["models"]["renamed-provider"]["addedAt"]["copied"];
+    assert!(copied_date.is_string());
+    assert_ne!(*copied_date, date);
+    let copied =
+        fixture.call(json!({ "action": "provider.duplicate", "providerId": "renamed-provider" }));
+    assert_ne!(
+        copied["snapshot"]["ordering"]["providers"]["addedAt"]["renamed-provider-copy"],
+        date
+    );
+    assert_ne!(
+        copied["snapshot"]["ordering"]["models"]["renamed-provider-copy"]["addedAt"]["renamed"],
+        date
+    );
+    let restore_library = read_json(&fixture.core.paths.providers);
+    let restore_pi = read_json(&fixture.core.paths.pi_models);
+    let backup_name = "backup-ordering-fixture.json";
+    write_json(
+        &fixture.core.paths.backups.join(backup_name),
+        &json!({
+            "version": 3, "providers": restore_library, "models": restore_pi, "piSettings": {}, "appSettings": {},
+        }),
+    );
+    let removed = fixture.call(
+        json!({ "action": "model.remove", "providerId": "renamed-provider", "modelId": "renamed" }),
+    );
+    assert!(
+        removed["snapshot"]["ordering"]["models"]["renamed-provider"]["addedAt"]
+            .get("renamed")
+            .is_none()
+    );
+    let removed =
+        fixture.call(json!({ "action": "provider.remove", "providerId": "renamed-provider-copy" }));
+    assert!(removed["snapshot"]["ordering"]["models"]
+        .get("renamed-provider-copy")
+        .is_none());
+    let restored = fixture.call(json!({ "action": "backups.restore", "name": backup_name }));
+    assert_eq!(
+        restored["snapshot"]["ordering"]["models"]["renamed-provider"]["order"],
+        json!(["second", "renamed", "copied"])
+    );
+    assert_eq!(read_json(&fixture.core.paths.providers), restore_library);
+}
+
+#[test]
+fn profile_ordering_dates_are_added_only_for_new_imported_items() {
+    let mut fixture = Fixture::new();
+    fixture.create_provider("local", false);
+    fixture.create_model("local", "existing");
+    let initial = fixture.call(json!({ "action": "settings.metadata", "value": false }));
+    let existing_date =
+        initial["snapshot"]["ordering"]["models"]["local"]["addedAt"]["existing"].clone();
+    fixture.seed_candidates("local", &["existing", "online"]);
+    let imported = fixture.call(json!({ "action": "models.import", "providerId": "local", "ids": ["existing", "online"], "updateExisting": true }));
+    assert_eq!(
+        imported["snapshot"]["ordering"]["models"]["local"]["addedAt"]["existing"],
+        existing_date
+    );
+    assert!(imported["snapshot"]["ordering"]["models"]["local"]["addedAt"]["online"].is_string());
+    write_json(
+        &fixture.core.paths.opencode,
+        &json!({ "provider": {
+        "local": { "npm": "@ai-sdk/openai-compatible", "options": { "baseURL": "https://example.test/v1" }, "models": { "existing": {}, "opencode": {} } },
+    } }),
+    );
+    let prepared = fixture.call(json!({ "action": "opencode.prepare", "providerIds": ["local"] }));
+    let imported = fixture.call(json!({ "action": "opencode.import", "planId": prepared["planId"], "candidateIndices": [] }));
+    assert_eq!(
+        imported["snapshot"]["ordering"]["models"]["local"]["addedAt"]["existing"],
+        existing_date
+    );
+    assert!(imported["snapshot"]["ordering"]["models"]["local"]["addedAt"]["opencode"].is_string());
+}
+
+#[test]
+fn profile_ordering_rejects_stale_orders_and_invalid_metadata_without_writing() {
+    let mut fixture = Fixture::new();
+    fixture.create_provider("local", true);
+    fixture.create_model("local", "first");
+    fixture.create_model("local", "second");
+    let before = fs::read(&fixture.core.paths.providers).unwrap();
+    let pi_before = fs::read(&fixture.core.paths.pi_models).unwrap();
+    for request in [
+        json!({ "action": "providers.sort", "value": "random" }),
+        json!({ "action": "models.sort", "providerId": "missing", "value": "name-asc" }),
+        json!({ "action": "providers.reorder", "ids": [] }),
+        json!({ "action": "models.reorder", "providerId": "local", "ids": ["first", "first"] }),
+        json!({ "action": "models.reorder", "providerId": "local", "ids": ["first"] }),
+        json!({ "action": "models.reorder", "providerId": "local", "ids": ["first", "missing"] }),
+    ] {
+        assert!(
+            fixture.core.dispatch(&request).is_err(),
+            "accepted {request}"
+        );
+    }
+    assert_eq!(fs::read(&fixture.core.paths.providers).unwrap(), before);
+    for (field, value) in [
+        ("sort", json!("unknown")),
+        ("order", json!(["local", "local"])),
+        ("addedAt", json!({ "local": "invalid date" })),
+    ] {
+        let mut malformed: Value = serde_json::from_slice(&before).unwrap();
+        malformed["ordering"]["providers"][field] = value;
+        write_json(&fixture.core.paths.providers, &malformed);
+        let bytes = fs::read(&fixture.core.paths.providers).unwrap();
+        let error = fixture
+            .core
+            .dispatch(&json!({ "action": "snapshot" }))
+            .unwrap_err();
+        assert!(error.to_string().contains("ordering"), "{error}");
+        assert_eq!(fs::read(&fixture.core.paths.providers).unwrap(), bytes);
+    }
+    assert_eq!(fs::read(&fixture.core.paths.pi_models).unwrap(), pi_before);
+}
+
+#[test]
 fn malformed_boundary_types_and_unknown_fields_fail_before_writing() {
     let mut fixture = Fixture::new();
     fixture.create_provider("local", true);

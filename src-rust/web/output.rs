@@ -11,6 +11,7 @@ pub(super) fn snapshot(snapshot: &Snapshot, paths: &Paths, sessions_root: &Path)
         "version": env!("CARGO_PKG_VERSION"),
         "apiTypes": crate::documents::API_TYPES,
         "providers": snapshot.providers.iter().map(provider).collect::<Vec<_>>(),
+        "ordering": snapshot.ordering.to_json(),
         "defaultProvider": snapshot.default_provider,
         "defaultModel": snapshot.default_model,
         "language": snapshot.language,

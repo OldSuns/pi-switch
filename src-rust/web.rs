@@ -51,6 +51,26 @@ impl WebCore {
         request.check_fields(action_fields(action)?)?;
         match action {
             "snapshot" => self.snapshot(),
+            "providers.sort" | "models.sort" => {
+                let sort = documents::ProfileSort::parse(request.string("value")?)?;
+                let list = if action == "providers.sort" {
+                    documents::ProfileList::Providers
+                } else {
+                    documents::ProfileList::Models(request.string("providerId")?)
+                };
+                documents::set_profile_sort(&self.paths, list, sort)?;
+                self.snapshot_result()
+            }
+            "providers.reorder" | "models.reorder" => {
+                let ids = request.strings("ids")?;
+                let list = if action == "providers.reorder" {
+                    documents::ProfileList::Providers
+                } else {
+                    documents::ProfileList::Models(request.string("providerId")?)
+                };
+                documents::reorder_profiles(&self.paths, list, &ids)?;
+                self.snapshot_result()
+            }
             "provider.save" => {
                 let previous_id = request.optional_string("previousId")?;
                 let draft = input::provider_draft(&request.object("draft")?)?;
@@ -190,6 +210,10 @@ fn action_fields(action: &str) -> Result<&'static [&'static str]> {
         "snapshot" | "doctor" | "backups.list" | "sessions.list" | "opencode.list"
         | "updates.check" | "updates.install" => &[],
         "provider.save" => &["previousId", "draft"],
+        "providers.sort" => &["value"],
+        "models.sort" => &["providerId", "value"],
+        "providers.reorder" => &["ids"],
+        "models.reorder" => &["providerId", "ids"],
         "provider.duplicate" | "provider.remove" | "models.fetch" => &["providerId"],
         "provider.sync" => &["providerId", "inPi"],
         "model.save" => &["providerId", "previousId", "draft"],

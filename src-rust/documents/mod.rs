@@ -1,6 +1,7 @@
 mod diagnostics;
 mod network;
 mod opencode;
+mod ordering;
 mod providers;
 mod schema;
 mod session_tree;
@@ -30,6 +31,7 @@ pub use network::fetch_model_ids;
 pub use network::resolve_metadata;
 pub use network::{dismiss_update, install_update, read_dismissed_update};
 pub use opencode::{apply_opencode_import, list_opencode_providers, prepare_opencode_import};
+pub use ordering::{reorder_profiles, set_profile_sort, ProfileList, ProfileOrdering, ProfileSort};
 pub use providers::{
     duplicate_model, duplicate_provider, import_models, remove_model, remove_provider, save_model,
     save_provider, set_default, set_provider_in_pi,
@@ -140,6 +142,7 @@ pub struct Snapshot {
     pub pi_settings_path: String,
     pub app_settings_path: String,
     pub providers: Vec<ProviderView>,
+    pub ordering: ProfileOrdering,
     pub default_provider: Option<String>,
     pub default_model: Option<String>,
     pub language: String,

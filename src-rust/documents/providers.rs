@@ -31,6 +31,9 @@ pub fn save_provider(
         local.remove(old);
     }
     local.insert(draft.id.clone(), provider.clone());
+    if let Some(old) = previous_id.filter(|old| *old != draft.id) {
+        ordering::rename_provider(&mut library, old, &draft.id);
+    }
 
     let enabled = providers_object_mut(&mut models)?;
     let was_in_pi = previous_id.is_some_and(|id| enabled.contains_key(id));
@@ -265,6 +268,9 @@ fn write_model(
         models[index] = model;
     } else {
         models.push(model);
+    }
+    if let Some(old) = previous_id.filter(|old| *old != draft.id) {
+        ordering::rename_model(&mut library, provider_id, old, &draft.id);
     }
     sync_library_provider_to_pi(&library, &mut pi_models, provider_id)?;
     let mut settings = read_document(&paths.pi_settings, json!({}))?;

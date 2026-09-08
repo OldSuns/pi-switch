@@ -1,7 +1,8 @@
 import { h, t, icon, setLanguage, emptyState } from "./ui.js";
 import { shell, pages } from "./shell.js";
 import { overview } from "./overview.js";
-import { profiles, selectedProvider } from "./profiles.js";
+import { profiles, selectedProvider, visibleProviders, visibleModels } from "./profiles.js";
+import { orderSnapshot, reorderedVisibleIds } from "./profile-order.js";
 import { sessions, reconcilePreview } from "./sessions.js";
 import { settings } from "./settings.js";
 import * as dialogs from "./dialogs.js";
@@ -9,6 +10,7 @@ import { setTheme } from "./appearance.js";
 
 const state = {
   snapshot: null, page: "overview", providerId: null, providerQuery: "", providerFilter: "all", modelQuery: "", modelId: null,
+  providerSearchOpen: false, modelSearchOpen: false,
   sessions: [], sessionsLoaded: false, sessionsLoading: false, sessionsError: null, sessionId: null, sessionQuery: "", namedOnly: false,
   preview: null, previewLoading: false, previewError: null, previewMode: "tree", messageId: null, userOnly: false, folded: new Set(),
   checks: null, busy: false, connected: false, navOpen: false, lastSaved: null,
@@ -22,6 +24,10 @@ let sessionVersion = 0;
 let returnFocus = null;
 let returnFocusSelector = null;
 let toastTimer;
+let profileDrag = null;
+const profileInsertionLine = document.createElement("div");
+profileInsertionLine.className = "order-insertion-line";
+profileInsertionLine.setAttribute("aria-hidden", "true");
 const BUSY_ACTIONS = new Set(["close-toast", "toggle-nav", "close-nav", "select-model", "skip-to-content", "theme"]);
 const mobileViewport = matchMedia("(max-width: 760px)");
 
@@ -42,9 +48,9 @@ async function api(action, payload = {}) {
 }
 
 function applySnapshot(snapshot) {
-  state.snapshot = snapshot;
   setLanguage(snapshot.language);
-  if (!snapshot.providers.some((provider) => provider.id === state.providerId)) state.providerId = snapshot.providers[0]?.id ?? null;
+  state.snapshot = orderSnapshot(snapshot);
+  if (!state.snapshot.providers.some((provider) => provider.id === state.providerId)) state.providerId = state.snapshot.providers[0]?.id ?? null;
   if (!selectedProvider(state)?.models.some((model) => model.id === state.modelId)) state.modelId = null;
 }
 
@@ -63,7 +69,7 @@ function render({ resetScroll = false, focusMain = false } = {}) {
   const renderer = { overview, profiles, sessions, settings }[state.page];
   app.innerHTML = shell(state, renderer(state));
   if (state.busy) {
-    for (const element of app.querySelectorAll("button[data-action], input[data-action], select[data-action]")) {
+    for (const element of app.querySelectorAll("button[data-action], button[data-order-handle], input[data-action], select[data-action]")) {
       if (!BUSY_ACTIONS.has(element.dataset.action)) element.disabled = true;
     }
   }
@@ -180,7 +186,8 @@ dialog.addEventListener("close", () => {
 async function execute(task) {
   if (state.busy) return;
   const previousFocus = focusSelector(document.activeElement);
-  const rowFocus = focusSelector(document.activeElement.closest(".model-row,.provider-option,.session-option"));
+  const row = document.activeElement.closest(".model-row,.provider-row,.provider-option,.session-option");
+  const rowFocus = focusSelector(row?.querySelector(".provider-option") ?? row);
   state.busy = true;
   const buttons = [...dialog.querySelectorAll("[data-submit]")];
   const labels = buttons.map((button) => button.innerHTML);
@@ -429,6 +436,102 @@ function setPreviewMode(mode) {
   revealMessage(restoreMessageFocus);
 }
 
+function setProfileSearch(scope, open) {
+  const prefix = scope === "providers" ? "provider" : "model";
+  state[prefix + "SearchOpen"] = open;
+  if (!open) state[prefix + "Query"] = "";
+  render();
+  const target = open ? document.getElementById(prefix + "-search") : app.querySelector('[data-action="toggle-profile-search"][data-scope="' + scope + '"]');
+  target?.focus();
+}
+
+function profileCollection(scope, providerId) {
+  if (scope === "providers") return { items: state.snapshot.providers, visible: visibleProviders(state), ordering: state.snapshot.ordering.providers };
+  const provider = state.snapshot.providers.find((item) => item.id === providerId);
+  if (!provider) throw new Error(t("Provider 已不存在，请重新读取配置。", "The provider no longer exists. Reload the configuration."));
+  return { items: provider.models, visible: visibleModels({ ...state, providerId }), ordering: state.snapshot.ordering.models[providerId] };
+}
+
+async function reorderProfile({ scope, providerId, itemId, insertionIndex }) {
+  const { items, visible, ordering } = profileCollection(scope, providerId);
+  if (ordering.sort !== "custom") return;
+  const ids = reorderedVisibleIds(items, visible, itemId, insertionIndex);
+  if (items.every((item, index) => item.id === ids[index])) return;
+  const payload = scope === "models" ? { providerId, ids } : { ids };
+  await execute(() => save(scope + ".reorder", payload, t("顺序已保存", "Order saved")));
+}
+
+async function moveProfile(target) {
+  const { scope, item, provider: providerId, direction } = target.dataset;
+  const { visible } = profileCollection(scope, providerId);
+  const index = visible.findIndex((entry) => entry.id === item);
+  if (index < 0 || !visible[index + Number(direction)]) return;
+  const insertionIndex = Number(direction) < 0 ? index - 1 : index + 2;
+  await reorderProfile({ scope, providerId, itemId: item, insertionIndex });
+}
+
+function hideProfileInsertion() {
+  profileInsertionLine.remove();
+  if (profileDrag) { profileDrag.list = null; profileDrag.insertionIndex = null; }
+}
+
+function clearProfileDrag() {
+  profileDrag = null;
+  hideProfileInsertion();
+  for (const row of app.querySelectorAll(".order-dragging")) row.classList.remove("order-dragging");
+}
+
+function profileDropList(event) {
+  const list = event.target.closest("[data-order-list]");
+  if (!profileDrag || state.busy || !list || list.dataset.orderScope !== profileDrag.scope || list.dataset.orderProvider !== profileDrag.providerId) return null;
+  if (profileCollection(profileDrag.scope, profileDrag.providerId).ordering.sort !== "custom") return null;
+  return list;
+}
+
+function showProfileInsertion(list, clientY) {
+  const rows = [...list.querySelectorAll("[data-order-item]")].map((row) => row.getBoundingClientRect());
+  if (!rows.length) { hideProfileInsertion(); return; }
+  const gaps = [rows[0].top, ...rows.slice(1).map((row, index) => (rows[index].bottom + row.top) / 2), rows.at(-1).bottom];
+  const insertionIndex = gaps.reduce((closest, y, index) => Math.abs(clientY - y) < Math.abs(clientY - gaps[closest]) ? index : closest, 0);
+  const host = list.closest(".table-wrap") ?? list;
+  const bounds = host.getBoundingClientRect();
+  const top = gaps[insertionIndex] - bounds.top + host.scrollTop - 1;
+  profileInsertionLine.style.top = Math.max(0, Math.min(top, host.scrollHeight - 2)) + "px";
+  profileInsertionLine.style.left = rows[0].left - bounds.left + host.scrollLeft + "px";
+  profileInsertionLine.style.width = rows[0].width + "px";
+  if (profileInsertionLine.parentElement !== host) host.append(profileInsertionLine);
+  profileDrag.list = list;
+  profileDrag.insertionIndex = insertionIndex;
+}
+
+document.addEventListener("dragstart", (event) => {
+  const handle = event.target.closest("[data-order-handle]");
+  if (!handle) return;
+  if (state.busy) { event.preventDefault(); return; }
+  profileDrag = { scope: handle.dataset.scope, providerId: handle.dataset.provider, itemId: handle.dataset.item };
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", profileDrag.itemId);
+  handle.closest("[data-order-item]").classList.add("order-dragging");
+});
+
+document.addEventListener("dragover", (event) => {
+  const list = profileDropList(event);
+  if (!list) { hideProfileInsertion(); return; }
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "move";
+  showProfileInsertion(list, event.clientY);
+});
+
+document.addEventListener("drop", (event) => {
+  const list = profileDropList(event);
+  if (!list || profileDrag.list !== list || profileDrag.insertionIndex == null) { clearProfileDrag(); return; }
+  event.preventDefault();
+  const { scope, providerId, itemId, insertionIndex } = profileDrag;
+  clearProfileDrag();
+  void reorderProfile({ scope, providerId, itemId, insertionIndex }).catch(showError);
+});
+document.addEventListener("dragend", clearProfileDrag);
+
 async function handleAction(action, target) {
   const providerId = target?.dataset.provider ?? (dialog.open && dialogContext?.kind === "model" ? dialogContext.providerId : state.providerId);
   const provider = state.snapshot?.providers.find((item) => item.id === providerId);
@@ -453,11 +556,23 @@ async function handleAction(action, target) {
     case "confirm": { const task = dialogContext.task; await execute(task); break; }
     case "reload": await execute(async () => { await refresh(); toast(t("已重新读取本地配置", "Local configuration reloaded")); }); break;
     case "new-provider": editProvider(); break;
+    case "toggle-profile-search": {
+      const { scope } = target.dataset;
+      setProfileSearch(scope, !(scope === "providers" ? state.providerSearchOpen : state.modelSearchOpen));
+      break;
+    }
+    case "profile-sort": {
+      const { scope, provider: providerId } = target.dataset;
+      const payload = scope === "models" ? { providerId, value: target.value } : { value: target.value };
+      await execute(() => save(scope + ".sort", payload, t("排序方式已保存", "Sort preference saved")));
+      break;
+    }
+    case "move-profile": await moveProfile(target); break;
     case "edit-provider": editProvider(provider); break;
     case "select-provider":
       state.modelQuery = ""; state.modelId = null;
       navigate("profiles", "provider", target.dataset.provider); break;
-    case "provider-filter": state.providerFilter = target.dataset.value; render(); break;
+    case "provider-filter": state.providerFilter = target.value; render(); break;
     case "duplicate-provider":
       if (!provider) break;
       await execute(async () => {
@@ -662,7 +777,21 @@ function treeDirection(direction) {
 
 document.addEventListener("keydown", (event) => {
   if (event.defaultPrevented || event.isComposing || !state.snapshot) return;
+  if (!dialog.open && event.key === "Escape" && ["provider-search", "model-search"].includes(event.target.id)) {
+    event.preventDefault();
+    setProfileSearch(event.target.id === "provider-search" ? "providers" : "models", false);
+    return;
+  }
   if (dialog.open || event.target.matches("input,textarea,select,[contenteditable=true]")) return;
+  const orderRow = event.target.closest("[data-order-item]");
+  if (event.altKey && !event.ctrlKey && !event.metaKey && ["ArrowUp", "ArrowDown"].includes(event.key) && orderRow && !state.busy) {
+    const { orderScope: scope, orderProvider: provider, orderId: item } = orderRow.dataset;
+    if (profileCollection(scope, provider).ordering.sort === "custom") {
+      event.preventDefault();
+      dispatch("move-profile", { dataset: { scope, provider, item, direction: event.key === "ArrowUp" ? "-1" : "1" } });
+    }
+    return;
+  }
   if (state.navOpen && mobileViewport.matches) {
     if (event.key === "Escape") { event.preventDefault(); dispatch("close-nav"); return; }
     if (event.key === "Tab") {
@@ -684,9 +813,11 @@ document.addEventListener("keydown", (event) => {
   if (key === "?") { event.preventDefault(); dispatch("help"); return; }
   if (key === "/") {
     event.preventDefault();
-    const id = state.page === "sessions" ? "session-search" : event.target.closest(".model-row") ? "model-search" : "provider-search";
-    document.getElementById(id)?.focus(); return;
+    if (state.page === "sessions") document.getElementById("session-search")?.focus();
+    else if (state.page === "profiles") setProfileSearch(event.target.closest(".models-panel") ? "models" : "providers", true);
+    return;
   }
+  if (event.target.closest(".order-handle")) return;
   if (["ArrowDown", "ArrowUp", "j", "k"].includes(key)) {
     if (moveList(key === "ArrowDown" || key === "j" ? 1 : -1)) event.preventDefault();
     return;
@@ -742,9 +873,9 @@ function focusSelector(element) {
   if (element.id) return "#" + CSS.escape(element.id);
   if (element.matches(".message-node")) return '.message-node[data-message="' + CSS.escape(element.dataset.message) + '"]';
   if (element.matches(".model-row")) return '.model-row[data-model="' + CSS.escape(element.dataset.model) + '"]';
-  if (element.dataset.action) {
-    let selector = '[data-action="' + CSS.escape(element.dataset.action) + '"]';
-    for (const key of ["provider", "model", "session", "message", "value", "mode"]) {
+  if (element.dataset.action || element.hasAttribute("data-order-handle")) {
+    let selector = element.dataset.action ? '[data-action="' + CSS.escape(element.dataset.action) + '"]' : "[data-order-handle]";
+    for (const key of ["provider", "model", "session", "message", "value", "mode", "scope", "item"]) {
       if (element.dataset[key]) selector += '[data-' + key + '="' + CSS.escape(element.dataset[key]) + '"]';
     }
     return selector;
