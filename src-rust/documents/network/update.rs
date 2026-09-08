@@ -49,10 +49,16 @@ fn check_npm_update_with(
 
     let latest = fetch()?;
     let available = strict_newer_version(current, &latest)?;
+    // Preserve a previous dismissal, so a manual check does not make the
+    // skipped version pop up in the TUI again.
+    let dismissed = read_update_cache(cache_path).and_then(|cached| cached.dismissed);
+    let written = match dismissed.as_deref() {
+        Some(dismissed) => write_update_cache_with_dismiss(cache_path, now, &latest, dismissed),
+        None => write_update_cache(cache_path, now, &latest),
+    };
     // An automatic check must still announce a fetched update if its cache is
     // unwritable. Manual checks report that persistence failure to the caller.
-    if let (UpdateCheck::Manual, Err(source)) = (mode, write_update_cache(cache_path, now, &latest))
-    {
+    if let (UpdateCheck::Manual, Err(source)) = (mode, written) {
         return Err(AppError::Io {
             path: cache_path.into(),
             source,
@@ -262,6 +268,20 @@ mod strict_tests {
             .unwrap_err()
             .to_string()
             .contains("forced network error"));
+    }
+
+    #[test]
+    fn manual_checks_preserve_a_dismissed_version() {
+        let cache = std::env::temp_dir().join(format!(
+            "pi-switch-web-update-dismiss-test-{}-{}.json",
+            std::process::id(),
+            now_millis(),
+        ));
+        write_update_cache_with_dismiss(&cache, now_millis(), "1.0.0", "1.0.0").unwrap();
+        check_npm_update_with(&cache, UpdateCheck::Manual, || Ok("2.0.0".into())).unwrap();
+        let preserved = read_dismissed_update(&cache);
+        std::fs::remove_file(cache).unwrap();
+        assert_eq!(preserved.as_deref(), Some("1.0.0"));
     }
 
     #[test]

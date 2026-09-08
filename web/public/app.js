@@ -409,12 +409,14 @@ async function handleAction(action, target) {
       navigate("profiles", "provider", target.dataset.provider); break;
     case "provider-filter": state.providerFilter = target.dataset.value; render(); break;
     case "duplicate-provider":
+      if (!provider) break;
       await execute(async () => {
         const result = await save("provider.duplicate", { providerId: provider.id }, t("Provider 已复制", "Provider duplicated"));
         state.providerQuery = ""; state.providerFilter = "all";
         navigate("profiles", "provider", result.providerId);
       }); break;
     case "remove-provider":
+      if (!provider) break;
       confirm({ title: t("删除 Provider？", "Delete provider?"), description: t("这会从本地库删除此 Provider，并取消其 Pi 同步。关联的默认模型也会清除。", "This deletes the provider from your local library and Pi, and clears its default model if selected."), detail: provider.id, label: t("删除 Provider", "Delete provider"), danger: true },
         () => save("provider.remove", { providerId: provider.id }, t("Provider 已删除", "Provider deleted"))); break;
     case "sync-provider": {
