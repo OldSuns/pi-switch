@@ -1,47 +1,24 @@
 import { h, t, icon, iconButton, emptyState, searchInput, date } from "./ui.js";
 import { pageHeader, contextHelp } from "./shell.js";
+import { canFoldBranch, isBranchPoint, isBranchStart, messagePath, sessionTree, visibleTreeNodes, VISIBLE_TREE_LANES } from "./session-tree.js";
 
-const MAX_TREE_INDENT = 12;
+const MESSAGE_ROLES = {
+  user: { zh: "用户", en: "User", icon: "user", tone: "blue" },
+  assistant: { zh: "Pi", en: "Pi", icon: "terminal", tone: "mauve" },
+  branchSummary: { zh: "分支摘要", en: "Branch summary", icon: "branch", tone: "teal" },
+  compaction: { zh: "压缩摘要", en: "Compaction", icon: "box", tone: "peach" },
+  custom: { zh: "自定义消息", en: "Custom message", icon: "file", tone: "muted" },
+};
+
+function messageRole(message) {
+  const role = Object.hasOwn(MESSAGE_ROLES, message.role) ? MESSAGE_ROLES[message.role] : { zh: message.role, en: message.role, icon: "file", tone: "muted" };
+  return { ...role, name: t(role.zh, role.en) };
+}
 
 export function visibleSessions(state) {
   const query = state.sessionQuery.toLowerCase();
   return state.sessions.filter((session) => (!state.namedOnly || session.name)
     && [session.title, session.cwd, session.searchText].some((value) => value?.toLowerCase().includes(query)));
-}
-
-export function visibleMessages(preview, folded) {
-  if (!preview) return [];
-  const messages = new Map(preview.messages.map((message) => [message.id, message]));
-  return preview.messages.filter((message) => {
-    let parent = messages.get(message.tree.parentId);
-    const visited = new Set();
-    while (parent && !visited.has(parent.id)) {
-      if (folded.has(parent.id)) return false;
-      visited.add(parent.id);
-      parent = messages.get(parent.tree.parentId);
-    }
-    return true;
-  });
-}
-
-export function reconcilePreview(state, preview) {
-  const current = new Map(preview.messages.map((message) => [message.id, message]));
-  const folded = new Set([...state.folded].filter((id) => current.get(id)?.tree.hasChildren));
-  const visible = visibleMessages(preview, folded);
-  const visibleIds = new Set(visible.map((message) => message.id));
-  const ancestry = new Map([...(state.preview?.messages ?? []), ...preview.messages].map((message) => [message.id, message]));
-  function visibleAncestor(id) {
-    const visited = new Set();
-    while (id && !visibleIds.has(id) && !visited.has(id)) {
-      visited.add(id);
-      id = ancestry.get(id)?.tree.parentId;
-    }
-    return visibleIds.has(id) ? id : null;
-  }
-  return {
-    preview, folded,
-    messageId: visibleAncestor(state.messageId) ?? visibleAncestor(preview.activeMessageId) ?? visible[0]?.id ?? null,
-  };
 }
 
 function sessionList(state) {
@@ -66,22 +43,72 @@ function groupSessions(sessions) {
   return groups;
 }
 
-function messageContent(message, folded) {
-  const collapsed = folded?.has(message.id);
-  const branchControl = folded && message.tree.hasChildren
-    ? iconButton("toggle-branch", collapsed ? "chevron" : "chevronDown", collapsed ? t("展开分支", "Expand branch") : t("折叠分支", "Collapse branch"), 'data-message="' + h(message.id) + '" aria-expanded="' + !collapsed + '"') : "";
-  return `<div class="message-header"><span class="avatar ${message.role === "user" ? "blue" : "mauve"}">${icon(message.role === "user" ? "user" : "terminal")}</span><span>${message.role === "user" ? t("你", "You") : "Pi"}</span>${message.label ? `<span class="badge">${h(message.label)}</span>` : ""}${folded && message.tree.activePath ? `<span class="badge active-path">${t("活动分支", "Active branch")}</span>` : ""}${collapsed ? `<span class="badge">${t("已折叠", "Collapsed")}</span>` : ""}<span class="message-actions">${branchControl}${iconButton("copy-message", "copy", t("复制消息", "Copy message"), 'data-message="' + h(message.id) + '"')}</span></div>
-    <div class="markdown">${message.html}</div>`;
+function foldLabel(node, collapsed) {
+  return collapsed ? t("展开此分支的 " + node.descendants + " 条后续消息", "Expand " + node.descendants + " following messages in this branch")
+    : t("折叠此分支的 " + node.descendants + " 条后续消息", "Collapse " + node.descendants + " following messages in this branch");
 }
 
-function treePrefix(tree) {
-  const start = Math.max(0, tree.indent - MAX_TREE_INDENT);
-  let prefix = start ? "… " : "";
-  for (let level = start; level < tree.indent; level++) {
-    if (tree.showConnector && level === tree.indent - 1) prefix += tree.isLast ? "└─ " : "├─ ";
-    else prefix += tree.gutters.some((gutter) => gutter.position === level && gutter.show) ? "│  " : "   ";
-  }
-  return prefix;
+function branchLabel(node) {
+  return isBranchStart(node) ? t("分支 " + node.position + "/" + node.siblings, "Branch " + node.position + "/" + node.siblings) : "";
+}
+
+function branchDescription(node, tree) {
+  const label = branchLabel(node);
+  if (!label) return "";
+  const parentNumber = tree.nodes.get(node.parentId).index + 1;
+  return label + t(" · 接续 #" + parentNumber, " · From #" + parentNumber);
+}
+
+function messageHeader(node, state, view) {
+  const { message } = node;
+  const role = messageRole(message);
+  const collapsed = state.folded.has(node.id);
+  const branch = branchDescription(node, sessionTree(state.preview));
+  const fold = view === "reading" && canFoldBranch(node)
+    ? iconButton("toggle-branch", collapsed ? "chevron" : "chevronDown", foldLabel(node, collapsed), `data-message="${h(node.id)}" data-view="reading" aria-expanded="${!collapsed}"`) : "";
+  return `<div class="message-header"><span class="avatar ${role.tone}">${icon(role.icon)}</span><strong>${h(role.name)}</strong><span class="message-number">#${node.index + 1}</span>${branch ? `<span class="badge">${h(branch)}</span>` : ""}${message.label ? `<span class="badge message-label" title="${h(message.label)}">${h(message.label)}</span>` : ""}${node.id === state.preview.activeMessageId ? `<span class="badge">${t("当前节点", "Current node")}</span>` : ""}<span class="message-actions">${fold}${iconButton("copy-message", "copy", t("复制消息", "Copy message"), `data-message="${h(node.id)}" data-view="${view}"`)}</span></div>`;
+}
+
+function treeIndent(node, next) {
+  const depth = Math.min(node.lane, VISIBLE_TREE_LANES);
+  if (!depth) return "";
+  const continuingDepth = next ? Math.min(next.lane - Number(isBranchStart(next)), VISIBLE_TREE_LANES) : 0;
+  const guides = Array.from({ length: depth }, (_, index) => {
+    const level = index + 1;
+    const start = isBranchStart(node) && level === node.lane;
+    const end = level > continuingDepth;
+    return `<span class="tree-indent-guide${start ? " starts-branch" : ""}${end ? " ends-branch" : ""}"></span>`;
+  });
+  return `<span class="tree-indent" aria-hidden="true">${guides.join("")}</span>`;
+}
+
+function treeRow(node, state, next) {
+  const role = messageRole(node.message);
+  const collapsed = state.folded.has(node.id);
+  const selected = node.id === state.messageId;
+  const canFold = canFoldBranch(node);
+  const branch = branchDescription(node, sessionTree(state.preview));
+  const description = [role.name, "#" + (node.index + 1), branch, node.summary].filter(Boolean).join(" · ");
+  const expander = canFold
+    ? `<button class="tree-expander" type="button" tabindex="-1" data-action="toggle-branch" data-message="${h(node.id)}" data-view="tree" aria-expanded="${!collapsed}" aria-label="${h(foldLabel(node, collapsed))}" title="${h(foldLabel(node, collapsed))}">${icon(collapsed ? "chevron" : "chevronDown")}</button>`
+    : '<span class="tree-expander-space" aria-hidden="true"></span>';
+  return `<div class="tree-item message-node" role="treeitem" aria-level="${node.depth + 1}" aria-posinset="${node.position}" aria-setsize="${node.siblings}" aria-selected="${selected}" ${canFold ? `aria-expanded="${!collapsed}"` : ""} tabindex="${selected ? "0" : "-1"}" data-action="select-message" data-message="${h(node.id)}" aria-label="${h(description)}">
+    ${treeIndent(node, next)}${expander}<div class="tree-row-content">
+      ${branch ? `<div class="tree-row-branch" title="${h(branch)}">${h(branch)}</div>` : ""}
+      <div class="tree-row-meta"><span class="tree-role ${role.tone}">${icon(role.icon)}${h(role.name)}</span><span class="tree-node-number">#${node.index + 1}</span>${isBranchPoint(node) ? `<span class="tree-fork-count">${node.children.length} ${t("分支", "branches")}</span>` : ""}${node.id === state.preview.activeMessageId ? `<span class="tree-current">${t("当前", "Current")}</span>` : ""}</div>
+      <div class="tree-text" title="${h(node.summary)}">${h(node.summary || t("无文本内容", "No text content"))}</div>
+      <div class="tree-row-tags">${collapsed ? `<span class="tree-fold-count">+${node.descendants} ${t("条已折叠", "collapsed")}</span>` : ""}${node.lane > VISIBLE_TREE_LANES ? `<span>${t("分支层级 ", "Branch depth ")}${node.lane}</span>` : ""}${node.message.label ? `<span class="tree-message-label" title="${h(node.message.label)}">${h(node.message.label)}</span>` : ""}</div>
+    </div>
+  </div>`;
+}
+
+export function messageReader(state) {
+  const node = sessionTree(state.preview).nodes.get(state.messageId);
+  if (!node) return `<section id="session-message-reader" class="message-reader">${emptyState(t("选择一条消息", "Select a message"), t("点击树中的消息，在这里阅读内容。", "Select a tree node to read its content here."), "messages")}</section>`;
+  const path = messagePath(state.preview, node.id);
+  const crumbs = path.slice(-4).map((entry) => `<button class="reader-crumb" data-action="select-message" data-message="${h(entry.id)}" title="${h(entry.summary)}">${h(branchLabel(entry) || t("起点", "Start"))}</button>`).join('<span aria-hidden="true">/</span>');
+  const scrollKey = JSON.stringify([state.preview.id, node.id]);
+  return `<section id="session-message-reader" class="message-reader" data-message-context="${h(node.id)}" aria-label="${t("消息内容", "Message content")}"><div class="reader-heading"><div class="reader-breadcrumb" aria-label="${t("分支路径", "Branch path")}">${path.length > 4 ? '<span aria-hidden="true">… /</span>' : ""}${crumbs}</div>${messageHeader(node, state, "reader")}</div><div class="reader-body" data-session-scroll="message" data-scroll-key="${h(scrollKey)}"><div class="markdown">${node.message.html}</div></div></section>`;
 }
 
 function previewNotice(state) {
@@ -95,18 +122,12 @@ function previewContent(state) {
   const preview = state.preview;
   if (!preview) return notice;
   if (!preview.messages.length) return notice + emptyState(t("没有可显示的消息", "No messages to display"), t("该会话没有符合当前筛选条件的文本消息。", "This session has no text messages matching the current filter."), "messages");
-  const active = preview.messages.find((message) => message.id === state.messageId);
-  const messages = visibleMessages(preview, state.folded);
+  const tree = sessionTree(preview);
+  const nodes = visibleTreeNodes(preview, state.folded);
   if (state.previewMode === "reading") {
-    return notice + `<div class="reading-view" data-session-scroll="reading" data-session-id="${h(preview.id)}" aria-label="${t("会话阅读", "Conversation reading")}">` + messages.map((message) => `<article class="reading-message message-node" tabindex="${message.id === state.messageId ? "0" : "-1"}" aria-current="${message.id === state.messageId}" aria-label="${h((message.role === "user" ? t("你", "You") : "Pi") + ": " + message.text.slice(0, 100))}" data-action="select-message" data-message="${h(message.id)}"><span class="reading-tree tree-prefix" aria-hidden="true"><span class="tree-connector">${treePrefix(message.tree)}</span></span><div class="reading-body">${messageContent(message, state.folded)}</div></article>`).join("") + "</div>";
+    return notice + `<div class="reading-view" data-session-scroll="reading" data-session-id="${h(preview.id)}" aria-label="${t("会话阅读", "Conversation reading")}">` + nodes.map((node) => `<article class="reading-message message-node ${node.message.tree.activePath ? "on-active-path" : ""}" data-depth="${Math.min(node.lane, VISIBLE_TREE_LANES)}" tabindex="${node.id === state.messageId ? "0" : "-1"}" aria-current="${node.id === state.messageId}" aria-label="${h(messageRole(node.message).name + ": " + node.summary)}" data-action="select-message" data-message="${h(node.id)}">${messageHeader(node, state, "reading")}<div class="markdown">${node.message.html}</div>${state.folded.has(node.id) ? `<div class="reading-fold-note">${icon("branch")}${t("已折叠 ", "Collapsed ")}${node.descendants} ${t("条后续消息", "following messages")}</div>` : ""}</article>`).join("") + "</div>";
   }
-  return notice + `<div class="tree-list" data-session-scroll="tree" data-session-id="${h(preview.id)}" role="tree" aria-label="${t("会话分支", "Conversation tree")}">
-    ${messages.map((message) => {
-      return `<button class="tree-item message-node" role="treeitem" aria-level="${message.tree.level + 1}" aria-selected="${message.id === state.messageId}" ${message.tree.hasChildren ? 'aria-expanded="' + !state.folded.has(message.id) + '"' : ""} tabindex="${message.id === state.messageId ? "0" : "-1"}" data-action="select-message" data-message="${h(message.id)}">
-        <span class="tree-prefix" aria-hidden="true"><span class="tree-connector">${treePrefix(message.tree)}</span></span>${message.tree.hasChildren ? icon(state.folded.has(message.id) ? "chevron" : "chevronDown") : icon(message.role === "user" ? "user" : "terminal")}<span class="tree-role ${message.role === "user" ? "user" : ""}">${message.role === "user" ? "You" : "Pi"}</span><span class="tree-text">${h(message.text.replace(/\s+/g, " ").slice(0, 240))}</span>${message.tree.activePath ? '<span class="tree-active" title="' + t("当前活动分支", "Active branch") + '"></span>' : ""}
-      </button>`;
-    }).join("")}
-  </div>${active ? `<article class="message-preview">${messageContent(active)}</article>` : ""}`;
+  return notice + `<div class="tree-workspace"><section class="tree-panel" aria-label="${t("消息树", "Message tree")}"><div class="tree-panel-heading"><strong>${t("消息树", "Message tree")}</strong><span>${nodes.length} / ${tree.ordered.length}</span></div><div class="tree-list" data-session-scroll="tree" data-session-id="${h(preview.id)}" role="tree" aria-label="${t("会话分支", "Conversation tree")}">${nodes.map((node, index) => treeRow(node, state, nodes[index + 1])).join("")}</div></section>${messageReader(state)}</div>`;
 }
 
 function sessionPreview(state) {
@@ -116,9 +137,16 @@ function sessionPreview(state) {
     return `<section class="panel"><div class="panel-body"><div class="banner error" role="alert">${icon("warning")}<span>${state.sessionsError ? t("会话列表读取失败，请重新扫描。", "Could not load the session list. Rescan to try again.") : t("会话不存在或已删除。", "This session does not exist or has been deleted.")}</span></div><p class="missing-session-id">${h(state.sessionId)}</p><div class="inline-actions"><button class="btn" data-action="refresh-sessions">${icon("refresh")}${t("重新扫描", "Rescan sessions")}</button><button class="btn" data-action="clear-session">${t("返回列表", "Back to list")}</button></div></div></section>`;
   }
   if (!session) return `<section class="panel">${emptyState(t("回到对话发生的地方", "Pick up the thread"), t("选择左侧会话，浏览完整消息和分支历史。", "Select a session to explore its messages and branches."), "messages")}</section>`;
-  const active = state.preview?.messages.find((message) => message.id === state.messageId);
+  const tree = state.preview && sessionTree(state.preview);
+  const canFold = tree?.ordered.some(canFoldBranch);
   return `<section class="panel session-preview" aria-busy="${state.previewLoading}"><div class="panel-header"><div><h2>${h(session.title)}</h2><div class="item-subtitle" title="${h(session.cwd)}">${h(session.cwd)}</div></div>${iconButton("delete-session", "trash", t("删除会话", "Delete session"), "", "danger")}</div>
-    <div class="preview-toolbar"><div class="segments" aria-label="${t("预览模式", "Preview mode")}"><button data-action="preview-mode" data-mode="tree" aria-pressed="${state.previewMode === "tree"}">${icon("branch")}Tree</button><button data-action="preview-mode" data-mode="reading" aria-pressed="${state.previewMode === "reading"}">${icon("book")}${t("阅读", "Read")}</button></div><div class="inline-actions"><label class="checkbox-label"><input type="checkbox" data-action="user-only" ${state.userOnly ? "checked" : ""}>${t("仅用户", "User only")}</label>${iconButton("toggle-branch", "branch", t("折叠 / 展开当前分支", "Collapse / expand selected branch"), active?.tree.hasChildren ? 'aria-expanded="' + !state.folded.has(active.id) + '"' : "disabled")}</div></div>
+    <div class="preview-toolbar"><div class="segments" aria-label="${t("预览模式", "Preview mode")}"><button data-action="preview-mode" data-mode="tree" aria-pressed="${state.previewMode === "tree"}">${icon("branch")}${t("树状", "Tree")}</button><button data-action="preview-mode" data-mode="reading" aria-pressed="${state.previewMode === "reading"}">${icon("book")}${t("阅读", "Read")}</button></div>
+      <div class="preview-controls"><div class="preview-tree-actions" role="group" aria-label="${t("分支操作", "Branch actions")}">
+        ${iconButton("collapse-tree", "chevronsUp", t("全部折叠", "Collapse all"), canFold ? "" : "disabled")}
+        ${iconButton("expand-tree", "chevronsDown", t("全部展开", "Expand all"), state.folded.size ? "" : "disabled")}
+        ${iconButton("active-message", "target", t("定位当前", "Locate current"), state.preview?.activeMessageId ? "" : "disabled")}
+      </div><label class="checkbox-label"><input type="checkbox" data-action="user-only" ${state.userOnly ? "checked" : ""}>${t("仅用户", "User only")}</label></div>
+    </div>
     ${previewContent(state)}
     <div class="models-foot"><span>${session.messageCount} ${t("条消息", "messages")}${state.preview ? ' <span class="subtle-divider">·</span> ' + state.preview.branchPoints + " " + t("个分叉", "branches") : ""}</span><span>${date(session.modifiedAt)}</span></div>
   </section>`;
@@ -130,5 +158,5 @@ export function sessions(state) {
   if (!state.sessionsLoaded) return header + `<div class="loading-state" role="status"><span class="spinner"></span>${t("正在扫描会话…", "Scanning sessions…")}</div>`;
   if (state.sessionsError && !state.sessions.length) return header + error;
   return header + error + `<div class="sessions-layout">${sessionList(state)}${sessionPreview(state)}</div>`
-    + contextHelp([["↑ ↓", t("浏览消息", "Browse messages")], ["← →", t("父级 / 子级", "Parent / child")], ["Space", t("折叠分支", "Toggle branch")], ["v", t("切换阅读视图", "Toggle reading")], ["Ctrl C", t("复制当前消息", "Copy message")], ["/", t("筛选会话", "Filter sessions")]]);
+    + contextHelp([["↑ ↓", t("浏览消息", "Browse messages")], ["← →", t("折叠 / 展开与父子导航", "Fold / expand and navigate")], ["Space", t("折叠 / 展开分支", "Toggle branches")], ["Home / End", t("首条 / 末条", "First / last")], ["v", t("切换阅读视图", "Toggle reading")], ["Ctrl C", t("复制当前消息", "Copy message")], ["/", t("筛选会话", "Filter sessions")]]);
 }

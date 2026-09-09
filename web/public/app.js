@@ -3,7 +3,8 @@ import { shell, pages } from "./shell.js";
 import { overview } from "./overview.js";
 import { profiles, selectedProvider, visibleProviders, visibleModels } from "./profiles.js";
 import { orderSnapshot, reorderedVisibleIds } from "./profile-order.js";
-import { sessions, reconcilePreview } from "./sessions.js";
+import { sessions, messageReader } from "./sessions.js";
+import { canFoldBranch, expandedMessagePath, reconcilePreview, sessionTree, visibleTreeNodes } from "./session-tree.js";
 import { settings } from "./settings.js";
 import * as dialogs from "./dialogs.js";
 import { setTheme } from "./appearance.js";
@@ -59,7 +60,7 @@ function render({ resetScroll = false, focusMain = false } = {}) {
   const main = document.getElementById("main");
   const scrollTop = resetScroll ? 0 : main?.scrollTop ?? 0;
   const sessionScroll = resetScroll ? [] : [...app.querySelectorAll("[data-session-scroll]")].map((element) => ({
-    name: element.dataset.sessionScroll, session: element.dataset.sessionId, top: element.scrollTop, left: element.scrollLeft,
+    name: element.dataset.sessionScroll, key: element.dataset.scrollKey ?? element.dataset.sessionId, top: element.scrollTop, left: element.scrollLeft,
   }));
   const active = document.activeElement;
   const activeId = app.contains(active) ? active.id : null;
@@ -77,7 +78,7 @@ function render({ resetScroll = false, focusMain = false } = {}) {
   document.getElementById("main").scrollTop = scrollTop;
   for (const position of sessionScroll) {
     const element = app.querySelector('[data-session-scroll="' + position.name + '"]');
-    if (element && element.dataset.sessionId === position.session) {
+    if (element && (element.dataset.scrollKey ?? element.dataset.sessionId) === position.key) {
       element.scrollTop = position.top;
       element.scrollLeft = position.left;
     }
@@ -90,7 +91,11 @@ function render({ resetScroll = false, focusMain = false } = {}) {
     document.querySelector(activeSelector)?.focus({ preventScroll: true });
   }
   if (focusMain) document.getElementById("main").focus({ preventScroll: true });
-  for (const anchor of document.querySelectorAll(".markdown a")) {
+  prepareMarkdownLinks(app);
+}
+
+function prepareMarkdownLinks(root) {
+  for (const anchor of root.querySelectorAll(".markdown a")) {
     anchor.target = "_blank";
     anchor.rel = "noreferrer";
   }
@@ -289,19 +294,21 @@ async function loadPreview() {
   let result;
   let failure;
   try {
-    result = await api("sessions.preview", { id, userOnly });
+    const preview = await api("sessions.preview", { id, userOnly });
+    if (requestVersion !== previewVersion || id !== state.sessionId || userOnly !== state.userOnly) return;
+    result = reconcilePreview(state, { ...preview, userOnly });
   } catch (error) {
     failure = error;
   }
   if (requestVersion !== previewVersion || id !== state.sessionId || userOnly !== state.userOnly) return;
   state.previewLoading = false;
   const previousMessageId = state.messageId;
-  const restoreMessageFocus = document.activeElement.matches(".message-node");
+  const restoreMessageFocus = Boolean(document.activeElement.closest(".message-node,.message-reader"));
   if (failure) {
     state.previewError = failure.message;
     if (state.preview) state.userOnly = state.preview.userOnly;
   } else {
-    Object.assign(state, reconcilePreview(state, { ...result, userOnly }));
+    Object.assign(state, result);
   }
   render();
   if (!failure && previousMessageId !== state.messageId) revealMessage(restoreMessageFocus);
@@ -424,16 +431,57 @@ function revealMessage(focus = false) {
 }
 
 function focusMessage(id, { focus = true } = {}) {
-  state.messageId = id;
-  render();
+  const next = app.querySelector('.message-node[data-message="' + CSS.escape(id) + '"]');
+  if (!next) return;
+  if (state.messageId !== id) {
+    const previous = selectedMessageElement();
+    const selectedAttribute = state.previewMode === "tree" ? "aria-selected" : "aria-current";
+    previous?.setAttribute(selectedAttribute, "false");
+    previous?.setAttribute("tabindex", "-1");
+    next.setAttribute(selectedAttribute, "true");
+    next.setAttribute("tabindex", "0");
+    state.messageId = id;
+    if (state.previewMode === "tree") {
+      document.getElementById("session-message-reader").outerHTML = messageReader(state);
+      prepareMarkdownLinks(document.getElementById("session-message-reader"));
+    }
+  }
   revealMessage(focus);
 }
 
 function setPreviewMode(mode) {
-  const restoreMessageFocus = document.activeElement.matches(".message-node");
+  const restoreMessageFocus = Boolean(document.activeElement.closest(".message-node,.message-reader"));
   state.previewMode = mode;
   render();
   revealMessage(restoreMessageFocus);
+}
+
+function toggleMessageBranch(id, focus = false) {
+  if (!state.preview || !canFoldBranch(sessionTree(state.preview).nodes.get(id))) return;
+  const folded = new Set(state.folded);
+  if (folded.has(id)) folded.delete(id); else folded.add(id);
+  const previousMessageId = state.messageId;
+  Object.assign(state, reconcilePreview({ ...state, folded }, state.preview));
+  render();
+  if (focus || state.messageId !== previousMessageId) revealMessage(focus);
+}
+
+function foldMessageTree(collapse) {
+  if (!state.preview) return;
+  const tree = sessionTree(state.preview);
+  const folded = collapse ? new Set(tree.ordered.filter(canFoldBranch).map((node) => node.id)) : new Set();
+  Object.assign(state, reconcilePreview({ ...state, folded }, state.preview));
+  render();
+  revealMessage(!collapse);
+}
+
+function locateActiveMessage() {
+  const id = state.preview?.activeMessageId;
+  if (!id) return;
+  state.folded = expandedMessagePath(state.preview, state.folded, id);
+  state.messageId = id;
+  render();
+  revealMessage();
 }
 
 function setProfileSearch(scope, open) {
@@ -649,14 +697,12 @@ async function handleAction(action, target) {
     case "select-message": focusMessage(target.dataset.message); break;
     case "toggle-branch": {
       const id = target?.dataset.message ?? state.messageId;
-      if (state.preview?.messages.find((message) => message.id === id)?.tree.hasChildren) {
-        const folded = new Set(state.folded);
-        if (folded.has(id)) folded.delete(id); else folded.add(id);
-        state.folded = folded;
-        focusMessage(id, { focus: !target?.matches("button") });
-      }
+      toggleMessageBranch(id, !target);
       break;
     }
+    case "collapse-tree": foldMessageTree(true); break;
+    case "expand-tree": foldMessageTree(false); break;
+    case "active-message": locateActiveMessage(); break;
     case "copy-message": {
       const message = state.preview?.messages.find((item) => item.id === (target?.dataset.message ?? state.messageId));
       if (message) await copyText(message.text);
@@ -752,7 +798,7 @@ document.addEventListener("submit", (event) => {
 
 function moveList(direction) {
   const active = document.activeElement;
-  if (active.closest(".message-node") && !active.matches(".message-node")) return false;
+  if (active.closest(".tree-panel,.message-reader,.reading-view") && !active.matches(".message-node")) return false;
   const selector = active.matches(".message-node") ? ".message-node" : active.closest(".session-list") ? ".session-option" : active.closest(".model-row") ? ".model-row" : state.page === "profiles" ? ".provider-option" : state.page === "sessions" ? ".session-option" : null;
   if (!selector) return false;
   const list = [...document.querySelectorAll(selector)];
@@ -768,10 +814,14 @@ function moveList(direction) {
 }
 
 function treeDirection(direction) {
-  const current = state.preview?.messages.find((message) => message.id === state.messageId);
+  const current = state.preview && sessionTree(state.preview).nodes.get(state.messageId);
   if (!current) return;
-  if (direction > 0 && state.folded.has(current.id)) { state.folded.delete(current.id); focusMessage(current.id); return; }
-  const next = direction < 0 ? current.tree.parentId : state.preview.messages.find((message) => message.tree.parentId === current.id)?.id;
+  const collapsed = state.folded.has(current.id);
+  if (canFoldBranch(current) && (direction > 0 ? collapsed : !collapsed)) {
+    toggleMessageBranch(current.id, true);
+    return;
+  }
+  const next = direction < 0 ? current.parentId : current.children[0];
   if (next) focusMessage(next);
 }
 
@@ -804,8 +854,9 @@ document.addEventListener("keydown", (event) => {
     }
     return;
   }
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c" && event.target.closest(".message-node") && !window.getSelection().toString()) {
-    event.preventDefault(); dispatch("copy-message", event.target.closest(".message-node")); return;
+  const messageContext = event.target.closest(".message-node,.message-reader");
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c" && messageContext && !window.getSelection().toString()) {
+    event.preventDefault(); dispatch("copy-message", { dataset: { message: messageContext.dataset.message ?? messageContext.dataset.messageContext } }); return;
   }
   if (event.ctrlKey || event.metaKey || event.altKey || state.busy) return;
   const key = event.key;
@@ -823,7 +874,7 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (["ArrowLeft", "ArrowRight", "h", "l"].includes(key) && ["profiles", "sessions"].includes(state.page)) {
-    if (event.target.closest(".message-node") && !event.target.matches(".message-node")) return;
+    if (event.target.closest(".tree-panel,.message-reader,.reading-view") && !event.target.matches(".message-node")) return;
     event.preventDefault();
     const direction = key === "ArrowRight" || key === "l" ? 1 : -1;
     if (event.target.matches(".message-node")) treeDirection(direction);
@@ -846,11 +897,17 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (state.page === "sessions") {
+    if (["Home", "End"].includes(key) && event.target.matches(".message-node")) {
+      event.preventDefault();
+      const nodes = visibleTreeNodes(state.preview, state.folded);
+      const next = key === "Home" ? nodes[0] : nodes.at(-1);
+      if (next) focusMessage(next.id);
+    }
     if (key === "n") { event.preventDefault(); state.namedOnly = !state.namedOnly; render(); }
     if (key === "u") { event.preventDefault(); state.userOnly = !state.userOnly; void loadPreview(); }
     if (key === "d" || key === "Delete") { event.preventDefault(); dispatch("delete-session", event.target.closest(".session-option")); }
     if (key === " " && event.target.matches(".message-node")) { event.preventDefault(); dispatch("toggle-branch"); }
-    if (key === "Enter" && event.target.matches(".reading-message")) { event.preventDefault(); dispatch("select-message", event.target); }
+    if (key === "Enter" && event.target.matches(".message-node")) { event.preventDefault(); dispatch("select-message", event.target); }
     return;
   }
   if (state.page !== "profiles") return;
@@ -875,7 +932,7 @@ function focusSelector(element) {
   if (element.matches(".model-row")) return '.model-row[data-model="' + CSS.escape(element.dataset.model) + '"]';
   if (element.dataset.action || element.hasAttribute("data-order-handle")) {
     let selector = element.dataset.action ? '[data-action="' + CSS.escape(element.dataset.action) + '"]' : "[data-order-handle]";
-    for (const key of ["provider", "model", "session", "message", "value", "mode", "scope", "item"]) {
+    for (const key of ["provider", "model", "session", "message", "value", "mode", "scope", "item", "view"]) {
       if (element.dataset[key]) selector += '[data-' + key + '="' + CSS.escape(element.dataset[key]) + '"]';
     }
     return selector;
