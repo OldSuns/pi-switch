@@ -1,6 +1,8 @@
 import { h, t, icon, initials, tint, tokens, price, modelName, capabilities, emptyState, listSearch, toggle, iconButton } from "./ui.js";
 import { pageHeader, contextHelp } from "./shell.js";
 
+const API_KEY_EDGE_LENGTH = 4;
+
 function sortControl(scope, ordering, providerId = "") {
   const id = scope === "providers" ? "provider-sort" : "model-sort";
   const options = [
@@ -59,10 +61,17 @@ function providerList(state) {
   </section>`;
 }
 
+function apiKeyPreview(value) {
+  if (!value) return "auth.json / CLI";
+  if (/^[$!]/.test(value)) return value;
+  const characters = Array.from(value);
+  const mask = "••••••••";
+  if (characters.length <= API_KEY_EDGE_LENGTH * 2) return mask;
+  return characters.slice(0, API_KEY_EDGE_LENGTH).join("") + mask + characters.slice(-API_KEY_EDGE_LENGTH).join("");
+}
+
 function providerInfo(provider) {
-  const apiKey = provider.apiKey
-    ? (/^[$!]/.test(provider.apiKey) ? provider.apiKey : "••••••••••••")
-    : "auth.json / CLI";
+  const apiKey = apiKeyPreview(provider.apiKey);
   return `<section class="panel">
     <div class="provider-info"><div class="provider-title-row">
       <span class="avatar ${tint(provider.id)}">${initials(provider.id)}</span>
