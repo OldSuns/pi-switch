@@ -59,7 +59,7 @@ export function overview(state) {
   const modelCount = providers.reduce((sum, provider) => sum + provider.models.length, 0);
   const syncedCount = synced.reduce((sum, provider) => sum + provider.models.length, 0);
   const headerActions = `<button class="btn" data-action="doctor">${icon("shield")}${t("检查配置", "Validate")}</button><button class="btn primary" data-action="new-provider">${icon("plus")}${t("新建 Provider", "New provider")}</button>`;
-  return pageHeader("", t("工作台", "Overview"), t("查看当前配置，切换默认模型，浏览最近的会话。", "Review your configuration, switch the default model, and browse recent sessions."), headerActions)
+  return pageHeader(t("工作台", "Overview"), t("查看当前配置，切换默认模型，浏览最近的会话。", "Review your configuration, switch the default model, and browse recent sessions."), headerActions)
     + `<div class="stats-grid">
       ${stat("Providers", number(providers.length), "box", `${number(synced.length)} ${t("个已同步到 Pi", "synced to Pi")}`)}
       ${stat(t("本地模型", "Local models"), number(modelCount), "cpu", t("所有 provider 的模型", "Across all providers"), "mauve")}

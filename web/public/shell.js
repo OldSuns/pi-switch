@@ -39,8 +39,8 @@ export function shell(state, content) {
   </div>`;
 }
 
-export function pageHeader(eyebrow, title, description, actions = "") {
-  return `<div class="page-header"><div>${eyebrow ? '<div class="eyebrow">' + eyebrow + "</div>" : ""}<h1>${title}</h1><p>${description}</p></div>${actions ? `<div class="header-actions">${actions}</div>` : ""}</div>`;
+export function pageHeader(title, description = "", actions = "") {
+  return `<div class="page-header${description ? "" : " compact"}"><div><h1>${title}</h1>${description ? `<p>${description}</p>` : ""}</div>${actions ? `<div class="header-actions">${actions}</div>` : ""}</div>`;
 }
 
 export function contextHelp(items) {

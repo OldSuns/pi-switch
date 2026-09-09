@@ -117,6 +117,14 @@ export function searchInput(id, value, placeholder) {
     + '<input id="' + id + '" type="search" autocomplete="off" value="' + h(value) + '" placeholder="' + h(placeholder) + '" aria-label="' + h(placeholder) + '"><kbd>/</kbd></label>';
 }
 
+export function listSearch({ scope, query, open, label, placeholder = label + "…" }) {
+  const id = scope + "-search";
+  return {
+    button: iconButton("toggle-search", "search", label, `data-scope="${h(scope)}" aria-controls="${h(id)}-region" aria-expanded="${open}"`, "search-toggle"),
+    field: `<div id="${h(id)}-region" class="list-search" ${open ? "" : "hidden"}>${searchInput(id, query, placeholder)}</div>`,
+  };
+}
+
 export function toggle(action, checked, label, attributes = "") {
   return '<label class="switch" title="' + h(label) + '"><input type="checkbox" role="switch" data-action="' + action + '" aria-label="' + h(label) + '" ' + (checked ? "checked " : "") + attributes + '><span class="switch-track"></span></label>';
 }

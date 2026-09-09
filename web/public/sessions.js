@@ -1,4 +1,4 @@
-import { h, t, icon, iconButton, emptyState, searchInput, date } from "./ui.js";
+import { h, t, icon, iconButton, emptyState, listSearch, date } from "./ui.js";
 import { pageHeader, contextHelp } from "./shell.js";
 import { canFoldBranch, isBranchPoint, isBranchStart, messagePath, sessionTree, visibleTreeNodes, VISIBLE_TREE_LANES } from "./session-tree.js";
 
@@ -24,8 +24,10 @@ export function visibleSessions(state) {
 function sessionList(state) {
   const sessions = visibleSessions(state);
   const groups = groupSessions(sessions);
-  return `<section class="panel session-sidebar" aria-busy="${state.sessionsLoading}"><div class="panel-header"><h2>${t("本地会话", "Local sessions")}<span class="count">${sessions.length}</span></h2>${iconButton("refresh-sessions", "refresh", t("重新扫描会话", "Rescan sessions"))}</div>
-    <div class="provider-filters">${searchInput("session-search", state.sessionQuery, t("搜索会话、工作目录…", "Search sessions, workspaces…"))}<label class="checkbox-label"><input type="checkbox" data-action="named-only" ${state.namedOnly ? "checked" : ""}>${t("仅显示已命名会话", "Only named sessions")}</label></div>
+  const search = listSearch({ scope: "session", query: state.sessionQuery, open: state.sessionSearchOpen, label: t("搜索会话", "Search sessions"), placeholder: t("搜索会话、工作目录…", "Search sessions, workspaces…") });
+  return `<section class="panel session-sidebar" aria-busy="${state.sessionsLoading}"><div class="panel-header"><h2>${t("本地会话", "Local sessions")}<span class="count">${sessions.length}</span></h2><div class="inline-actions">${search.button}${iconButton("refresh-sessions", "refresh", t("重新扫描会话", "Rescan sessions"))}</div></div>
+    ${search.field}
+    <div class="provider-filters"><label class="checkbox-label"><input type="checkbox" data-action="named-only" ${state.namedOnly ? "checked" : ""}>${t("仅显示已命名会话", "Only named sessions")}</label></div>
     <div class="session-list" data-session-scroll="list">
       ${sessions.length ? Array.from(groups, ([cwd, entries]) => `<div class="session-group" title="${h(cwd)}">${icon("folder")}<span>${h(cwd || t("未知工作目录", "Unknown workspace"))}</span></div>
         ${entries.map((session) => `<button class="session-option ${session.name ? "named" : ""}" data-action="select-session" data-session="${h(session.id)}" aria-current="${state.sessionId === session.id}">
@@ -153,7 +155,7 @@ function sessionPreview(state) {
 }
 
 export function sessions(state) {
-  const header = pageHeader("CONVERSATIONS & BRANCHES", t("会话记录", "Session history"), t("按工作目录整理对话，沿着每一条分支回顾思路。", "Conversations, organized by workspace. Follow every branch of thought."), `<button class="btn" data-action="refresh-sessions">${state.sessionsLoading ? '<span class="spinner"></span>' : icon("refresh")}${state.sessionsLoading ? t("正在扫描…", "Scanning…") : t("重新扫描", "Rescan sessions")}</button>`);
+  const header = pageHeader(t("会话记录", "Session history"), "", `<button class="btn" data-action="refresh-sessions">${state.sessionsLoading ? '<span class="spinner"></span>' : icon("refresh")}${state.sessionsLoading ? t("正在扫描…", "Scanning…") : t("重新扫描", "Rescan sessions")}</button>`);
   const error = state.sessionsError ? `<div class="banner error" role="alert">${icon("warning")}<span>${h(state.sessionsError)}</span></div>` : "";
   if (!state.sessionsLoaded) return header + `<div class="loading-state" role="status"><span class="spinner"></span>${t("正在扫描会话…", "Scanning sessions…")}</div>`;
   if (state.sessionsError && !state.sessions.length) return header + error;

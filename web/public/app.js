@@ -11,7 +11,7 @@ import { setTheme } from "./appearance.js";
 
 const state = {
   snapshot: null, page: "overview", providerId: null, providerQuery: "", providerFilter: "all", modelQuery: "", modelId: null,
-  providerSearchOpen: false, modelSearchOpen: false,
+  providerSearchOpen: false, modelSearchOpen: false, sessionSearchOpen: false,
   sessions: [], sessionsLoaded: false, sessionsLoading: false, sessionsError: null, sessionId: null, sessionQuery: "", namedOnly: false,
   preview: null, previewLoading: false, previewError: null, previewMode: "tree", messageId: null, userOnly: false, folded: new Set(),
   checks: null, busy: false, connected: false, navOpen: false, lastSaved: null,
@@ -29,6 +29,7 @@ let profileDrag = null;
 const profileInsertionLine = document.createElement("div");
 profileInsertionLine.className = "order-insertion-line";
 profileInsertionLine.setAttribute("aria-hidden", "true");
+const SEARCH_SCOPES = new Map(["provider", "model", "session"].map((scope) => [scope + "-search", scope]));
 const BUSY_ACTIONS = new Set(["close-toast", "toggle-nav", "close-nav", "select-model", "skip-to-content", "theme"]);
 const mobileViewport = matchMedia("(max-width: 760px)");
 
@@ -484,12 +485,11 @@ function locateActiveMessage() {
   revealMessage();
 }
 
-function setProfileSearch(scope, open) {
-  const prefix = scope === "providers" ? "provider" : "model";
-  state[prefix + "SearchOpen"] = open;
-  if (!open) state[prefix + "Query"] = "";
+function setSearch(scope, open) {
+  state[scope + "SearchOpen"] = open;
+  if (!open) state[scope + "Query"] = "";
   render();
-  const target = open ? document.getElementById(prefix + "-search") : app.querySelector('[data-action="toggle-profile-search"][data-scope="' + scope + '"]');
+  const target = open ? document.getElementById(scope + "-search") : app.querySelector('[data-action="toggle-search"][data-scope="' + scope + '"]');
   target?.focus();
 }
 
@@ -604,9 +604,9 @@ async function handleAction(action, target) {
     case "confirm": { const task = dialogContext.task; await execute(task); break; }
     case "reload": await execute(async () => { await refresh(); toast(t("已重新读取本地配置", "Local configuration reloaded")); }); break;
     case "new-provider": editProvider(); break;
-    case "toggle-profile-search": {
+    case "toggle-search": {
       const { scope } = target.dataset;
-      setProfileSearch(scope, !(scope === "providers" ? state.providerSearchOpen : state.modelSearchOpen));
+      setSearch(scope, !state[scope + "SearchOpen"]);
       break;
     }
     case "profile-sort": {
@@ -753,9 +753,8 @@ document.addEventListener("change", (event) => {
   if (target.dataset.action) dispatch(target.dataset.action, target);
 });
 document.addEventListener("input", (event) => {
-  const fields = { "provider-search": "providerQuery", "model-search": "modelQuery", "session-search": "sessionQuery" };
-  const key = fields[event.target.id];
-  if (key) { state[key] = event.target.value; render(); }
+  const scope = SEARCH_SCOPES.get(event.target.id);
+  if (scope) { state[scope + "Query"] = event.target.value; render(); }
   if (event.target.id === "import-search") {
     dialogContext.query = event.target.value;
     openDialog(dialogs.selectionDialog(dialogContext), dialogContext, true);
@@ -827,12 +826,13 @@ function treeDirection(direction) {
 
 document.addEventListener("keydown", (event) => {
   if (event.defaultPrevented || event.isComposing || !state.snapshot) return;
-  if (!dialog.open && event.key === "Escape" && ["provider-search", "model-search"].includes(event.target.id)) {
+  const searchScope = SEARCH_SCOPES.get(event.target.id);
+  if (!dialog.open && event.key === "Escape" && searchScope) {
     event.preventDefault();
-    setProfileSearch(event.target.id === "provider-search" ? "providers" : "models", false);
+    setSearch(searchScope, false);
     return;
   }
-  if (dialog.open || event.target.matches("input,textarea,select,[contenteditable=true]")) return;
+  if (dialog.open || event.target.closest("input,textarea,select,[contenteditable=true]")) return;
   const orderRow = event.target.closest("[data-order-item]");
   if (event.altKey && !event.ctrlKey && !event.metaKey && ["ArrowUp", "ArrowDown"].includes(event.key) && orderRow && !state.busy) {
     const { orderScope: scope, orderProvider: provider, orderId: item } = orderRow.dataset;
@@ -864,8 +864,8 @@ document.addEventListener("keydown", (event) => {
   if (key === "?") { event.preventDefault(); dispatch("help"); return; }
   if (key === "/") {
     event.preventDefault();
-    if (state.page === "sessions") document.getElementById("session-search")?.focus();
-    else if (state.page === "profiles") setProfileSearch(event.target.closest(".models-panel") ? "models" : "providers", true);
+    if (state.page === "sessions") setSearch("session", true);
+    else if (state.page === "profiles") setSearch(event.target.closest(".models-panel") ? "model" : "provider", true);
     return;
   }
   if (event.target.closest(".order-handle")) return;

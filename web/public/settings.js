@@ -16,7 +16,7 @@ export function settings(state) {
     [t("会话目录", "Session directory"), "sessions"],
     [t("备份目录", "Backup directory"), "backups"],
   ];
-  return pageHeader("", t("设置", "Settings"), t("管理界面偏好、配置备份与程序更新。", "Manage interface preferences, configuration backups, and updates."))
+  return pageHeader(t("设置", "Settings"), t("管理界面偏好、配置备份与程序更新。", "Manage interface preferences, configuration backups, and updates."))
     + `<div class="settings-layout"><div>
       <section class="panel settings-group"><div class="panel-header"><h2>${icon("sliders")}${t("偏好设置", "Preferences")}</h2></div>
         ${setting(t("界面语言", "Language"), t("Web 和 TUI 共享这项设置。", "Shared between the Web interface and TUI."), `<select data-action="language" aria-label="${t("界面语言", "Interface language")}"><option value="zh-CN" ${snapshot.language === "zh-CN" ? "selected" : ""}>简体中文</option><option value="en" ${snapshot.language === "en" ? "selected" : ""}>English</option></select>`)}
