@@ -24,6 +24,7 @@ pub fn load_snapshot(paths: &Paths) -> Result<Snapshot> {
         pi_settings_path: paths.pi_settings.display().to_string(),
         app_settings_path: paths.app_settings.display().to_string(),
         providers: views,
+        ordering: ordering::read(&library)?,
         default_provider: string_field(&settings.pi, "defaultProvider")?,
         default_model: string_field(&settings.pi, "defaultModel")?,
         language: language_field(&settings.app)?,
@@ -42,7 +43,8 @@ fn load_provider_documents(paths: &Paths) -> Result<(Value, Value, Option<String
         if !paths.providers.exists() {
             let models = read_document(&paths.pi_models, json!({ "providers": {} }))?;
             validate_provider_document(&models)?;
-            let library = local_library_from_models(&models);
+            let mut library = local_library_from_models(&models);
+            ordering::sync(&mut library, None)?;
             write_initial_document(&paths.providers, &library)?;
             return Ok((library, models, None));
         }
@@ -68,7 +70,8 @@ fn load_provider_documents(paths: &Paths) -> Result<(Value, Value, Option<String
             let models = read_document(&paths.pi_models, json!({ "providers": {} }))?;
             validate_provider_document(&models)?;
             let archived = archive_corrupt_provider_store(paths)?;
-            let rebuilt = local_library_from_models(&models);
+            let mut rebuilt = local_library_from_models(&models);
+            ordering::sync(&mut rebuilt, None)?;
             write_initial_document(&paths.providers, &rebuilt)?;
             return Ok((
                 rebuilt,
@@ -81,6 +84,7 @@ fn load_provider_documents(paths: &Paths) -> Result<(Value, Value, Option<String
         }
     };
 
+    ordering::sync(&mut library, None)?;
     let pi_providers = providers_object(&models)?;
     let local_providers = providers_object_mut(&mut library)?;
     let mut changed = false;
@@ -97,12 +101,14 @@ fn load_provider_documents(paths: &Paths) -> Result<(Value, Value, Option<String
         let mut library = read_document(&paths.providers, json!({}))?;
         validate_provider_document(&models)?;
         validate_local_library(&library)?;
+        ordering::sync(&mut library, None)?;
         let local = providers_object_mut(&mut library)?;
         for (id, provider) in providers_object(&models)? {
             if local.get(id) != Some(provider) {
                 local.insert(id.clone(), provider.clone());
             }
         }
+        ordering::sync(&mut library, None)?;
         write_document(paths, &lock, &paths.providers, &library)?;
         return Ok((library, models, None));
     }
@@ -164,12 +170,14 @@ pub(super) fn lock_provider_documents(paths: &Paths) -> Result<(WriteLock, Value
     let models = read_document(&paths.pi_models, json!({ "providers": {} }))?;
     validate_local_library(&library)?;
     validate_provider_document(&models)?;
+    ordering::sync(&mut library, None)?;
     let local = providers_object_mut(&mut library)?;
     for (id, provider) in providers_object(&models)? {
         if local.get(id) != Some(provider) {
             local.insert(id.clone(), provider.clone());
         }
     }
+    ordering::sync(&mut library, None)?;
     Ok((lock, library, models))
 }
 
@@ -194,6 +202,8 @@ pub(super) fn write_provider_changes(
     settings: Option<&Value>,
     library: &Value,
 ) -> Result<()> {
+    let mut library = library.clone();
+    ordering::record_changes(&mut library)?;
     let models_changed = models
         .map(|value| write_document(paths, lock, &paths.pi_models, value))
         .transpose()?
@@ -211,7 +221,7 @@ pub(super) fn write_provider_changes(
             }
         })?
         .unwrap_or(false);
-    write_document(paths, lock, &paths.providers, library)
+    write_document(paths, lock, &paths.providers, &library)
         .map(|_| ())
         .map_err(|error| {
             if models_changed || settings_changed {

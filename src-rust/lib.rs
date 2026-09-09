@@ -1,10 +1,13 @@
 mod documents;
 mod tui;
+mod web;
 
 #[cfg(not(test))]
-type JsResult<T> = napi::Result<T>;
+use napi_derive::napi;
+#[cfg(not(test))]
+type Result<T> = napi::Result<T>;
 #[cfg(test)]
-type JsResult<T> = std::result::Result<T, String>;
+type Result<T> = std::result::Result<T, String>;
 
 #[cfg_attr(not(test), napi_derive::napi)]
 pub fn version() -> String {
@@ -12,14 +15,35 @@ pub fn version() -> String {
 }
 
 #[cfg_attr(not(test), napi_derive::napi)]
-pub fn doctor() -> JsResult<Vec<documents::DoctorCheck>> {
+pub fn doctor() -> Result<Vec<documents::DoctorCheck>> {
     let paths = documents::Paths::discover().map_err(js_error)?;
     Ok(documents::doctor(&paths))
 }
 
 #[cfg_attr(not(test), napi_derive::napi(js_name = "runTui"))]
-pub fn run_tui() -> JsResult<()> {
+pub fn run_tui() -> Result<()> {
     tui::run().map_err(js_error)
+}
+
+#[cfg(not(test))]
+#[napi]
+pub struct WebSession {
+    core: web::WebCore,
+}
+
+#[cfg(not(test))]
+#[napi]
+impl WebSession {
+    #[napi(constructor)]
+    pub fn new() -> Result<Self> {
+        let core = web::WebCore::discover().map_err(js_error)?;
+        Ok(Self { core })
+    }
+
+    #[napi]
+    pub fn request(&mut self, request: String) -> Result<String> {
+        self.core.request(&request).map_err(js_error)
+    }
 }
 
 #[cfg(not(test))]

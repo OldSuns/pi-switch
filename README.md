@@ -1,6 +1,6 @@
 # pi-switch
 
-维护本地 provider 库并按需同步 [Pi](https://github.com/earendil-works/pi) 配置的终端 TUI：管理 provider / 模型 / 默认模型，以及 Pi session 的列表、预览与删除。
+维护本地 provider 库并按需同步 [Pi](https://github.com/earendil-works/pi) 配置的终端 TUI 与本地 Web 界面：管理 provider / 模型 / 默认模型，以及 Pi session 的列表、预览与删除。
 
 CLI：`pi-switch` · npm 包：`@oldsuns/pi-switch` · Node 薄壳 + Rust/napi 原生核心
 
@@ -35,12 +35,27 @@ CLI：
 ```bash
 pi-switch                 # 打开 TUI（等同 tui）
 pi-switch tui
+pi-switch --web           # 启动本地 Web 界面并打开浏览器
+pi-switch --web --port 5210 --no-open  # 指定端口，只打印访问地址
 pi-switch doctor         # 校验配置与默认模型
 pi-switch --version      # / -v
 pi-switch --help         # / -h / help
 ```
 
 Windows 上无需 Rust：预构建原生模块随 npm 包分发，`pi-switch` 开箱即用。本地开发见下文「开发者」。
+
+## Web 界面
+
+`pi-switch --web` 启动仅监听 `127.0.0.1` 的本地服务，自动选择空闲端口并打开浏览器；终端会打印访问地址，按 `Ctrl+C` 停止服务。可使用 `--port` 指定端口、`--no-open` 禁用自动打开。
+
+- **主页**：本地 provider / 模型计数、Pi 可用模型、直接切换默认模型、最近会话与常用操作。
+- **配置**：provider / 模型主从分栏、搜索、创建、编辑、复制、删除、同步与默认模型；在线多选导入、元数据来源选择。
+- **会话**：按工作目录浏览，支持命名筛选、用户消息筛选、分支折叠、树状与 Markdown 阅读、复制和删除。
+- **设置**：中英文、模型元数据与缺省参数、配置检查、备份恢复、OpenCode 导入、手动检查和安装更新。自动检查更新开关与 TUI 共享，控制 TUI 启动时的检查。
+
+Web 在「设置 → 外观」中提供 Catppuccin Mocha 暗色与 Latte 亮色主题，切换立即生效，并在浏览器中保存选择。沿用 TUI 的四页导航和状态语义，支持窄屏布局、键盘操作与减少动画偏好。按 `1`–`4` 切换页面，`/` 搜索，`?` 查看完整快捷键；文本输入期间不触发快捷键。
+
+Web 与 TUI 共用 Rust 文档层，使用相同的文件锁、备份、校验和未知字段保留规则。取消默认 provider 的同步、删除和恢复备份均会明确确认。浏览器不会将 API key 保存到 localStorage；会话 Markdown 中的原始 HTML 以文本展示，图片以替代文字展示，不自动加载远程图片。
 
 ## 开发者
 
@@ -50,9 +65,13 @@ Windows 上无需 Rust：预构建原生模块随 npm 包分发，`pi-switch` �
 npm install
 npm run build:native:debug
 node ./bin/pi-switch.js
+# 启动本地 Web 界面
+npm run dev:web
 ```
 
 贡献流程见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+
+Web 实现与使用说明见 [web/README.md](./web/README.md)。
 
 ## 界面与快捷键
 
@@ -140,8 +159,8 @@ Session 根目录优先级：非空 `PI_CODING_AGENT_SESSION_DIR` → `<Pi agent
    - `GET /api/pricing`  
    成功则按 NewAPI 换算覆盖模型 `cost`（`1 USD = 500_000 quota`，每 1M tokens 成本 ≈ `ratio × 2` USD）；失败静默忽略。
 3. 若开启 models.dev 元数据：请求 `https://models.dev/api.json`，补全 `contextWindow`、`maxTokens`、`cost`、reasoning 等。  
-   - **在线导入**遇到同 model ID 多源歧义时：**自动取第一个候选**，不弹选择框；缺少可用元数据的模型跳过并提示计数。  
-   - 导入列表会标注价格来源：`ratio_config` 或 `models.dev`。  
+   - **在线导入**遇到同 model ID 多源歧义时：需要选择元数据来源；缺少匹配元数据或 models.dev 不可达时，选中的模型使用 Settings 中的默认参数导入，并明确提示。
+   - 先选择服务商返回的模型 ID，再为选中项获取元数据和价格；TUI 与 Web 使用相同流程。
    - 网关价格在 catalog 元数据之上叠加。
 4. 关闭实时元数据：使用 Settings 中的默认参数；空字段回落 Pi 官方默认（context window `128000`、max tokens `16384`、cost `0`）。
 

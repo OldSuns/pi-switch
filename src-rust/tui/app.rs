@@ -351,6 +351,7 @@ impl App {
             }
             Err(error) => {
                 let snapshot = Snapshot {
+                    ordering: Default::default(),
                     providers_path: paths.providers.display().to_string(),
                     pi_models_path: paths.pi_models.display().to_string(),
                     pi_settings_path: paths.pi_settings.display().to_string(),

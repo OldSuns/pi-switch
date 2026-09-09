@@ -31,6 +31,9 @@ pub fn save_provider(
         local.remove(old);
     }
     local.insert(draft.id.clone(), provider.clone());
+    if let Some(old) = previous_id.filter(|old| *old != draft.id) {
+        ordering::rename_provider(&mut library, old, &draft.id);
+    }
 
     let enabled = providers_object_mut(&mut models)?;
     let was_in_pi = previous_id.is_some_and(|id| enabled.contains_key(id));
@@ -196,9 +199,39 @@ pub fn save_model(
     previous_id: Option<&str>,
     draft: &ModelDraft,
 ) -> Result<()> {
+    let source = previous_id.map_or(ModelSource::New, ModelSource::Edit);
+    write_model(paths, provider_id, source, draft)
+}
+
+pub fn duplicate_model(
+    paths: &Paths,
+    provider_id: &str,
+    source_id: &str,
+    draft: &ModelDraft,
+) -> Result<()> {
+    write_model(paths, provider_id, ModelSource::Copy(source_id), draft)
+}
+
+enum ModelSource<'a> {
+    New,
+    Edit(&'a str),
+    Copy(&'a str),
+}
+
+fn write_model(
+    paths: &Paths,
+    provider_id: &str,
+    source: ModelSource<'_>,
+    draft: &ModelDraft,
+) -> Result<()> {
     validate_model_draft(draft)?;
     let (lock, mut library, mut pi_models) = lock_provider_documents(paths)?;
     let models = provider_models_mut(&mut library, provider_id)?;
+    let (source_id, previous_id) = match source {
+        ModelSource::New => (None, None),
+        ModelSource::Edit(id) => (Some(id), Some(id)),
+        ModelSource::Copy(id) => (Some(id), None),
+    };
     if models.iter().any(|model| {
         model.get("id").and_then(Value::as_str) == Some(draft.id.as_str())
             && previous_id != Some(draft.id.as_str())
@@ -208,25 +241,36 @@ pub fn save_model(
             draft.id
         )));
     }
-    if let Some(previous_id) = previous_id {
-        let model = models
-            .iter_mut()
-            .find(|model| model.get("id").and_then(Value::as_str) == Some(previous_id))
-            .ok_or_else(|| {
-                AppError::Invalid(format!(
-                    "model '{previous_id}' no longer exists in provider '{provider_id}'"
-                ))
-            })?;
-        patch_model(
-            model
-                .as_object_mut()
-                .ok_or_else(|| AppError::Invalid("model entry must be an object".into()))?,
-            draft,
-        );
+    let source_index = source_id
+        .map(|id| {
+            models
+                .iter()
+                .position(|model| model.get("id").and_then(Value::as_str) == Some(id))
+                .ok_or_else(|| {
+                    AppError::Invalid(format!(
+                        "model '{id}' no longer exists in provider '{provider_id}'"
+                    ))
+                })
+        })
+        .transpose()?;
+    // Clone the stored object, not the UI projection, to retain extension fields.
+    let mut model = match source_index {
+        Some(index) => models[index].clone(),
+        None => Value::Object(Map::new()),
+    };
+    patch_model(
+        model
+            .as_object_mut()
+            .ok_or_else(|| AppError::Invalid("model entry must be an object".into()))?,
+        draft,
+    );
+    if let Some(index) = source_index.filter(|_| previous_id.is_some()) {
+        models[index] = model;
     } else {
-        let mut model = Map::new();
-        patch_model(&mut model, draft);
-        models.push(Value::Object(model));
+        models.push(model);
+    }
+    if let Some(old) = previous_id.filter(|old| *old != draft.id) {
+        ordering::rename_model(&mut library, provider_id, old, &draft.id);
     }
     sync_library_provider_to_pi(&library, &mut pi_models, provider_id)?;
     let mut settings = read_document(&paths.pi_settings, json!({}))?;

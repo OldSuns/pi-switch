@@ -117,6 +117,7 @@ fn backup_documents(snapshot: &Value, path: &Path) -> Result<BackupDocuments> {
         ));
     }
     validate_local_library(&providers)?;
+    super::ordering::validate(&providers)?;
     validate_provider_document(&models)?;
     validate_pi_settings(&pi_settings, &models)?;
     validate_app_settings(&app_settings)?;
