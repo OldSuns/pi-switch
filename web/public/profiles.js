@@ -1,4 +1,4 @@
-import { h, t, icon, initials, tint, tokens, price, modelName, capabilities, emptyState, listSearch, toggle, iconButton } from "./ui.js";
+import { h, t, icon, initials, tint, tokens, price, modelName, capabilities, emptyState, listSearch, iconButton } from "./ui.js";
 import { pageHeader, contextHelp } from "./shell.js";
 
 const API_KEY_EDGE_LENGTH = 4;
@@ -37,6 +37,14 @@ export function visibleModels(state) {
     model.id.toLowerCase().includes(query) || model.name?.toLowerCase().includes(query));
 }
 
+function providerSyncButton(provider) {
+  const label = t("同步到 Pi", "Sync to Pi") + " · " + provider.id;
+  const hint = provider.inPi
+    ? t("已同步到 Pi，点击取消同步", "Synced to Pi; click to remove")
+    : t("仅保存在本地，点击同步到 Pi", "Local only; click to sync to Pi");
+  return `<button type="button" class="icon-button provider-sync-button" data-action="sync-provider" data-provider="${h(provider.id)}" aria-pressed="${provider.inPi}" aria-label="${h(label)}" title="${h(hint)}">${icon(provider.inPi ? "check" : "unlink")}</button>`;
+}
+
 function providerList(state) {
   const providers = visibleProviders(state);
   const ordering = state.snapshot.ordering.providers;
@@ -52,9 +60,8 @@ function providerList(state) {
       ${sortControl("providers", ordering)}
     </div>
     <div class="provider-list" data-order-list data-order-scope="providers" data-order-provider="" aria-label="${t("选择 Provider", "Select provider")}">
-      ${providers.length ? providers.map((provider) => `<div class="provider-row" data-order-item data-order-scope="providers" data-order-id="${h(provider.id)}" data-order-provider=""><button class="provider-option" data-action="select-provider" data-provider="${h(provider.id)}" aria-current="${provider.id === state.providerId}">
-        <span class="avatar ${tint(provider.id)}">${initials(provider.id)}</span>
-        <span class="provider-option-content"><span class="item-title">${h(provider.id)}</span><span class="item-subtitle"><span class="status-dot ${provider.inPi ? "" : "off"}"></span>${provider.inPi ? t("已同步到 Pi", "Synced to Pi") : t("仅保存在本地", "Local only")}</span></span>
+      ${providers.length ? providers.map((provider) => `<div class="provider-row" data-order-item data-order-scope="providers" data-order-id="${h(provider.id)}" data-order-provider="">${providerSyncButton(provider)}<button class="provider-option" data-action="select-provider" data-provider="${h(provider.id)}" aria-current="${provider.id === state.providerId}">
+        <span class="item-title">${h(provider.id)}</span>
         ${provider.id === state.snapshot.defaultProvider ? icon("star") : ""}<span class="provider-count">${provider.models.length}</span>
       </button>${custom ? orderHandle({ scope: "providers", item: provider }) : ""}</div>`).join("") : emptyState(t("没有匹配的 Provider", "No matching providers"), t("试试其他关键词或同步状态。", "Try another search or sync filter."), "search")}
     </div>
@@ -77,7 +84,6 @@ function providerInfo(provider) {
       <span class="avatar ${tint(provider.id)}">${initials(provider.id)}</span>
       <div><h2>${h(provider.id)}</h2><div class="provider-title-label">${h(provider.api || t("按模型设置 API", "API set per model"))}</div></div>
       <div class="inline-actions">
-        <div class="provider-sync"><span>${t("同步到 Pi", "Sync to Pi")}</span>${toggle("sync-provider", provider.inPi, t("同步到 Pi", "Sync to Pi"), 'data-provider="' + h(provider.id) + '"')}</div>
         <button class="btn small" data-action="edit-provider">${icon("edit")}${t("编辑", "Edit")}</button>${iconButton("duplicate-provider", "copy", t("复制 Provider", "Duplicate provider"))}${iconButton("remove-provider", "trash", t("删除 Provider", "Delete provider"), "", "danger")}
       </div>
     </div><div class="provider-meta">

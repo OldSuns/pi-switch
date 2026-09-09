@@ -14,7 +14,7 @@ export function shell(state, content) {
     <button type="button" class="nav-scrim ${state.navOpen ? "visible" : ""}" data-action="close-nav" aria-label="${t("关闭导航", "Close navigation")}" tabindex="-1"></button>
     <aside id="sidebar" class="sidebar ${state.navOpen ? "open" : ""}" aria-label="${t("主导航", "Main navigation")}" ${matchMedia("(max-width: 760px)").matches && !state.navOpen ? "inert" : ""}>
       <a class="brand" href="#overview" aria-label="pi-switch · ${t("主页", "Overview")}">
-        <span class="brand-mark">π</span><span><span class="brand-name">pi-switch</span><small>MODEL WORKSPACE</small></span>
+        <span class="brand-mark" aria-hidden="true">π</span><span class="brand-name">pi-switch</span>
       </a>
       <div class="nav-label">WORKSPACE</div>
       <nav class="nav-links">

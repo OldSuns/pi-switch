@@ -633,9 +633,8 @@ async function handleAction(action, target) {
       confirm({ title: t("删除 Provider？", "Delete provider?"), description: t("这会从本地库删除此 Provider，并取消其 Pi 同步。关联的默认模型也会清除。", "This deletes the provider from your local library and Pi, and clears its default model if selected."), detail: provider.id, label: t("删除 Provider", "Delete provider"), danger: true },
         () => save("provider.remove", { providerId: provider.id }, t("Provider 已删除", "Provider deleted"))); break;
     case "sync-provider": {
-      const inPi = target.checked;
+      const inPi = !provider.inPi;
       if (!inPi && state.snapshot.defaultProvider === provider.id) {
-        target.checked = true;
         confirm({ title: t("取消同步到 Pi？", "Remove this provider from Pi?"), description: t("当前默认模型属于此 Provider。取消同步会清除默认模型，本地配置仍会保留。", "Your default model belongs to this provider. Removing it from Pi clears the default; the local configuration is kept."), detail: provider.id + " / " + state.snapshot.defaultModel, label: t("取消同步并清除默认", "Remove and clear default") },
           () => save("provider.sync", { providerId: provider.id, inPi }, t("已取消同步，本地配置已保留", "Removed from Pi. Local configuration kept.")));
       } else {
@@ -802,7 +801,8 @@ function moveList(direction) {
   if (!selector) return false;
   const list = [...document.querySelectorAll(selector)];
   if (!list.length) return false;
-  const current = list.findIndex((item) => item === active || item.contains(active));
+  const providerOption = active.closest(".provider-row")?.querySelector(".provider-option");
+  const current = list.findIndex((item) => item === active || item.contains(active) || item === providerOption);
   const next = list[Math.max(0, Math.min(list.length - 1, current + direction))];
   next.focus();
   if (selector === ".message-node") focusMessage(next.dataset.message);
@@ -913,15 +913,11 @@ document.addEventListener("keydown", (event) => {
   if (state.page !== "profiles") return;
   const inModels = Boolean(event.target.closest(".model-row"));
   const actions = { n: inModels ? "new-model" : "new-provider", e: inModels ? "edit-model" : "edit-provider", c: inModels ? "duplicate-model" : "duplicate-provider", d: inModels ? "remove-model" : "remove-provider", Delete: inModels ? "remove-model" : "remove-provider", i: "import-models" };
-  if (actions[key]) { event.preventDefault(); dispatch(actions[key], inModels ? event.target.closest(".model-row") : event.target.closest(".provider-option")); return; }
+  if (actions[key]) { event.preventDefault(); dispatch(actions[key], inModels ? event.target.closest(".model-row") : event.target.closest(".provider-row")?.querySelector(".provider-option")); return; }
   if (key === " " && (event.target.matches(".model-row") || event.target.matches('.provider-option[aria-current="true"]'))) {
     event.preventDefault();
     if (inModels) dispatch("default-model", event.target.closest(".model-row"));
-    else {
-      const id = event.target.closest(".provider-option").dataset.provider;
-      const provider = state.snapshot.providers.find((item) => item.id === id);
-      dispatch("sync-provider", { checked: !provider.inPi, dataset: { provider: id } });
-    }
+    else dispatch("sync-provider", event.target);
   }
 });
 
