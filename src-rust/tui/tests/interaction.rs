@@ -293,6 +293,38 @@
         assert!(opencode.contains("Enter import"));
         assert!(opencode.contains("Esc cancel"));
 
+        // A long conflict list keeps the confirmation keys in view.
+        fs::create_dir_all(app.paths.opencode.parent().unwrap()).unwrap();
+        fs::write(
+            &app.paths.opencode,
+            r#"{"provider":{"a":{"npm":"@ai-sdk/openai-compatible","options":{"apiKey":"k"}},"b":{"npm":"@ai-sdk/openai-compatible","options":{"apiKey":"k"}},"c":{"npm":"@ai-sdk/openai-compatible","options":{"apiKey":"k"}},"d":{"npm":"@ai-sdk/openai-compatible","options":{"apiKey":"k"}}}}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(app.paths.pi_auth.parent().unwrap()).unwrap();
+        fs::write(
+            &app.paths.pi_auth,
+            r#"{"a":{"type":"oauth"},"b":{"type":"oauth"},"c":{"type":"oauth"},"d":{"type":"oauth"}}"#,
+        )
+        .unwrap();
+        let plan = crate::documents::prepare_opencode_import(
+            &app.paths,
+            &["a".into(), "b".into(), "c".into(), "d".into()],
+            ImportOptions {
+                fetch_metadata: false,
+                defaults: Default::default(),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.credential_conflicts.len(), 4);
+        app.overlay = Some(Overlay::ConfirmImportCredentials {
+            plan,
+            candidate_indices: Vec::new(),
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let credentials = buffer_string(&terminal);
+        assert!(credentials.contains("+1 more"), "{credentials}");
+        assert!(credentials.contains("Enter/y confirm"), "{credentials}");
+
         app.overlay = Some(Overlay::Doctor(Vec::new()));
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let doctor = buffer_string(&terminal);

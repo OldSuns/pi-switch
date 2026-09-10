@@ -5,9 +5,16 @@
 //! `{"type": "api_key", "key": "..."}` (Pi also resolves `$ENV` references in
 //! `key`), and writers hold a proper-lockfile-compatible lock. proper-lockfile
 //! locks by creating a `<file>.lock` directory; we mirror that with
-//! `create_dir` and back off briefly while locked. We do not steal existing
-//! lock directories because proper-lockfile exposes no portable ownership
-//! token that would make takeover safe against a concurrent replacement.
+//! `create_dir` and back off briefly while locked.
+//!
+//! Because a directory cannot be released by the kernel, a process that dies
+//! mid-write would otherwise block every later credential update, and stealing
+//! the directory on age alone can delete a lock somebody just acquired. So the
+//! directory is paired with an OS-level guard file (`<auth.json>.lock.guard`)
+//! held for the whole critical section: the kernel drops it when the process
+//! exits, and while we hold it no other pi-switch writer can be between
+//! `create_dir` and its guard. That makes reclaiming an old lock directory safe
+//! and keeps the directory itself the signal Pi's own lock protocol waits on.
 
 use std::{
     fs,
@@ -24,6 +31,7 @@ use super::{
     AppError, Paths, Result,
 };
 
+const STALE: Duration = Duration::from_secs(30);
 const RETRY: Duration = Duration::from_millis(20);
 const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -132,16 +140,29 @@ pub(super) fn edit(
 }
 
 fn lock_dir(auth_path: &Path) -> PathBuf {
+    sibling(auth_path, ".lock")
+}
+
+/// OS-level lock file that guards the directory above; see the module docs.
+fn guard_path(auth_path: &Path) -> PathBuf {
+    sibling(auth_path, ".lock.guard")
+}
+
+fn sibling(auth_path: &Path, suffix: &str) -> PathBuf {
     let mut name = auth_path
         .file_name()
         .map(|name| name.to_os_string())
         .unwrap_or_else(|| "auth.json".into());
-    name.push(".lock");
+    name.push(suffix);
     auth_path.with_file_name(name)
 }
 
 struct AuthLock {
     dir: PathBuf,
+    /// Held for the whole critical section; the kernel releases it when this
+    /// process exits, however it exits. Nothing ever reads it — holding it is
+    /// what matters.
+    _guard: fs::File,
     /// mtime of the directory this lock created: a stale takeover replaces that
     /// directory, so this is what tells our lock apart from a replacement.
     created: SystemTime,
@@ -149,17 +170,50 @@ struct AuthLock {
 
 impl AuthLock {
     fn acquire(auth_path: &Path) -> Result<Self> {
+        Self::acquire_with(auth_path, STALE, TIMEOUT)
+    }
+
+    /// `stale` is the age at which a lock directory counts as abandoned — Pi's
+    /// own `stale` option in proper-lockfile, which also covers a Pi process
+    /// that died holding it. It only applies while we hold the guard, so no
+    /// other pi-switch writer can be mid-acquisition.
+    fn acquire_with(auth_path: &Path, stale: Duration, timeout: Duration) -> Result<Self> {
         let dir = lock_dir(auth_path);
+        let guard_file = guard_path(auth_path);
         let parent = dir.parent().ok_or_else(|| {
             AppError::Invalid(format!("{} has no parent directory", dir.display()))
         })?;
         fs::create_dir_all(parent).map_err(|source| io_error(parent, source))?;
-        let deadline = Instant::now() + TIMEOUT;
+        let guard = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            // Empty by design; it exists only to carry the OS lock.
+            .truncate(false)
+            .open(&guard_file)
+            .map_err(|source| io_error(&guard_file, source))?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            match guard.try_lock() {
+                Ok(()) => break,
+                Err(fs::TryLockError::WouldBlock) => {
+                    if Instant::now() >= deadline {
+                        return Err(AppError::Busy(guard_file));
+                    }
+                    sleep(RETRY);
+                }
+                Err(fs::TryLockError::Error(source)) => return Err(io_error(&guard_file, source)),
+            }
+        }
         loop {
             match fs::create_dir(&dir) {
                 Ok(()) => {
                     return match fs::metadata(&dir).and_then(|metadata| metadata.modified()) {
-                        Ok(created) => Ok(Self { dir, created }),
+                        Ok(created) => Ok(Self {
+                            dir,
+                            _guard: guard,
+                            created,
+                        }),
                         Err(source) => {
                             let _ = fs::remove_dir(&dir);
                             Err(io_error(&dir, source))
@@ -167,6 +221,17 @@ impl AuthLock {
                     };
                 }
                 Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // The guard makes this directory either Pi's live lock or an
+                    // abandoned leftover: nobody can acquire it while we hold
+                    // the guard, so reclaiming it cannot race a new owner.
+                    if is_stale(&dir, stale) {
+                        match fs::remove_dir(&dir) {
+                            Ok(()) => {}
+                            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(source) => return Err(io_error(&dir, source)),
+                        }
+                        continue;
+                    }
                     if Instant::now() >= deadline {
                         return Err(AppError::Busy(dir));
                     }
@@ -185,6 +250,8 @@ impl Drop for AuthLock {
         if mtime_of(&self.dir) == Some(self.created) {
             let _ = fs::remove_dir(&self.dir);
         }
+        // The guard is released when its file handle closes, including when the
+        // process exits without running this hook at all.
     }
 }
 
@@ -192,6 +259,12 @@ fn mtime_of(dir: &Path) -> Option<SystemTime> {
     fs::metadata(dir)
         .and_then(|metadata| metadata.modified())
         .ok()
+}
+
+fn is_stale(dir: &Path, stale: Duration) -> bool {
+    mtime_of(dir)
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .is_some_and(|age| age > stale)
 }
 
 /// Atomic write that marks a newly created file private (0600 on Unix), the
@@ -260,11 +333,64 @@ mod lock_tests {
         // (which recorded the previous mtime) resumes and drops its lock.
         let stale = AuthLock {
             dir: dir.clone(),
+            _guard: fs::File::create(guard_path(&auth_path)).unwrap(),
             created: SystemTime::UNIX_EPOCH,
         };
         fs::create_dir(&dir).unwrap();
         drop(stale);
         assert!(dir.exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn acquire_reclaims_an_abandoned_lock_directory() {
+        let root = std::env::temp_dir().join(format!("pi-switch-lock-stale-{}", now_millis()));
+        fs::create_dir_all(&root).unwrap();
+        let auth_path = root.join("auth.json");
+        let dir = lock_dir(&auth_path);
+        // A writer that died while holding the lock left the directory behind.
+        fs::create_dir(&dir).unwrap();
+
+        let lock = AuthLock::acquire_with(&auth_path, Duration::ZERO, TIMEOUT).unwrap();
+        assert_eq!(mtime_of(&dir), Some(lock.created));
+        drop(lock);
+        assert!(!dir.exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn only_one_writer_holds_the_guard_at_a_time() {
+        let root = std::env::temp_dir().join(format!("pi-switch-lock-guard-{}", now_millis()));
+        fs::create_dir_all(&root).unwrap();
+        let auth_path = root.join("auth.json");
+
+        let held = AuthLock::acquire(&auth_path).unwrap();
+        let error = AuthLock::acquire_with(&auth_path, STALE, Duration::from_millis(50))
+            .err()
+            .expect("a held guard must keep a second writer out");
+        assert!(matches!(error, AppError::Busy(_)), "{error}");
+        drop(held);
+        assert!(AuthLock::acquire_with(&auth_path, STALE, TIMEOUT).is_ok());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn acquire_waits_for_a_lock_directory_that_is_still_fresh() {
+        let root = std::env::temp_dir().join(format!("pi-switch-lock-fresh-{}", now_millis()));
+        fs::create_dir_all(&root).unwrap();
+        let auth_path = root.join("auth.json");
+        let dir = lock_dir(&auth_path);
+        fs::create_dir(&dir).unwrap();
+
+        // Too young to be abandoned: report busy instead of stealing it.
+        let error = AuthLock::acquire_with(&auth_path, STALE, Duration::from_millis(50))
+            .err()
+            .expect("a fresh lock directory must not be reclaimed");
+        assert!(matches!(error, AppError::Busy(_)), "{error}");
+        assert!(dir.is_dir());
 
         let _ = fs::remove_dir_all(&root);
     }

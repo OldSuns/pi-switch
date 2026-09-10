@@ -270,8 +270,25 @@ pub(super) fn render_overlay(
             plan,
             candidate_indices: _,
         } => {
+            // The modal has a fixed height, so a long conflict list would push the
+            // confirmation keys out of sight: list a few and count the rest.
+            let conflicting = &plan.credential_conflicts;
+            let listed = conflicting
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut heading = format!("auth.json · {listed}");
+            let extra = conflicting.len().saturating_sub(3);
+            if extra > 0 {
+                heading.push_str(&match language {
+                    Language::English => format!(" +{extra} more"),
+                    Language::Chinese => format!(" 等 {extra} 个"),
+                });
+            }
             let body = Paragraph::new(vec![
-                Line::from(format!("auth.json · {}", plan.credential_conflicts.join(", "))),
+                Line::from(heading),
                 Line::from(language.pick(
                     "Pi already stores a credential for these provider IDs; importing discards it and Pi has to sign in again to restore it.",
                     "Pi 已为这些 Provider ID 保存了凭据；继续导入会丢弃它，Pi 需要重新登录才能恢复。",

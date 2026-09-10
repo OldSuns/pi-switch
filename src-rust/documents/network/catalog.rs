@@ -289,7 +289,9 @@ fn require_secure_transport(url: &Url) -> Result<()> {
         return Ok(());
     }
     Err(AppError::Invalid(format!(
-        "refusing to send a provider credential to {url}: use https or a local address"
+        "refusing to send a provider credential to {}://{}: use https or a local address",
+        url.scheme(),
+        url.host_str().unwrap_or_default()
     )))
 }
 
@@ -449,5 +451,14 @@ mod transport_tests {
                 "{rejected}"
             );
         }
+        // A rejected URL is echoed as scheme://host only, so a key that sits in
+        // its query or userinfo cannot reach an error message.
+        let error = require_secure_transport(&url(
+            "http://user:sk-secret@api.example.test/v1?key=sk-secret",
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("http://api.example.test"), "{error}");
+        assert!(!error.contains("sk-secret"), "{error}");
     }
 }
