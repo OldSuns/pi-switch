@@ -782,7 +782,7 @@ document.addEventListener("submit", (event) => {
         if (result.requiresCredentialOverwrite) {
           confirm({
             title: t("覆盖已有的 Pi 凭据？", "Replace the existing Pi credential?"),
-            description: t("auth.json 里该 ID 已有 Pi 凭据（例如 OAuth 登录）。继续会把 API 密钥写入该 ID 并替换它，Pi 需要重新登录才能恢复。", "auth.json already stores a Pi credential for this ID (an OAuth sign-in, for example). Continuing writes your API key over it, and Pi has to sign in again to restore it."),
+            description: t("auth.json 里该 ID 已有 Pi 凭据（例如 OAuth 登录）。继续会丢弃它，Pi 需要重新登录才能恢复。", "auth.json already stores a Pi credential for this ID (an OAuth sign-in, for example). Continuing discards it, and Pi has to sign in again to restore it."),
             detail: draft.id,
             label: t("覆盖", "Replace"),
             danger: true,

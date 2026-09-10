@@ -261,7 +261,7 @@ fn import_source(
     let auth_changed = !auth_keys.is_empty()
         && auth::edit(paths, |credentials| {
             for (id, key) in &auth_keys {
-                credentials.insert(id.clone(), json!({ "type": "api_key", "key": key }));
+                credentials.insert(id.clone(), auth::api_key_entry(credentials.get(id), key));
             }
             Ok(())
         })?;

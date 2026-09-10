@@ -269,3 +269,52 @@ fn replacing_a_pi_credential_requires_confirmation() {
     );
 }
 
+#[test]
+fn saving_a_key_keeps_the_rest_of_the_api_key_entry() {
+    let (_root, paths) = fixture();
+    save_provider(&paths, None, &auth_draft("cf", "sk-old")).unwrap();
+    // Pi (or the user) adds provider-scoped env values to the same entry.
+    let mut auth = read_json(&paths.pi_auth);
+    auth["cf"]["env"] = json!({"CLOUDFLARE_ACCOUNT_ID": "account"});
+    fs::write(&paths.pi_auth, serde_json::to_vec(&auth).unwrap()).unwrap();
+
+    save_provider(&paths, Some("cf"), &auth_draft("cf", "sk-new")).unwrap();
+    assert_eq!(
+        read_json(&paths.pi_auth)["cf"],
+        json!({"type": "api_key", "key": "sk-new", "env": {"CLOUDFLARE_ACCOUNT_ID": "account"}})
+    );
+}
+
+#[test]
+fn models_json_mode_retires_the_shadowing_auth_entry() {
+    let (_root, paths) = fixture();
+    save_provider(&paths, None, &auth_draft("plain", "sk-a")).unwrap();
+    save_provider(&paths, None, &auth_draft("cf", "sk-a")).unwrap();
+    let mut auth = read_json(&paths.pi_auth);
+    auth["cf"]["env"] = json!({"CLOUDFLARE_ACCOUNT_ID": "account"});
+    fs::write(&paths.pi_auth, serde_json::to_vec(&auth).unwrap()).unwrap();
+    set_key_storage(&paths, KeyStorage::ModelsJson).unwrap();
+
+    // A plain entry is retired; the key itself lands in the provider JSON.
+    save_provider(&paths, Some("plain"), &auth_draft("plain", "sk-b")).unwrap();
+    assert!(read_json(&paths.pi_auth).get("plain").is_none());
+    assert_eq!(
+        read_json(&paths.pi_models)["providers"]["plain"]["apiKey"],
+        "sk-b"
+    );
+
+    // Provider config cannot move into models.json, so this one asks first.
+    assert!(matches!(
+        save_provider(&paths, Some("cf"), &auth_draft("cf", "sk-b")).unwrap_err(),
+        AppError::CredentialOverwriteRequired(_)
+    ));
+    assert!(read_json(&paths.pi_auth).get("cf").is_some());
+
+    save_provider_overwriting_credential(&paths, Some("cf"), &auth_draft("cf", "sk-b")).unwrap();
+    assert!(read_json(&paths.pi_auth).get("cf").is_none());
+    assert_eq!(
+        read_json(&paths.pi_models)["providers"]["cf"]["apiKey"],
+        "sk-b"
+    );
+}
+

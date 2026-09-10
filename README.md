@@ -148,7 +148,7 @@ Session 根目录优先级：非空 `PI_CODING_AGENT_SESSION_DIR` → `<Pi agent
 - 在线导入 model **不会**隐式同步到 Pi。
 - 启动或手动重载时，以 `models.json` 中同 ID provider 为准回灌本地库；外部从 Pi 删除的 provider 仍作为不同步项保留。
 - 从 Pi 移除当前默认 provider 会先确认并清除默认模型；`d` 永久删除本地副本，必要时同时从 Pi 删除；若该 provider 在 `auth.json` 有 `api_key` 凭据，删除时会询问是否一并删除（OAuth 等凭据不会被删除）。
-- API 密钥保存位置可在 Settings 里切换：默认写入 Pi 的 `auth.json`（provider 的 ID 映射到 `{"type":"api_key","key":...}`，`models.json` 与 `providers.json` 不保存密钥）；可切换回旧的 `models.json` 行为。provider 重命名时凭据随之迁移，目标 ID 已有凭据时先询问。
+- API 密钥保存位置可在 Settings 里切换：默认写入 Pi 的 `auth.json`（provider 的 ID 映射到 `{"type":"api_key","key":...}`，`models.json` 与 `providers.json` 不保存密钥）；可切换回旧的 `models.json` 行为。provider 重命名时凭据随之迁移，目标 ID 已有凭据时先询问。切到 `models.json` 后保存密钥会移除同名 ID 上的 auth.json 条目（否则它会继续优先于 models.json）；该条目含 `env` 等配置时先询问。
 
 ## 模型导入与价格
 

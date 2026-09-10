@@ -31,13 +31,19 @@ fn save(
     let mut draft = draft.clone();
     // In auth.json mode a given key moves to auth.json; provider JSON (both the
     // local library and models.json) never stores apiKey.
-    let auth_key = match settings::key_storage_setting(paths)? {
+    let key_storage = settings::key_storage_setting(paths)?;
+    let auth_key = match key_storage {
         KeyStorage::AuthJson if !draft.api_key.is_empty() => {
             Some(std::mem::take(&mut draft.api_key))
         }
         _ => None,
     };
+    // A key that stays in the provider JSON must not leave an auth.json entry
+    // behind: Pi prefers auth.json and would keep using the stale one.
+    let key_in_provider_json =
+        matches!(key_storage, KeyStorage::ModelsJson) && !draft.api_key.is_empty();
     let renamed_from = previous_id.filter(|old| *old != draft.id);
+    let moves_credential = renamed_from.filter(|_| !key_in_provider_json);
     let draft = &draft;
     let (lock, mut library, mut models) = lock_provider_documents(paths)?;
     let local = providers_object_mut(&mut library)?;
@@ -92,7 +98,7 @@ fn save(
     // Credentials move last, once every provider-side validation passed: a
     // rejected edit must never rename or overwrite an auth.json entry. This
     // keeps the provider-then-auth lock order used by the other writers.
-    if auth_key.is_some() || renamed_from.is_some() {
+    if auth_key.is_some() || renamed_from.is_some() || key_in_provider_json {
         let provider_id = draft.id.clone();
         auth::edit(paths, |credentials| {
             // What this save would leave under the target id; the typed key wins
@@ -100,32 +106,37 @@ fn save(
             let current = credentials.get(&provider_id);
             let next = auth_key
                 .as_ref()
-                .map(|key| json!({ "type": "api_key", "key": key }))
+                .map(|key| auth::api_key_entry(current, key))
                 .or_else(|| renamed_from.and_then(|old| credentials.get(old)).cloned());
-            // Replacing an entry this provider does not own (Pi's OAuth login, or
-            // one a rename would land on) needs the user's confirmation. An
-            // `api_key` under the id being saved is this provider's own, even when
-            // its provider document was removed and is only now re-created.
+            // An `api_key` under the id being saved is this provider's own, even
+            // when its provider document was removed and is only now re-created.
             let own_key =
                 renamed_from.is_none() && current.is_some_and(|entry| entry["type"] == "api_key");
-            if !overwrite_credential
+            // Retiring the entry of a models.json key is ours to do unless it also
+            // carries provider config; replacing any other entry never is.
+            let carries_config = current.is_some_and(auth::has_provider_config);
+            let retires = key_in_provider_json && current.is_some() && (!own_key || carries_config);
+            let replaces = !key_in_provider_json
                 && !own_key
                 && current
                     .zip(next.as_ref())
-                    .is_some_and(|(current, next)| current != next)
-            {
+                    .is_some_and(|(current, next)| current != next);
+            if !overwrite_credential && (retires || replaces) {
                 return Err(AppError::CredentialOverwriteRequired(provider_id.clone()));
             }
-            if let Some(old) = renamed_from {
+            if key_in_provider_json {
+                // Pi prefers auth.json, so the entry has to go or it would keep
+                // shadowing the key that now lives in the provider JSON.
+                credentials.remove(&provider_id);
+            }
+            if let Some(old) = moves_credential {
                 if let Some(credential) = credentials.remove(old) {
                     credentials.insert(provider_id.clone(), credential);
                 }
             }
             if let Some(ref key) = auth_key {
-                credentials.insert(
-                    provider_id.clone(),
-                    json!({ "type": "api_key", "key": key }),
-                );
+                let entry = auth::api_key_entry(credentials.get(&provider_id), key);
+                credentials.insert(provider_id.clone(), entry);
             }
             Ok(())
         })?;

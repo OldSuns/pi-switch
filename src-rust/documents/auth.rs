@@ -78,6 +78,27 @@ pub(super) fn credential_keys(paths: &Paths) -> Result<std::collections::BTreeMa
     Ok(keys)
 }
 
+/// `api_key` entry for a provider: only `type`/`key` are rewritten, so an
+/// existing entry keeps its provider-scoped `env` and extension fields.
+pub(super) fn api_key_entry(existing: Option<&Value>, key: &str) -> Value {
+    let mut entry = existing
+        .filter(|entry| entry["type"] == "api_key")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    entry.insert("type".into(), Value::String("api_key".into()));
+    entry.insert("key".into(), Value::String(key.into()));
+    Value::Object(entry)
+}
+
+/// Whether an entry holds more than `type`/`key` — provider-scoped `env` values
+/// and extensions, which a `models.json` key cannot carry.
+pub(super) fn has_provider_config(entry: &Value) -> bool {
+    entry
+        .as_object()
+        .is_some_and(|entry| entry.keys().any(|field| field != "type" && field != "key"))
+}
+
 /// Read-modify-write `auth.json` under a proper-lockfile-compatible lock.
 /// The file is only rewritten when the edit actually changed something, and
 /// the returned flag says whether it did.

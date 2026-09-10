@@ -247,8 +247,8 @@ pub(super) fn render_overlay(
             let body = Paragraph::new(vec![
                 Line::from(format!("auth.json · {}", form.id)),
                 Line::from(language.pick(
-                    "Pi already stores a credential for this provider ID; saving replaces it and Pi has to sign in again to restore it.",
-                    "Pi 已为这个 Provider ID 保存了凭据；继续保存会替换它，Pi 需要重新登录才能恢复。",
+                    "Pi already stores a credential for this provider ID; saving discards it and Pi has to sign in again to restore it.",
+                    "Pi 已为这个 Provider ID 保存了凭据；继续保存会丢弃它，Pi 需要重新登录才能恢复。",
                 )),
                 Line::from(""),
                 Line::from(Span::styled(
