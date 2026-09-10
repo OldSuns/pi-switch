@@ -266,6 +266,32 @@ pub(super) fn render_overlay(
                 theme,
             );
         }
+        Overlay::ConfirmImportCredentials {
+            plan,
+            candidate_indices: _,
+        } => {
+            let body = Paragraph::new(vec![
+                Line::from(format!("auth.json · {}", plan.credential_conflicts.join(", "))),
+                Line::from(language.pick(
+                    "Pi already stores a credential for these provider IDs; importing discards it and Pi has to sign in again to restore it.",
+                    "Pi 已为这些 Provider ID 保存了凭据；继续导入会丢弃它，Pi 需要重新登录才能恢复。",
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    language.pick("Enter/y confirm   Esc/n cancel", "Enter/y 确认   Esc/n 取消"),
+                    Style::default().fg(theme.muted),
+                )),
+            ])
+            .wrap(Wrap { trim: true });
+            render_modal(
+                frame,
+                modal_rect(area, 76, 9),
+                language.pick(" Confirm credential overwrite ", " 确认覆盖凭据 "),
+                body,
+                theme.warning,
+                theme,
+            );
+        }
         Overlay::ConfirmDeleteModel {
             provider_id,
             model_id,

@@ -19,8 +19,8 @@ use ui::draw;
 
 #[cfg(test)]
 use crate::documents::{
-    Backup, CatalogAmbiguity, CatalogCandidate, CatalogFetch, CatalogModel, ModelView,
-    ProviderView, Snapshot, PI_DEFAULT_CONTEXT_WINDOW, PI_DEFAULT_MAX_TOKENS,
+    Backup, CatalogAmbiguity, CatalogCandidate, CatalogFetch, CatalogModel, ImportOptions,
+    ModelView, ProviderView, Snapshot, PI_DEFAULT_CONTEXT_WINDOW, PI_DEFAULT_MAX_TOKENS,
 };
 #[cfg(test)]
 use app::{BackgroundResult, CatalogContinuation, Focus, MetadataFallback, Overlay, Page};

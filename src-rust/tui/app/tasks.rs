@@ -152,7 +152,7 @@ impl App {
             Ok(Ok(BackgroundResult::OpenCodePrepared(plan))) => {
                 self.task = None;
                 if plan.ambiguous.is_empty() {
-                    self.start_opencode_apply(plan, Vec::new());
+                    self.request_opencode_apply(plan, Vec::new());
                 } else {
                     self.overlay = Some(Overlay::CatalogMatches {
                         ambiguities: plan.ambiguous.clone(),

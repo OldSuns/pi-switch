@@ -415,8 +415,27 @@ async function submitImport() {
   if (prepared.ambiguities.length) {
     openDialog(dialogs.ambiguityDialog(prepared.ambiguities), { kind: "ambiguities", action: "opencode.import", payload: { planId: prepared.planId }, count: prepared.ambiguities.length });
   } else {
-    showImportResult(await api("opencode.import", { planId: prepared.planId, candidateIndices: [] }));
+    await applyOpenCodeImport({ planId: prepared.planId });
   }
+}
+
+async function applyOpenCodeImport(payload) {
+  const result = await api("opencode.import", { ...payload, candidateIndices: [] });
+  if (await confirmCredentialOverwrite(result, () => applyOpenCodeImport(payload))) return;
+  showImportResult(result);
+}
+
+/// Pi resolves auth.json before the provider documents, so replacing an entry
+/// there discards a credential only Pi can restore by signing in again.
+async function confirmCredentialOverwrite(result, retry) {
+  if (!result.requiresCredentialOverwrite) return false;
+  confirm({
+    title: t("覆盖已有的 Pi 凭据？", "Replace the existing Pi credential?"),
+    description: t("auth.json 里该 ID 已有 Pi 凭据（例如 OAuth 登录）。继续会丢弃它，Pi 需要重新登录才能恢复。", "auth.json already stores a Pi credential for this ID (an OAuth sign-in, for example). Continuing discards it, and Pi has to sign in again to restore it."),
+    label: t("覆盖", "Replace"),
+    danger: true,
+  }, retry);
+  return true;
 }
 
 async function copyText(value) {
@@ -807,7 +826,10 @@ document.addEventListener("submit", (event) => {
       case "import": await submitImport(); break;
       case "ambiguities": {
         const candidateIndices = Array.from({ length: context.count }, (_, index) => Number(form.elements["candidate-" + index].value));
-        showImportResult(await api(context.action, { ...context.payload, candidateIndices })); break;
+        const retry = async () => showImportResult(await api(context.action, { ...context.payload, candidateIndices, overwriteCredential: true }));
+        const result = await api(context.action, { ...context.payload, candidateIndices });
+        if (await confirmCredentialOverwrite(result, retry)) break;
+        showImportResult(result); break;
       }
     }
   });

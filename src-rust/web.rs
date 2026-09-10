@@ -262,7 +262,7 @@ fn action_fields(action: &str) -> Result<&'static [&'static str]> {
             "candidateIndices",
         ],
         "opencode.prepare" => &["providerIds"],
-        "opencode.import" => &["planId", "candidateIndices"],
+        "opencode.import" => &["planId", "candidateIndices", "overwriteCredential"],
         _ => return Err(invalid(format!("unknown Web action '{action}'"))),
     };
     Ok(fields)

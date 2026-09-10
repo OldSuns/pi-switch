@@ -123,6 +123,19 @@ impl App {
                 }
                 _ => {}
             },
+            Overlay::ConfirmImportCredentials {
+                plan,
+                candidate_indices,
+            } => match key.code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    let plan = plan.clone();
+                    let candidate_indices = candidate_indices.clone();
+                    self.start_opencode_apply(plan, candidate_indices, true);
+                    return;
+                }
+                KeyCode::Esc | KeyCode::Char('n') => return,
+                _ => {}
+            },
             Overlay::ConfirmDeleteModel {
                 provider_id,
                 model_id,
@@ -362,7 +375,7 @@ impl App {
                             CatalogContinuation::OpenCode {
                                 plan,
                                 candidate_indices,
-                            } => self.start_opencode_apply(plan, candidate_indices),
+                            } => self.request_opencode_apply(plan, candidate_indices),
                             CatalogContinuation::ProviderImport {
                                 provider_id,
                                 resolved_models,

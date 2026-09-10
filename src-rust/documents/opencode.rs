@@ -40,19 +40,76 @@ pub fn prepare_opencode_import(
         .map(|catalog| catalog_ambiguities(&source, provider_ids, catalog))
         .transpose()?
         .unwrap_or_default();
+    let credential_conflicts = credential_conflicts(paths, &source, provider_ids)?;
     Ok(OpenCodeImportPlan {
         source,
         provider_ids: provider_ids.to_vec(),
         options,
         catalog,
         ambiguous,
+        credential_conflicts,
     })
+}
+
+/// Provider IDs whose `auth.json` entry this import would replace (`auth.json`
+/// mode) or retire (`models.json` mode), and which is not ours to touch without
+/// the user's confirmation.
+fn credential_conflicts(
+    paths: &Paths,
+    source: &Value,
+    provider_ids: &[String],
+) -> Result<Vec<String>> {
+    let storage = settings::key_storage_setting(paths)?;
+    let credentials = auth::read_credentials(paths)?;
+    let providers = source_providers(source)?;
+    let empty = Map::new();
+    let mut conflicts = Vec::new();
+    for id in provider_ids {
+        let provider = providers[id].as_object().ok_or_else(|| {
+            AppError::Invalid(format!("OpenCode provider '{id}' must be an object"))
+        })?;
+        let options = optional_object(provider, "options", id)?.unwrap_or(&empty);
+        if imported_key(id, options)?.is_none() {
+            continue;
+        }
+        let Some(entry) = credentials.get(id) else {
+            continue;
+        };
+        let conflicts_with_entry = match storage {
+            KeyStorage::AuthJson => !auth::is_api_key(entry),
+            // A surviving entry shadows the key that now lives in models.json.
+            KeyStorage::ModelsJson => !auth::is_plain_api_key(entry),
+        };
+        if conflicts_with_entry {
+            conflicts.push(id.clone());
+        }
+    }
+    Ok(conflicts)
 }
 
 pub fn apply_opencode_import(
     paths: &Paths,
     plan: OpenCodeImportPlan,
     candidate_indices: &[usize],
+) -> Result<ImportSummary> {
+    apply(paths, plan, candidate_indices, false)
+}
+
+/// [`apply_opencode_import`] for a caller whose user has already confirmed that
+/// the credentials of `plan.credential_conflicts` may be replaced or retired.
+pub fn apply_opencode_import_overwriting_credentials(
+    paths: &Paths,
+    plan: OpenCodeImportPlan,
+    candidate_indices: &[usize],
+) -> Result<ImportSummary> {
+    apply(paths, plan, candidate_indices, true)
+}
+
+fn apply(
+    paths: &Paths,
+    plan: OpenCodeImportPlan,
+    candidate_indices: &[usize],
+    overwrite_credentials: bool,
 ) -> Result<ImportSummary> {
     if candidate_indices.len() != plan.ambiguous.len() {
         return Err(AppError::Invalid(
@@ -82,6 +139,7 @@ pub fn apply_opencode_import(
         &plan.provider_ids,
         &plan.options,
         &selections,
+        overwrite_credentials,
     )
 }
 
@@ -89,6 +147,23 @@ pub fn apply_opencode_import(
 pub(super) fn import_opencode_with_catalog(
     paths: &Paths,
     catalog: &ModelCatalog,
+) -> Result<ImportSummary> {
+    import_opencode(paths, catalog, false)
+}
+
+#[cfg(test)]
+pub(super) fn import_opencode_overwriting_credentials(
+    paths: &Paths,
+    catalog: &ModelCatalog,
+) -> Result<ImportSummary> {
+    import_opencode(paths, catalog, true)
+}
+
+#[cfg(test)]
+fn import_opencode(
+    paths: &Paths,
+    catalog: &ModelCatalog,
+    overwrite_credentials: bool,
 ) -> Result<ImportSummary> {
     let source = read_source(paths)?;
     let provider_ids = source_providers(&source)?
@@ -105,6 +180,7 @@ pub(super) fn import_opencode_with_catalog(
             defaults: Default::default(),
         },
         &CatalogSelections::new(),
+        overwrite_credentials,
     )
 }
 
@@ -117,6 +193,7 @@ pub(super) fn prepare_opencode_with_catalog(
     let source = read_source(paths)?;
     validate_provider_ids(&source, provider_ids)?;
     let ambiguous = catalog_ambiguities(&source, provider_ids, &catalog)?;
+    let credential_conflicts = credential_conflicts(paths, &source, provider_ids)?;
     Ok(OpenCodeImportPlan {
         source,
         provider_ids: provider_ids.to_vec(),
@@ -126,10 +203,19 @@ pub(super) fn prepare_opencode_with_catalog(
         },
         catalog: Some(catalog),
         ambiguous,
+        credential_conflicts,
     })
 }
 
 type CatalogSelections = BTreeMap<String, BTreeMap<String, CatalogModel>>;
+
+/// `apiKey` an OpenCode provider would import, with `{env:...}`/`${...}`
+/// references translated to Pi's syntax.
+fn imported_key(id: &str, options: &Map<String, Value>) -> Result<Option<String>> {
+    optional_string(options, "apiKey", id)?
+        .map(translate_secret)
+        .transpose()
+}
 
 fn read_source(paths: &Paths) -> Result<Value> {
     let bytes = fs::read(&paths.opencode).map_err(|source| io_error(&paths.opencode, source))?;
@@ -209,6 +295,7 @@ fn import_source(
     provider_ids: &[String],
     options: &ImportOptions,
     selections: &CatalogSelections,
+    overwrite_credentials: bool,
 ) -> Result<ImportSummary> {
     let source_providers = source_providers(source)?;
     validate_provider_ids(source, provider_ids)?;
@@ -218,6 +305,7 @@ fn import_source(
     let before_library = library.clone();
     let before_models = models.clone();
     let mut auth_keys: Vec<(String, String)> = Vec::new();
+    let mut inline_keys: Vec<String> = Vec::new();
     let providers = providers_object_mut(&mut library)?;
     let mut summary = ImportSummary {
         providers: 0,
@@ -233,6 +321,7 @@ fn import_source(
         let mut key_route = KeyRoute {
             storage: key_storage,
             collected: &mut auth_keys,
+            inline: &mut inline_keys,
         };
         let (models, metadata, defaults, unresolved) = merge_provider(
             id,
@@ -257,16 +346,44 @@ fn import_source(
     }
     let documents_changed = library != before_library || models != before_models;
     // Keys go to auth.json first (a failed auth write must not leave keys behind
-    // in models.json); a key-only change still counts as a change.
-    let auth_changed = !auth_keys.is_empty()
+    // in models.json); a conflicting entry is reported before anything is
+    // written, and a key-only change still counts as a change.
+    let auth_changed = (!auth_keys.is_empty() || !inline_keys.is_empty())
         && auth::edit(paths, |credentials| {
             for (id, key) in &auth_keys {
-                credentials.insert(id.clone(), auth::api_key_entry(credentials.get(id), key));
+                let next = auth::api_key_entry(credentials.get(id), key);
+                // An `api_key` under the id is this provider's own credential
+                // and may be rotated; replacing anything else asks first.
+                let replaces = credentials.get(id).is_some_and(|current| current != &next);
+                let own = credentials.get(id).is_some_and(auth::is_api_key);
+                if replaces && !own && !overwrite_credentials {
+                    return Err(AppError::CredentialOverwriteRequired(id.clone()));
+                }
+                credentials.insert(id.clone(), next);
+            }
+            for id in &inline_keys {
+                // The key now lives in the provider JSON and Pi resolves
+                // auth.json first, so a surviving entry would keep shadowing it.
+                let Some(entry) = credentials.get(id) else {
+                    continue;
+                };
+                if !(auth::is_plain_api_key(entry) || overwrite_credentials) {
+                    return Err(AppError::CredentialOverwriteRequired(id.clone()));
+                }
+                credentials.remove(id);
             }
             Ok(())
         })?;
     if documents_changed {
-        write_provider_changes(paths, &lock, Some(&models), None, &library)?;
+        write_provider_changes(paths, &lock, Some(&models), None, &library).map_err(|error| {
+            if auth_changed {
+                AppError::Partial(format!(
+                    "auth.json was updated, but the provider documents were not: {error}"
+                ))
+            } else {
+                error
+            }
+        })?;
     }
     summary.changed = documents_changed || auth_changed;
     Ok(summary)
@@ -277,14 +394,21 @@ fn import_source(
 struct KeyRoute<'a> {
     storage: KeyStorage,
     collected: &'a mut Vec<(String, String)>,
+    inline: &'a mut Vec<String>,
 }
 
 impl KeyRoute<'_> {
     fn place(&mut self, id: &str, key: String, target: &mut Map<String, Value>) {
         match self.storage {
-            KeyStorage::AuthJson => self.collected.push((id.to_owned(), key)),
+            KeyStorage::AuthJson => {
+                // The key lives in auth.json only: a stale inline copy would come
+                // back as soon as that credential is removed.
+                target.remove("apiKey");
+                self.collected.push((id.to_owned(), key));
+            }
             KeyStorage::ModelsJson => {
                 target.insert("apiKey".into(), Value::String(key));
+                self.inline.push(id.to_owned());
             }
         }
     }
@@ -306,9 +430,7 @@ fn merge_provider(
     let options = optional_object(source, "options", id)?.unwrap_or(&empty);
     let api = provider_api(id, optional_string(source, "npm", id)?)?;
     let base_url = optional_string(options, "baseURL", id)?;
-    let api_key = optional_string(options, "apiKey", id)?
-        .map(translate_secret)
-        .transpose()?;
+    let api_key = imported_key(id, options)?;
     let headers = optional_object(options, "headers", id)?
         .map(|headers| translate_strings(&Value::Object(headers.clone())))
         .transpose()?;

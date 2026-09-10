@@ -581,16 +581,42 @@ impl App {
         });
     }
 
-    pub(super) fn start_opencode_apply(
+    /// Applies a prepared OpenCode import, asking first when it would replace or
+    /// retire a credential Pi itself manages.
+    pub(in crate::tui) fn request_opencode_apply(
         &mut self,
         plan: OpenCodeImportPlan,
         candidate_indices: Vec<usize>,
     ) {
+        if plan.credential_conflicts.is_empty() {
+            self.start_opencode_apply(plan, candidate_indices, false);
+        } else {
+            self.overlay = Some(Overlay::ConfirmImportCredentials {
+                plan,
+                candidate_indices,
+            });
+        }
+    }
+
+    pub(super) fn start_opencode_apply(
+        &mut self,
+        plan: OpenCodeImportPlan,
+        candidate_indices: Vec<usize>,
+        overwrite_credentials: bool,
+    ) {
         let paths = self.paths.clone();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let result = documents::apply_opencode_import(&paths, plan, &candidate_indices)
-                .map(BackgroundResult::OpenCode);
+            let result = if overwrite_credentials {
+                documents::apply_opencode_import_overwriting_credentials(
+                    &paths,
+                    plan,
+                    &candidate_indices,
+                )
+            } else {
+                documents::apply_opencode_import(&paths, plan, &candidate_indices)
+            }
+            .map(BackgroundResult::OpenCode);
             let _ = sender.send(result);
         });
         self.task = Some(receiver);

@@ -5,8 +5,9 @@
 //! `{"type": "api_key", "key": "..."}` (Pi also resolves `$ENV` references in
 //! `key`), and writers hold a proper-lockfile-compatible lock. proper-lockfile
 //! locks by creating a `<file>.lock` directory; we mirror that with
-//! `create_dir`, treat locks older than 30s as stale (Pi's `stale` option),
-//! and back off briefly while locked.
+//! `create_dir` and back off briefly while locked. We do not steal existing
+//! lock directories because proper-lockfile exposes no portable ownership
+//! token that would make takeover safe against a concurrent replacement.
 
 use std::{
     fs,
@@ -23,11 +24,10 @@ use super::{
     AppError, Paths, Result,
 };
 
-const STALE: Duration = Duration::from_secs(30);
 const RETRY: Duration = Duration::from_millis(20);
 const TIMEOUT: Duration = Duration::from_secs(5);
 
-fn read_credentials(paths: &Paths) -> Result<Map<String, Value>> {
+pub(super) fn read_credentials(paths: &Paths) -> Result<Map<String, Value>> {
     let value = read_document(&paths.pi_auth, json!({}))?;
     value
         .as_object()
@@ -91,6 +91,19 @@ pub(super) fn api_key_entry(existing: Option<&Value>, key: &str) -> Value {
     Value::Object(entry)
 }
 
+/// Whether an entry is an `api_key` credential — the only kind this tool
+/// rewrites. OAuth and other types belong to Pi.
+pub(super) fn is_api_key(entry: &Value) -> bool {
+    entry["type"] == "api_key"
+}
+
+/// Whether an entry is an `api_key` credential with nothing but `type`/`key`
+/// to lose, so retiring it takes no provider-scoped `env` values or extensions
+/// with it.
+pub(super) fn is_plain_api_key(entry: &Value) -> bool {
+    is_api_key(entry) && !has_provider_config(entry)
+}
+
 /// Whether an entry holds more than `type`/`key` — provider-scoped `env` values
 /// and extensions, which a `models.json` key cannot carry.
 pub(super) fn has_provider_config(entry: &Value) -> bool {
@@ -137,6 +150,10 @@ struct AuthLock {
 impl AuthLock {
     fn acquire(auth_path: &Path) -> Result<Self> {
         let dir = lock_dir(auth_path);
+        let parent = dir.parent().ok_or_else(|| {
+            AppError::Invalid(format!("{} has no parent directory", dir.display()))
+        })?;
+        fs::create_dir_all(parent).map_err(|source| io_error(parent, source))?;
         let deadline = Instant::now() + TIMEOUT;
         loop {
             match fs::create_dir(&dir) {
@@ -150,15 +167,6 @@ impl AuthLock {
                     };
                 }
                 Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if is_stale(&dir) {
-                        match fs::remove_dir(&dir) {
-                            Ok(()) => {}
-                            // A concurrent taker removed it first.
-                            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
-                            Err(source) => return Err(io_error(&dir, source)),
-                        }
-                        continue;
-                    }
                     if Instant::now() >= deadline {
                         return Err(AppError::Busy(dir));
                     }
@@ -184,12 +192,6 @@ fn mtime_of(dir: &Path) -> Option<SystemTime> {
     fs::metadata(dir)
         .and_then(|metadata| metadata.modified())
         .ok()
-}
-
-fn is_stale(dir: &Path) -> bool {
-    mtime_of(dir)
-        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
-        .is_some_and(|age| age > STALE)
 }
 
 /// Atomic write that marks a newly created file private (0600 on Unix), the
@@ -258,11 +260,24 @@ mod lock_tests {
         // (which recorded the previous mtime) resumes and drops its lock.
         let stale = AuthLock {
             dir: dir.clone(),
-            created: SystemTime::now() - STALE - STALE,
+            created: SystemTime::UNIX_EPOCH,
         };
         fs::create_dir(&dir).unwrap();
         drop(stale);
         assert!(dir.exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn acquire_creates_the_auth_parent_directory() {
+        let root = std::env::temp_dir().join(format!("pi-switch-lock-parent-{}", now_millis()));
+        let auth_path = root.join(".pi/agent/auth.json");
+
+        let lock = AuthLock::acquire(&auth_path).unwrap();
+        assert!(lock_dir(&auth_path).is_dir());
+        drop(lock);
+        assert!(!lock_dir(&auth_path).exists());
 
         let _ = fs::remove_dir_all(&root);
     }

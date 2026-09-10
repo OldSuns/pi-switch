@@ -191,6 +191,10 @@ pub(super) enum Overlay {
         form: FormState,
         draft: documents::ProviderDraft,
     },
+    ConfirmImportCredentials {
+        plan: OpenCodeImportPlan,
+        candidate_indices: Vec<usize>,
+    },
     ConfirmDeleteModel {
         provider_id: String,
         model_id: String,

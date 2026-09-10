@@ -776,3 +776,58 @@
         app.on_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
         assert_eq!(kind(), "api_key");
     }
+
+    #[test]
+    fn opencode_import_asks_before_replacing_a_pi_credential() {
+        let (_root, mut app) = app();
+        let auth = app.paths.pi_auth.clone();
+        fs::create_dir_all(auth.parent().unwrap()).unwrap();
+        fs::write(
+            &auth,
+            r#"{"gw":{"type":"oauth","access":"a","refresh":"r","expires":9}}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(app.paths.opencode.parent().unwrap()).unwrap();
+        fs::write(
+            &app.paths.opencode,
+            r#"{"provider":{"gw":{"npm":"@ai-sdk/openai-compatible","options":{"apiKey":"imported"}}}}"#,
+        )
+        .unwrap();
+        let plan = crate::documents::prepare_opencode_import(
+            &app.paths,
+            &["gw".into()],
+            ImportOptions {
+                fetch_metadata: false,
+                defaults: Default::default(),
+            },
+        )
+        .unwrap();
+        let kind = || {
+            let value: serde_json::Value =
+                serde_json::from_slice(&fs::read(&auth).unwrap()).unwrap();
+            value["gw"]["type"].as_str().unwrap().to_owned()
+        };
+
+        // Cancelling writes nothing; confirming replaces the Pi login.
+        app.request_opencode_apply(plan.clone(), Vec::new());
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::ConfirmImportCredentials { .. })
+        ));
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.overlay.is_none());
+        assert_eq!(kind(), "oauth");
+
+        app.request_opencode_apply(plan, Vec::new());
+        app.on_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        for _ in 0..400 {
+            if app.task.is_none() {
+                break;
+            }
+            app.tick();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.task.is_none(), "import did not finish");
+        assert_eq!(kind(), "api_key");
+        assert!(app.overlay.is_none());
+    }

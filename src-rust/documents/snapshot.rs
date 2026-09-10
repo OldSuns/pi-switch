@@ -19,14 +19,14 @@ pub fn load_snapshot(paths: &Paths) -> Result<Snapshot> {
     views.sort_by_key(|a| a.id.to_lowercase());
 
     // Keys may live in auth.json; surface them so detail views and edit forms
-    // show the real value instead of a placeholder. A broken auth.json must
-    // not break the snapshot; entries just stay empty.
+    // show the real value instead of a placeholder. Pi resolves auth.json
+    // first, so that key is the one Pi uses and the one to show — a leftover
+    // inline `apiKey` must not win here. A broken auth.json must not break the
+    // snapshot; entries just stay as they are.
     let auth_keys = auth::credential_keys(paths).unwrap_or_default();
     for view in &mut views {
-        if view.api_key.is_empty() {
-            if let Some(key) = auth_keys.get(&view.id) {
-                view.api_key = key.clone();
-            }
+        if let Some(key) = auth_keys.get(&view.id) {
+            view.api_key = key.clone();
         }
     }
 

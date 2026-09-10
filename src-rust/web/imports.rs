@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use serde_json::{json, Value};
 
 use crate::documents::{
-    self, CatalogFetch, ImportOptions, ModelCatalog, OpenCodeImportPlan, ProviderView, Result,
-    Snapshot,
+    self, AppError, CatalogFetch, ImportOptions, ModelCatalog, OpenCodeImportPlan, ProviderView,
+    Result, Snapshot,
 };
 
 use super::{input::Input, invalid, output, WebCore};
@@ -207,13 +207,27 @@ impl WebCore {
     pub(super) fn import_opencode(&mut self, request: &Input<'_>) -> Result<Value> {
         let plan_id = request.integer("planId")?;
         let indices = request.indices("candidateIndices")?;
+        let overwrite = request
+            .optional_boolean("overwriteCredential")?
+            .unwrap_or(false);
         let prepared = self
             .opencode_plan
             .as_ref()
             .filter(|prepared| prepared.id == plan_id)
             .ok_or_else(|| invalid("OpenCode import plan has expired; prepare the import again"))?;
-        let summary =
-            documents::apply_opencode_import(&self.paths, prepared.plan.clone(), &indices)?;
+        let plan = prepared.plan.clone();
+        let applied = if overwrite {
+            documents::apply_opencode_import_overwriting_credentials(&self.paths, plan, &indices)
+        } else {
+            documents::apply_opencode_import(&self.paths, plan, &indices)
+        };
+        let summary = match applied {
+            Ok(summary) => summary,
+            Err(AppError::CredentialOverwriteRequired(_)) => {
+                return Ok(json!({ "requiresCredentialOverwrite": true }));
+            }
+            Err(error) => return Err(error),
+        };
         self.opencode_plan = None;
         self.fetched_models.clear();
         Ok(json!({

@@ -109,6 +109,16 @@ fn read_json(path: impl AsRef<std::path::Path>) -> Value {
     serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
 }
 
+/// [`read_json`] for a document that may not exist yet.
+fn read_optional_json(path: impl AsRef<std::path::Path>) -> Value {
+    let path = path.as_ref();
+    if path.exists() {
+        read_json(path)
+    } else {
+        json!({})
+    }
+}
+
 fn provider_view(address: &std::net::SocketAddr, api_key: &str, auth_header: bool) -> ProviderView {
     ProviderView {
         id: "local".into(),

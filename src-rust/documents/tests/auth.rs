@@ -68,6 +68,33 @@ fn renaming_provider_moves_the_auth_credential() {
 }
 
 #[test]
+fn renames_still_account_for_the_source_credential() {
+    let (_root, paths) = fixture();
+    // A key that moves into models.json leaves no shadowing entry behind.
+    save_provider(&paths, None, &auth_draft("p", "sk-a")).unwrap();
+    set_key_storage(&paths, KeyStorage::ModelsJson).unwrap();
+    save_provider(&paths, Some("p"), &auth_draft("renamed", "sk-b")).unwrap();
+    assert!(read_json(&paths.pi_auth).get("p").is_none());
+    assert_eq!(
+        read_json(&paths.pi_models)["providers"]["renamed"]["apiKey"],
+        "sk-b"
+    );
+
+    // A Pi login stays put when the rename waits for a typed key.
+    set_key_storage(&paths, KeyStorage::AuthJson).unwrap();
+    save_provider(&paths, None, &auth_draft("q", "")).unwrap();
+    fs::write(
+        &paths.pi_auth,
+        r#"{"q":{"type":"oauth","access":"a","refresh":"r","expires":9}}"#,
+    )
+    .unwrap();
+    save_provider(&paths, Some("q"), &auth_draft("r", "sk-new")).unwrap();
+    let auth = read_json(&paths.pi_auth);
+    assert_eq!(auth["q"]["type"], json!("oauth"));
+    assert_eq!(auth["r"]["key"], "sk-new");
+}
+
+#[test]
 fn models_json_storage_keeps_the_legacy_behavior() {
     let (_root, paths) = fixture();
     set_key_storage(&paths, KeyStorage::ModelsJson).unwrap();
@@ -166,6 +193,112 @@ fn opencode_import_routes_keys_by_storage_setting() {
         "plain"
     );
     assert!(!has_credential(&paths, "second").unwrap());
+}
+
+#[test]
+fn saving_follows_the_key_pi_resolves() {
+    let (_root, paths) = fixture();
+    set_key_storage(&paths, KeyStorage::ModelsJson).unwrap();
+    save_provider(&paths, None, &auth_draft("p", "inline")).unwrap();
+    // Pi resolves auth.json first, so this is the key it actually uses.
+    fs::write(&paths.pi_auth, r#"{"p":{"type":"api_key","key":"auth"}}"#).unwrap();
+    let shown = load_snapshot(&paths).unwrap().providers[0].api_key.clone();
+    assert_eq!(shown, "auth");
+
+    // An unrelated edit keeps Pi's key instead of writing the stale one back.
+    let mut draft = auth_draft("p", &shown);
+    draft.base_url = "https://changed.test/v1".into();
+    save_provider(&paths, Some("p"), &draft).unwrap();
+    assert_eq!(
+        read_json(&paths.pi_models)["providers"]["p"]["apiKey"],
+        "auth"
+    );
+
+    // Auth.json mode leaves no inline copy behind either.
+    set_key_storage(&paths, KeyStorage::AuthJson).unwrap();
+    save_provider(&paths, Some("p"), &auth_draft("p", "auth")).unwrap();
+    assert_eq!(read_json(&paths.pi_auth)["p"]["key"], "auth");
+    assert!(read_json(&paths.pi_models)["providers"]["p"]
+        .get("apiKey")
+        .is_none());
+}
+
+#[test]
+fn opencode_import_asks_before_replacing_a_pi_credential() {
+    let (_root, paths) = fixture();
+    fs::write(
+        &paths.pi_auth,
+        r#"{"gw":{"type":"oauth","access":"a","refresh":"r","expires":9}}"#,
+    )
+    .unwrap();
+    write_opencode(
+        &paths,
+        json!({"provider": {"gw": {"npm": "@ai-sdk/openai-compatible",
+            "options": {"apiKey": "imported"}, "models": {}}}}),
+    );
+    let plan =
+        prepare_opencode_with_catalog(&paths, ModelCatalog::default(), &["gw".into()]).unwrap();
+    assert_eq!(plan.credential_conflicts, vec!["gw".to_owned()]);
+    assert!(matches!(
+        apply_opencode_import(&paths, plan.clone(), &[]).unwrap_err(),
+        AppError::CredentialOverwriteRequired(_)
+    ));
+    // Nothing was written before the user confirmed.
+    assert_eq!(read_json(&paths.pi_auth)["gw"]["type"], json!("oauth"));
+    assert!(read_optional_json(&paths.pi_models)["providers"]
+        .get("gw")
+        .is_none());
+
+    apply_opencode_import_overwriting_credentials(&paths, plan, &[]).unwrap();
+    assert_eq!(read_json(&paths.pi_auth)["gw"]["key"], "imported");
+}
+
+#[test]
+fn opencode_import_keeps_keys_and_provider_documents_in_step() {
+    let (_root, paths) = fixture();
+    write_opencode(
+        &paths,
+        json!({"provider": {"gw": {"npm": "@ai-sdk/openai-compatible",
+            "options": {"apiKey": "inline"}, "models": {}}}}),
+    );
+    // A plain entry of ours is retired, so it cannot shadow the inline key.
+    fs::write(
+        &paths.pi_auth,
+        r#"{"gw":{"type":"api_key","key":"sk-old"}}"#,
+    )
+    .unwrap();
+    set_key_storage(&paths, KeyStorage::ModelsJson).unwrap();
+    import_opencode_with_catalog(&paths, &ModelCatalog::default()).unwrap();
+    assert!(read_json(&paths.pi_auth).get("gw").is_none());
+    assert_eq!(
+        read_json(&paths.pi_models)["providers"]["gw"]["apiKey"],
+        "inline"
+    );
+
+    // A Pi login asks first and then goes with the confirmation.
+    fs::write(
+        &paths.pi_auth,
+        r#"{"gw":{"type":"oauth","access":"a","refresh":"r","expires":9}}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        import_opencode_with_catalog(&paths, &ModelCatalog::default()).unwrap_err(),
+        AppError::CredentialOverwriteRequired(_)
+    ));
+    assert_eq!(read_json(&paths.pi_auth)["gw"]["type"], json!("oauth"));
+    import_opencode_overwriting_credentials(&paths, &ModelCatalog::default()).unwrap();
+    assert!(read_json(&paths.pi_auth).get("gw").is_none());
+
+    // auth.json mode takes the key out of both provider documents.
+    set_key_storage(&paths, KeyStorage::AuthJson).unwrap();
+    import_opencode_with_catalog(&paths, &ModelCatalog::default()).unwrap();
+    assert_eq!(read_json(&paths.pi_auth)["gw"]["key"], "inline");
+    assert!(read_json(&paths.pi_models)["providers"]["gw"]
+        .get("apiKey")
+        .is_none());
+    assert!(read_json(&paths.providers)["providers"]["gw"]
+        .get("apiKey")
+        .is_none());
 }
 
 #[test]

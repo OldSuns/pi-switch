@@ -32,7 +32,10 @@ pub(crate) use network::check_npm_update_strict;
 pub use network::fetch_model_ids;
 pub use network::resolve_metadata;
 pub use network::{dismiss_update, install_update, read_dismissed_update};
-pub use opencode::{apply_opencode_import, list_opencode_providers, prepare_opencode_import};
+pub use opencode::{
+    apply_opencode_import, apply_opencode_import_overwriting_credentials, list_opencode_providers,
+    prepare_opencode_import,
+};
 pub use ordering::{reorder_profiles, set_profile_sort, ProfileList, ProfileOrdering, ProfileSort};
 pub use providers::{
     duplicate_model, duplicate_provider, import_models, remove_model, remove_provider, save_model,
@@ -86,7 +89,7 @@ pub enum AppError {
     CredentialOverwriteRequired(String),
     #[error("another pi-switch process is writing configuration ({0})")]
     Busy(PathBuf),
-    #[error("provider update completed, but settings update failed: {0}")]
+    #[error("{0}")]
     Partial(String),
     #[error("{0}")]
     Http(String),
@@ -650,6 +653,9 @@ pub struct OpenCodeImportPlan {
     options: ImportOptions,
     catalog: Option<ModelCatalog>,
     pub ambiguous: Vec<CatalogAmbiguity>,
+    /// Provider IDs whose `auth.json` entry this import would replace or retire,
+    /// so applying it needs the user's confirmation first.
+    pub credential_conflicts: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -673,7 +679,10 @@ use network::{
     resolve_metadata_with_timeout_for_test, resolve_secret, round_price, Ratios,
 };
 #[cfg(test)]
-use opencode::{import_opencode_with_catalog, prepare_opencode_with_catalog};
+use opencode::{
+    import_opencode_overwriting_credentials, import_opencode_with_catalog,
+    prepare_opencode_with_catalog,
+};
 #[cfg(test)]
 use storage::now_millis;
 
