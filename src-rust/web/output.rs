@@ -7,15 +7,22 @@ use crate::documents::{
 };
 
 pub(super) fn snapshot(snapshot: &Snapshot, paths: &Paths, sessions_root: &Path) -> Value {
+    // A corrupt auth.json must not break the snapshot; the delete dialog just
+    // skips the credential question then.
+    let auth_ids: std::collections::BTreeSet<String> = crate::documents::credential_ids(paths)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     json!({
         "version": env!("CARGO_PKG_VERSION"),
         "apiTypes": crate::documents::API_TYPES,
-        "providers": snapshot.providers.iter().map(provider).collect::<Vec<_>>(),
+        "providers": snapshot.providers.iter().map(|view| provider(view, auth_ids.contains(&view.id))).collect::<Vec<_>>(),
         "ordering": snapshot.ordering.to_json(),
         "defaultProvider": snapshot.default_provider,
         "defaultModel": snapshot.default_model,
         "language": snapshot.language,
         "fetchModelMetadata": snapshot.fetch_model_metadata,
+        "keyStorage": snapshot.key_storage.as_str(),
         "checkUpdates": snapshot.check_updates,
         "modelDefaults": defaults(&snapshot.model_defaults),
         "paths": {
@@ -31,13 +38,21 @@ pub(super) fn snapshot(snapshot: &Snapshot, paths: &Paths, sessions_root: &Path)
     })
 }
 
-fn provider(provider: &ProviderView) -> Value {
+fn provider(provider: &ProviderView, has_auth: bool) -> Value {
     json!({
         "id": provider.id,
         "inPi": provider.in_pi,
         "baseUrl": provider.base_url,
         "api": (!provider.api.is_empty()).then_some(&provider.api),
         "apiKey": provider.api_key,
+        "apiKeySource": if provider.raw.get("apiKey").and_then(|value| value.as_str()).is_some_and(|value| !value.is_empty()) {
+            Some("models.json")
+        } else if has_auth && !provider.api_key.is_empty() {
+            Some("auth.json")
+        } else {
+            None
+        },
+        "hasAuth": has_auth,
         "authHeader": provider.auth_header,
         "headers": provider.raw.get("headers"),
         "compat": provider.raw.get("compat"),

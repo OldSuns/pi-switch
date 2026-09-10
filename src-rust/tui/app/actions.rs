@@ -33,6 +33,7 @@ impl App {
         match action {
             SettingsAction::Language => self.switch_language(),
             SettingsAction::FetchMetadata => self.toggle_fetch_metadata(),
+            SettingsAction::KeyStorage => self.cycle_key_storage(),
             SettingsAction::AutoCheckUpdates => self.toggle_check_updates(),
             SettingsAction::CheckUpdateNow => self.check_update_now(),
             SettingsAction::ModelDefaults => {
@@ -49,6 +50,27 @@ impl App {
             }
             SettingsAction::Backups => self.open_backups(),
             SettingsAction::ImportOpenCode => self.open_opencode_providers(),
+        }
+    }
+
+    pub(super) fn cycle_key_storage(&mut self) {
+        let next = match self.snapshot.key_storage {
+            documents::KeyStorage::AuthJson => documents::KeyStorage::ModelsJson,
+            documents::KeyStorage::ModelsJson => documents::KeyStorage::AuthJson,
+        };
+        match documents::set_key_storage(&self.paths, next) {
+            Ok(()) => {
+                self.snapshot.key_storage = next;
+                self.notice(
+                    NoticeKind::Success,
+                    format!(
+                        "{}: {}",
+                        self.language.pick("API key storage", "API 密钥保存位置"),
+                        next.as_str()
+                    ),
+                );
+            }
+            Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
         }
     }
 
@@ -259,9 +281,15 @@ impl App {
                 model_id: model_id.id.clone(),
             });
         } else {
+            let id = provider.id.clone();
+            // A corrupt/unreadable auth.json just makes the question disappear;
+            // deletion keeps its pre-feature behavior.
+            let has_auth = documents::has_credential(&self.paths, &id).unwrap_or(false);
             self.overlay = Some(Overlay::ConfirmDeleteProvider {
-                id: provider.id.clone(),
+                id,
                 in_pi: provider.in_pi,
+                has_auth,
+                remove_auth: has_auth,
             });
         }
     }
@@ -344,13 +372,23 @@ impl App {
         };
         let provider_id = provider.id.clone();
         let task_provider_id = provider_id.clone();
+        // Auth may live in auth.json now; fall back to it when the provider
+        // itself carries no key.
+        let paths = self.paths.clone();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let result =
-                documents::fetch_model_ids(&provider).map(|ids| BackgroundResult::ModelIds {
-                    provider_id: task_provider_id,
-                    ids,
-                });
+            let mut provider = provider;
+            let result = (|| {
+                if provider.api_key.is_empty() {
+                    provider.api_key =
+                        documents::credential_key(&paths, &provider.id)?.unwrap_or_default();
+                }
+                documents::fetch_model_ids(&provider)
+            })()
+            .map(|ids| BackgroundResult::ModelIds {
+                provider_id: task_provider_id,
+                ids,
+            });
             let _ = sender.send(result);
         });
         self.task = Some(receiver);
@@ -390,14 +428,21 @@ impl App {
         let options = self.import_options();
         let task_provider_id = provider_id.clone();
         let task_ids = ids.clone();
+        let paths = self.paths.clone();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let result = documents::resolve_metadata(provider, task_ids, options).map(|fetched| {
-                BackgroundResult::Catalog {
-                    provider_id: task_provider_id,
-                    fetched,
-                    overwrite,
+            let mut provider = provider;
+            let result = (|| {
+                if provider.api_key.is_empty() {
+                    provider.api_key =
+                        documents::credential_key(&paths, &provider.id)?.unwrap_or_default();
                 }
+                documents::resolve_metadata(provider, task_ids, options)
+            })()
+            .map(|fetched| BackgroundResult::Catalog {
+                provider_id: task_provider_id,
+                fetched,
+                overwrite,
             });
             let _ = sender.send(result);
         });

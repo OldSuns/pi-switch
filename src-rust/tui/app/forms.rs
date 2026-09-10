@@ -1,6 +1,34 @@
 use super::*;
 
 impl App {
+    /// Saves a provider draft, asking for confirmation before replacing a credential.
+    pub(super) fn finish_provider_save(
+        &mut self,
+        form: &FormState,
+        draft: &documents::ProviderDraft,
+        overwrite_credential: bool,
+    ) {
+        let result = if overwrite_credential {
+            documents::save_provider_overwriting_credential(
+                &self.paths,
+                form.previous_id.as_deref(),
+                draft,
+            )
+        } else {
+            documents::save_provider(&self.paths, form.previous_id.as_deref(), draft)
+        };
+        match result {
+            Ok(()) => self.reload(Some(self.language.pick("Provider saved", "提供商已保存"))),
+            Err(documents::AppError::CredentialOverwriteRequired(_)) => {
+                self.overlay = Some(Overlay::ConfirmOverwriteCredential {
+                    form: form.clone(),
+                    draft: draft.clone(),
+                });
+            }
+            Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
+        }
+    }
+
     pub(in crate::tui) fn on_form_key(&mut self, form: &mut FormState, key: KeyEvent) -> bool {
         let save_provider = |app: &mut Self, form: &FormState| {
             let draft = match form.draft() {
@@ -18,10 +46,7 @@ impl App {
                     draft,
                 });
             } else {
-                match documents::save_provider(&app.paths, form.previous_id.as_deref(), &draft) {
-                    Ok(()) => app.reload(Some(app.language.pick("Provider saved", "提供商已保存"))),
-                    Err(error) => app.overlay = Some(Overlay::Error(error.to_string())),
-                }
+                app.finish_provider_save(form, &draft, false);
             }
         };
         if form.show_help {

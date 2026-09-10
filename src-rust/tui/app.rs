@@ -79,11 +79,12 @@ pub(super) enum SettingsAction {
     Backups,
     ImportOpenCode,
     AutoCheckUpdates,
+    KeyStorage,
     CheckUpdateNow,
 }
 
 impl SettingsAction {
-    pub(super) const ALL: [Self; 9] = [
+    pub(super) const ALL: [Self; 10] = [
         Self::Language,
         Self::FetchMetadata,
         Self::ModelDefaults,
@@ -92,6 +93,7 @@ impl SettingsAction {
         Self::Backups,
         Self::ImportOpenCode,
         Self::AutoCheckUpdates,
+        Self::KeyStorage,
         Self::CheckUpdateNow,
     ];
 
@@ -118,6 +120,7 @@ impl SettingsAction {
             Self::ModelDefaults => language
                 .pick("Default model parameters", "默认模型参数")
                 .into(),
+            Self::KeyStorage => language.pick("API key storage", "API 密钥保存位置").into(),
             Self::Reload => language.pick("Reload configuration", "重载配置").into(),
             Self::Doctor => language.pick("Validate configuration", "验证配置").into(),
             Self::Backups => language.pick("Browse backups", "浏览备份").into(),
@@ -176,9 +179,15 @@ pub(super) enum Overlay {
     ConfirmDeleteProvider {
         id: String,
         in_pi: bool,
+        has_auth: bool,
+        remove_auth: bool,
     },
     ConfirmRemoveProviderFromPi(String),
     ConfirmSaveProviderWithoutPi {
+        form: FormState,
+        draft: documents::ProviderDraft,
+    },
+    ConfirmOverwriteCredential {
         form: FormState,
         draft: documents::ProviderDraft,
     },
@@ -361,6 +370,7 @@ impl App {
                     default_model: None,
                     language: "en".into(),
                     fetch_model_metadata: true,
+                    key_storage: documents::KeyStorage::AuthJson,
                     check_updates: true,
                     model_defaults: Default::default(),
                     warning: None,

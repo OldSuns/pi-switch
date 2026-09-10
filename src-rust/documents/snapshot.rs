@@ -1,6 +1,6 @@
 use super::settings::{
-    check_updates_field, fetch_model_metadata_field, language_field, load_settings,
-    model_defaults_field,
+    check_updates_field, fetch_model_metadata_field, key_storage_field, language_field,
+    load_settings, model_defaults_field,
 };
 use super::*;
 
@@ -18,6 +18,18 @@ pub fn load_snapshot(paths: &Paths) -> Result<Snapshot> {
         .collect::<Result<Vec<_>>>()?;
     views.sort_by_key(|a| a.id.to_lowercase());
 
+    // Keys may live in auth.json; surface them so detail views and edit forms
+    // show the real value instead of a placeholder. A broken auth.json must
+    // not break the snapshot; entries just stay empty.
+    let auth_keys = auth::credential_keys(paths).unwrap_or_default();
+    for view in &mut views {
+        if view.api_key.is_empty() {
+            if let Some(key) = auth_keys.get(&view.id) {
+                view.api_key = key.clone();
+            }
+        }
+    }
+
     Ok(Snapshot {
         providers_path: paths.providers.display().to_string(),
         pi_models_path: paths.pi_models.display().to_string(),
@@ -29,6 +41,7 @@ pub fn load_snapshot(paths: &Paths) -> Result<Snapshot> {
         default_model: string_field(&settings.pi, "defaultModel")?,
         language: language_field(&settings.app)?,
         fetch_model_metadata: fetch_model_metadata_field(&settings.app)?,
+        key_storage: key_storage_field(&settings.app)?,
         check_updates: check_updates_field(&settings.app)?,
         model_defaults: model_defaults_field(&settings.app)?,
         warning: merge_warnings(provider_warning, settings.warning),

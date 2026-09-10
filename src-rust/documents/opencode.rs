@@ -3,12 +3,14 @@ use std::{collections::BTreeMap, fs};
 use serde_json::{json, Map, Value};
 
 use super::{
+    auth,
     network::fetch_catalog,
     schema::{minimal_model, provider_view, validate_draft, validate_model_id},
+    settings,
     snapshot::{lock_provider_documents, write_provider_changes},
     storage::{io_error, providers_object, providers_object_mut},
-    AppError, CatalogAmbiguity, CatalogModel, ImportOptions, ImportSummary, ModelCatalog,
-    OpenCodeImportPlan, Paths, ProviderDraft, Result,
+    AppError, CatalogAmbiguity, CatalogModel, ImportOptions, ImportSummary, KeyStorage,
+    ModelCatalog, OpenCodeImportPlan, Paths, ProviderDraft, Result,
 };
 
 pub fn list_opencode_providers(paths: &Paths) -> Result<Vec<String>> {
@@ -211,9 +213,11 @@ fn import_source(
     let source_providers = source_providers(source)?;
     validate_provider_ids(source, provider_ids)?;
 
+    let key_storage = settings::key_storage_setting(paths)?;
     let (lock, mut library, mut models) = lock_provider_documents(paths)?;
     let before_library = library.clone();
     let before_models = models.clone();
+    let mut auth_keys: Vec<(String, String)> = Vec::new();
     let providers = providers_object_mut(&mut library)?;
     let mut summary = ImportSummary {
         providers: 0,
@@ -226,8 +230,19 @@ fn import_source(
 
     for id in provider_ids {
         let source = &source_providers[id];
-        let (models, metadata, defaults, unresolved) =
-            merge_provider(id, source, providers, catalog, options, selections)?;
+        let mut key_route = KeyRoute {
+            storage: key_storage,
+            collected: &mut auth_keys,
+        };
+        let (models, metadata, defaults, unresolved) = merge_provider(
+            id,
+            source,
+            providers,
+            catalog,
+            options,
+            selections,
+            &mut key_route,
+        )?;
         summary.models += models;
         summary.metadata += metadata;
         summary.defaults += defaults;
@@ -240,11 +255,39 @@ fn import_source(
     for id in provider_ids {
         enabled.insert(id.clone(), local[id].clone());
     }
-    summary.changed = library != before_library || models != before_models;
-    if summary.changed {
+    let documents_changed = library != before_library || models != before_models;
+    // Keys go to auth.json first (a failed auth write must not leave keys behind
+    // in models.json); a key-only change still counts as a change.
+    let auth_changed = !auth_keys.is_empty()
+        && auth::edit(paths, |credentials| {
+            for (id, key) in &auth_keys {
+                credentials.insert(id.clone(), json!({ "type": "api_key", "key": key }));
+            }
+            Ok(())
+        })?;
+    if documents_changed {
         write_provider_changes(paths, &lock, Some(&models), None, &library)?;
     }
+    summary.changed = documents_changed || auth_changed;
     Ok(summary)
+}
+
+/// Routes an imported `apiKey`: either inline into the provider JSON
+/// (`models.json` mode) or collected for auth.json (`auth.json` mode).
+struct KeyRoute<'a> {
+    storage: KeyStorage,
+    collected: &'a mut Vec<(String, String)>,
+}
+
+impl KeyRoute<'_> {
+    fn place(&mut self, id: &str, key: String, target: &mut Map<String, Value>) {
+        match self.storage {
+            KeyStorage::AuthJson => self.collected.push((id.to_owned(), key)),
+            KeyStorage::ModelsJson => {
+                target.insert("apiKey".into(), Value::String(key));
+            }
+        }
+    }
 }
 
 fn merge_provider(
@@ -254,6 +297,7 @@ fn merge_provider(
     catalog: Option<&ModelCatalog>,
     import_options: &ImportOptions,
     selections: &CatalogSelections,
+    key_route: &mut KeyRoute,
 ) -> Result<(usize, usize, usize, usize)> {
     let source = source
         .as_object()
@@ -289,7 +333,7 @@ fn merge_provider(
     }
     target.insert("api".into(), Value::String(api.into()));
     if let Some(api_key) = api_key {
-        target.insert("apiKey".into(), Value::String(api_key));
+        key_route.place(id, api_key, target);
     }
     if let Some(headers) = headers {
         target.insert("headers".into(), headers);

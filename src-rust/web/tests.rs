@@ -1095,3 +1095,23 @@ fn opencode_import_uses_a_matching_plan_and_shared_mapping_rules() {
     assert_eq!(provider["models"][0]["name"], "Chat model");
     assert_eq!(provider["inPi"], true);
 }
+
+#[test]
+fn provider_save_asks_before_replacing_a_pi_credential() {
+    let mut fixture = Fixture::new();
+    let auth = fixture.core.paths.pi_auth.clone();
+    fs::write(
+        &auth,
+        r#"{"pi-login":{"type":"oauth","access":"a","refresh":"r","expires":9}}"#,
+    )
+    .unwrap();
+    let draft = provider_draft("pi-login", true);
+
+    let response = fixture.call(json!({ "action": "provider.save", "draft": draft.clone() }));
+    assert_eq!(response["requiresCredentialOverwrite"], json!(true));
+    assert_eq!(read_json(&auth)["pi-login"]["type"], json!("oauth"));
+
+    let response = fixture
+        .call(json!({ "action": "provider.save", "draft": draft, "overwriteCredential": true }));
+    assert!(response.get("snapshot").is_some());
+}

@@ -28,11 +28,25 @@ pub(super) struct PreparedOpenCode {
     plan: OpenCodeImportPlan,
 }
 
+/// Borrow the key from Pi auth.json when the provider itself carries none, so
+/// model fetching still works with auth.json-based key storage.
+fn with_auth_key(paths: &crate::documents::Paths, provider: &ProviderView) -> Result<ProviderView> {
+    if !provider.api_key.is_empty() {
+        return Ok(provider.clone());
+    }
+    let mut provider = provider.clone();
+    if let Some(key) = documents::credential_key(paths, &provider.id)? {
+        provider.api_key = key;
+    }
+    Ok(provider)
+}
+
 impl WebCore {
     pub(super) fn fetch_models(&mut self, provider_id: &str) -> Result<Value> {
         let snapshot = documents::load_snapshot(&self.paths)?;
         let provider = provider(&snapshot, provider_id)?;
-        let ids = documents::fetch_model_ids(provider)?;
+        let provider = with_auth_key(&self.paths, provider)?;
+        let ids = documents::fetch_model_ids(&provider)?;
         let response = json!({
             "providerId": provider_id,
             "total": ids.len(),
@@ -60,6 +74,7 @@ impl WebCore {
         let selection_id = request.optional_integer("selectionId")?;
         let snapshot = documents::load_snapshot(&self.paths)?;
         let provider = provider(&snapshot, provider_id)?;
+        let provider = with_auth_key(&self.paths, provider)?;
         let cached = self
             .fetched_models
             .get(provider_id)

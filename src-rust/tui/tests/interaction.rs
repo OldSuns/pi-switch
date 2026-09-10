@@ -739,3 +739,40 @@
             "ambiguous-model"
         );
     }
+
+    #[test]
+    fn replacing_a_pi_credential_asks_for_confirmation() {
+        let (_root, mut app) = app();
+        let auth = app.paths.pi_auth.clone();
+        fs::create_dir_all(auth.parent().unwrap()).unwrap();
+        fs::write(
+            &auth,
+            r#"{"pi-login":{"type":"oauth","access":"a","refresh":"r","expires":9}}"#,
+        )
+        .unwrap();
+        let kind = || {
+            let value: serde_json::Value =
+                serde_json::from_slice(&fs::read(&auth).unwrap()).unwrap();
+            value["pi-login"]["type"].as_str().unwrap().to_owned()
+        };
+
+        let mut form = FormState::add();
+        form.id = "pi-login".into();
+        form.api_key = "sk-new".into();
+        app.overlay = Some(Overlay::Form(form));
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::ConfirmOverwriteCredential { .. })
+        ));
+        assert_eq!(kind(), "oauth");
+
+        // Cancelling returns to the form without writing anything.
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(app.overlay, Some(Overlay::Form(_))));
+        assert_eq!(kind(), "oauth");
+
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert_eq!(kind(), "api_key");
+    }

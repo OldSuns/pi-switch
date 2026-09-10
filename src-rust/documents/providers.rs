@@ -8,7 +8,37 @@ pub fn save_provider(
     previous_id: Option<&str>,
     draft: &ProviderDraft,
 ) -> Result<()> {
+    save(paths, previous_id, draft, false)
+}
+
+/// [`save_provider`] for a caller whose user has already confirmed that an
+/// existing `auth.json` entry under the target id may be replaced.
+pub fn save_provider_overwriting_credential(
+    paths: &Paths,
+    previous_id: Option<&str>,
+    draft: &ProviderDraft,
+) -> Result<()> {
+    save(paths, previous_id, draft, true)
+}
+
+fn save(
+    paths: &Paths,
+    previous_id: Option<&str>,
+    draft: &ProviderDraft,
+    overwrite_credential: bool,
+) -> Result<()> {
     validate_draft(draft)?;
+    let mut draft = draft.clone();
+    // In auth.json mode a given key moves to auth.json; provider JSON (both the
+    // local library and models.json) never stores apiKey.
+    let auth_key = match settings::key_storage_setting(paths)? {
+        KeyStorage::AuthJson if !draft.api_key.is_empty() => {
+            Some(std::mem::take(&mut draft.api_key))
+        }
+        _ => None,
+    };
+    let renamed_from = previous_id.filter(|old| *old != draft.id);
+    let draft = &draft;
     let (lock, mut library, mut models) = lock_provider_documents(paths)?;
     let local = providers_object_mut(&mut library)?;
     if let Some(old) = previous_id.filter(|old| !local.contains_key(*old)) {
@@ -59,6 +89,47 @@ pub fn save_provider(
             settings_changed = true;
         }
     }
+    // Credentials move last, once every provider-side validation passed: a
+    // rejected edit must never rename or overwrite an auth.json entry. This
+    // keeps the provider-then-auth lock order used by the other writers.
+    if auth_key.is_some() || renamed_from.is_some() {
+        let provider_id = draft.id.clone();
+        auth::edit(paths, |credentials| {
+            // What this save would leave under the target id; the typed key wins
+            // over a credential moved by a rename, exactly like the writes below.
+            let current = credentials.get(&provider_id);
+            let next = auth_key
+                .as_ref()
+                .map(|key| json!({ "type": "api_key", "key": key }))
+                .or_else(|| renamed_from.and_then(|old| credentials.get(old)).cloned());
+            // Replacing an entry this provider does not own (Pi's OAuth login, or
+            // one a rename would land on) needs the user's confirmation. An
+            // `api_key` under the id being saved is this provider's own, even when
+            // its provider document was removed and is only now re-created.
+            let own_key =
+                renamed_from.is_none() && current.is_some_and(|entry| entry["type"] == "api_key");
+            if !overwrite_credential
+                && !own_key
+                && current
+                    .zip(next.as_ref())
+                    .is_some_and(|(current, next)| current != next)
+            {
+                return Err(AppError::CredentialOverwriteRequired(provider_id.clone()));
+            }
+            if let Some(old) = renamed_from {
+                if let Some(credential) = credentials.remove(old) {
+                    credentials.insert(provider_id.clone(), credential);
+                }
+            }
+            if let Some(ref key) = auth_key {
+                credentials.insert(
+                    provider_id.clone(),
+                    json!({ "type": "api_key", "key": key }),
+                );
+            }
+            Ok(())
+        })?;
+    }
     write_provider_changes(
         paths,
         &lock,
@@ -91,7 +162,7 @@ pub fn set_provider_in_pi(paths: &Paths, id: &str, in_pi: bool) -> Result<()> {
     )
 }
 
-pub fn remove_provider(paths: &Paths, id: &str) -> Result<()> {
+pub fn remove_provider(paths: &Paths, id: &str, remove_auth: bool) -> Result<()> {
     let (lock, mut library, mut models) = lock_provider_documents(paths)?;
     if providers_object_mut(&mut library)?.remove(id).is_none() {
         return Err(AppError::Invalid(format!(
@@ -107,7 +178,29 @@ pub fn remove_provider(paths: &Paths, id: &str) -> Result<()> {
         Some(&models),
         settings_changed.then_some(&settings),
         &library,
-    )
+    )?;
+    if remove_auth {
+        auth::edit(paths, |credentials| {
+            // Only `api_key` entries are ours to delete: OAuth and any other
+            // Pi-managed credential stays behind.
+            let is_api_key = credentials
+                .get(id)
+                .and_then(Value::as_object)
+                .and_then(|credential| credential.get("type"))
+                .and_then(Value::as_str)
+                == Some("api_key");
+            if is_api_key {
+                credentials.remove(id);
+            }
+            Ok(())
+        })
+        .map_err(|error| {
+            AppError::Partial(format!(
+                "provider '{id}' removed; auth.json update failed: {error}"
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 pub fn duplicate_provider(paths: &Paths, source_id: &str) -> Result<String> {

@@ -63,10 +63,20 @@ impl App {
                     return;
                 }
             }
-            Overlay::ConfirmDeleteProvider { id, .. } => match key.code {
+            Overlay::ConfirmDeleteProvider {
+                id,
+                has_auth,
+                remove_auth,
+                ..
+            } => match key.code {
+                KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab if *has_auth => {
+                    // Falls through to the tail, which re-shows the overlay.
+                    *remove_auth = !*remove_auth;
+                }
                 KeyCode::Char('y') | KeyCode::Enter => {
                     let id = id.clone();
-                    match documents::remove_provider(&self.paths, &id) {
+                    let remove_auth = *has_auth && *remove_auth;
+                    match documents::remove_provider(&self.paths, &id, remove_auth) {
                         Ok(()) => self
                             .reload(Some(self.language.pick("Provider deleted", "提供商已删除"))),
                         Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
@@ -93,13 +103,18 @@ impl App {
             },
             Overlay::ConfirmSaveProviderWithoutPi { form, draft } => match key.code {
                 KeyCode::Char('y') | KeyCode::Enter => {
-                    match documents::save_provider(&self.paths, form.previous_id.as_deref(), draft)
-                    {
-                        Ok(()) => {
-                            self.reload(Some(self.language.pick("Provider saved", "提供商已保存")))
-                        }
-                        Err(error) => self.overlay = Some(Overlay::Error(error.to_string())),
-                    }
+                    self.finish_provider_save(form, draft, false);
+                    return;
+                }
+                KeyCode::Esc | KeyCode::Char('n') => {
+                    self.overlay = Some(Overlay::Form(form.clone()));
+                    return;
+                }
+                _ => {}
+            },
+            Overlay::ConfirmOverwriteCredential { form, draft } => match key.code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    self.finish_provider_save(form, draft, true);
                     return;
                 }
                 KeyCode::Esc | KeyCode::Char('n') => {

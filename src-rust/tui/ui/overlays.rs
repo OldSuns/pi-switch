@@ -121,9 +121,14 @@ pub(super) fn render_overlay(
         Overlay::ModelDefaultsForm(form) => {
             render_model_defaults_form(frame, form, language, area, theme)
         }
-        Overlay::ConfirmDeleteProvider { id, in_pi } => {
-            let rect = modal_rect(area, 64, 9);
-            let body = Paragraph::new(vec![
+        Overlay::ConfirmDeleteProvider {
+            id,
+            in_pi,
+            has_auth,
+            remove_auth,
+        } => {
+            let rect = modal_rect(area, 64, if *has_auth { 11 } else { 9 });
+            let mut lines = vec![
                 Line::from(format!(
                     "{} '{id}'?",
                     language.pick("Permanently delete provider", "永久删除提供商")
@@ -139,16 +144,34 @@ pub(super) fn render_overlay(
                         "它将从本地提供商库中删除。",
                     )
                 }),
-                Line::from(""),
-                Line::from(Span::styled(
-                    language.pick(
-                        "Enter/y confirm   Esc/n cancel",
-                        "Enter/y 确认   Esc/n 取消",
+            ];
+            if *has_auth {
+                lines.push(Line::from(vec![
+                    Span::from(language.pick(
+                        "Delete its auth.json credential too: ",
+                        "同时删除 auth.json 中的凭据: ",
+                    )),
+                    Span::styled(
+                        if *remove_auth {
+                            language.pick("< yes >", "< 是 >")
+                        } else {
+                            language.pick("< no >", "< 否 >")
+                        },
+                        Style::default()
+                            .fg(theme.accent)
+                            .add_modifier(Modifier::BOLD),
                     ),
-                    Style::default().fg(theme.muted),
-                )),
-            ])
-            .wrap(Wrap { trim: true });
+                ]));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                language.pick(
+                    "Enter/y confirm   Esc/n cancel",
+                    "Enter/y 确认   Esc/n 取消",
+                ),
+                Style::default().fg(theme.muted),
+            )));
+            let body = Paragraph::new(lines).wrap(Wrap { trim: true });
             render_modal(
                 frame,
                 rect,
@@ -215,6 +238,29 @@ pub(super) fn render_overlay(
                 frame,
                 rect,
                 language.pick(" Confirm save ", " 确认保存 "),
+                body,
+                theme.warning,
+                theme,
+            );
+        }
+        Overlay::ConfirmOverwriteCredential { form, .. } => {
+            let body = Paragraph::new(vec![
+                Line::from(format!("auth.json · {}", form.id)),
+                Line::from(language.pick(
+                    "Pi already stores a credential for this provider ID; saving replaces it and Pi has to sign in again to restore it.",
+                    "Pi 已为这个 Provider ID 保存了凭据；继续保存会替换它，Pi 需要重新登录才能恢复。",
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    language.pick("Enter/y confirm   Esc/n cancel", "Enter/y 确认   Esc/n 取消"),
+                    Style::default().fg(theme.muted),
+                )),
+            ])
+            .wrap(Wrap { trim: true });
+            render_modal(
+                frame,
+                modal_rect(area, 76, 9),
+                language.pick(" Confirm credential overwrite ", " 确认覆盖凭据 "),
                 body,
                 theme.warning,
                 theme,
