@@ -184,12 +184,18 @@ impl AuthLock {
             AppError::Invalid(format!("{} has no parent directory", dir.display()))
         })?;
         fs::create_dir_all(parent).map_err(|source| io_error(parent, source))?;
-        let guard = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            // Empty by design; it exists only to carry the OS lock.
-            .truncate(false)
+        let mut options = fs::OpenOptions::new();
+        options.read(true).write(true).create(true);
+        // Empty by design; it exists only to carry the OS lock.
+        options.truncate(false);
+        // Owner-only: any other local user could otherwise hold this lock and
+        // block every credential write. Only applies at creation.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let guard = options
             .open(&guard_file)
             .map_err(|source| io_error(&guard_file, source))?;
         let deadline = Instant::now() + timeout;
@@ -373,6 +379,23 @@ mod lock_tests {
         assert!(matches!(error, AppError::Busy(_)), "{error}");
         drop(held);
         assert!(AuthLock::acquire_with(&auth_path, STALE, TIMEOUT).is_ok());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_guard_file_is_not_readable_by_other_users() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!("pi-switch-lock-perm-{}", now_millis()));
+        fs::create_dir_all(&root).unwrap();
+        let auth_path = root.join("auth.json");
+
+        let lock = AuthLock::acquire(&auth_path).unwrap();
+        let metadata = fs::metadata(guard_path(&auth_path)).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o077, 0);
+        drop(lock);
 
         let _ = fs::remove_dir_all(&root);
     }
