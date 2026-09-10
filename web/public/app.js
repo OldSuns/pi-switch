@@ -174,12 +174,15 @@ function openDialog(content, context = null, preserveFocus = false) {
 
 function closeDialog() {
   if (state.busy) return;
+  const onCancel = dialogContext?.onCancel;
   dialogVersion++;
   dialog.close();
+  onCancel?.();
 }
 
 dialog.addEventListener("cancel", (event) => {
-  if (state.busy) event.preventDefault();
+  event.preventDefault();
+  closeDialog();
 });
 dialog.addEventListener("close", () => {
   dialogVersion++;
@@ -237,8 +240,8 @@ async function save(action, payload, message, options = {}) {
   return result;
 }
 
-function confirm(options, task) {
-  openDialog(dialogs.confirmationDialog(options), { kind: "confirm", task });
+function confirm(options, task, onCancel = null) {
+  openDialog(dialogs.confirmationDialog(options), { kind: "confirm", task, onCancel });
 }
 
 async function refresh() {
@@ -412,8 +415,27 @@ async function submitImport() {
   if (prepared.ambiguities.length) {
     openDialog(dialogs.ambiguityDialog(prepared.ambiguities), { kind: "ambiguities", action: "opencode.import", payload: { planId: prepared.planId }, count: prepared.ambiguities.length });
   } else {
-    showImportResult(await api("opencode.import", { planId: prepared.planId, candidateIndices: [] }));
+    await applyOpenCodeImport({ planId: prepared.planId });
   }
+}
+
+async function applyOpenCodeImport(payload) {
+  const result = await api("opencode.import", { ...payload, candidateIndices: [] });
+  if (await confirmCredentialOverwrite(result, () => applyOpenCodeImport(payload))) return;
+  showImportResult(result);
+}
+
+/// Pi resolves auth.json before the provider documents, so replacing an entry
+/// there discards a credential only Pi can restore by signing in again.
+async function confirmCredentialOverwrite(result, retry) {
+  if (!result.requiresCredentialOverwrite) return false;
+  confirm({
+    title: t("覆盖已有的 Pi 凭据？", "Replace the existing Pi credential?"),
+    description: t("auth.json 里该 ID 已有 Pi 凭据（例如 OAuth 登录）。继续会丢弃它，Pi 需要重新登录才能恢复。", "auth.json already stores a Pi credential for this ID (an OAuth sign-in, for example). Continuing discards it, and Pi has to sign in again to restore it."),
+    label: t("覆盖", "Replace"),
+    danger: true,
+  }, retry);
+  return true;
 }
 
 async function copyText(value) {
@@ -630,8 +652,8 @@ async function handleAction(action, target) {
       }); break;
     case "remove-provider":
       if (!provider) break;
-      confirm({ title: t("删除 Provider？", "Delete provider?"), description: t("这会从本地库删除此 Provider，并取消其 Pi 同步。关联的默认模型也会清除。", "This deletes the provider from your local library and Pi, and clears its default model if selected."), detail: provider.id, label: t("删除 Provider", "Delete provider"), danger: true },
-        () => save("provider.remove", { providerId: provider.id }, t("Provider 已删除", "Provider deleted"))); break;
+      confirm({ title: t("删除 Provider？", "Delete provider?"), description: t("这会从本地库删除此 Provider，并取消其 Pi 同步。关联的默认模型也会清除。", "This deletes the provider from your local library and Pi, and clears its default model if selected."), detail: provider.id, label: t("删除 Provider", "Delete provider"), danger: true, checkbox: provider.hasAuth ? { label: t("同时删除 auth.json 中的凭据", "Also delete the credential in auth.json"), checked: true } : null },
+        () => save("provider.remove", { providerId: provider.id, removeAuth: Boolean(provider.hasAuth && dialog.querySelector("[data-confirm-option]")?.checked) }, t("Provider 已删除", "Provider deleted"))); break;
     case "sync-provider": {
       const inPi = !provider.inPi;
       if (!inPi && state.snapshot.defaultProvider === provider.id) {
@@ -682,6 +704,7 @@ async function handleAction(action, target) {
         () => save("backups.restore", { name }, t("配置已恢复", "Configuration restored"))); break;
     }
     case "language": await execute(() => save("settings.language", { value: target.value }, t("语言设置已保存", "Language preference saved"))); break;
+case "key-storage": await execute(() => save("settings.key-storage", { value: target.value }, t("密钥保存位置已更新", "Key storage preference saved"))); break;
     case "metadata": await execute(() => save("settings.metadata", { value: target.checked }, t("元数据设置已保存", "Metadata preference saved"))); break;
     case "auto-updates": await execute(() => save("settings.updates", { value: target.checked }, t("更新设置已保存", "Update preference saved"))); break;
     case "model-defaults": openDialog(dialogs.defaultsDialog(state.snapshot.modelDefaults), { kind: "defaults" }); break;
@@ -772,9 +795,24 @@ document.addEventListener("submit", (event) => {
     switch (form.dataset.form) {
       case "provider": {
         const draft = dialogs.providerDraft(form, context.provider);
-        await save("provider.save", { previousId: context.provider?.id ?? null, draft }, t("Provider 已保存", "Provider saved"));
-        state.providerQuery = ""; state.providerFilter = "all";
-        navigate("profiles", "provider", draft.id); break;
+        const previousId = context.provider?.id ?? null;
+        const finish = () => { state.providerQuery = ""; state.providerFilter = "all"; navigate("profiles", "provider", draft.id); };
+        const result = await save("provider.save", { previousId, draft }, null, { close: false });
+        if (result.requiresCredentialOverwrite) {
+          confirm({
+            title: t("覆盖已有的 Pi 凭据？", "Replace the existing Pi credential?"),
+            description: t("auth.json 里该 ID 已有 Pi 凭据（例如 OAuth 登录）。继续会丢弃它，Pi 需要重新登录才能恢复。", "auth.json already stores a Pi credential for this ID (an OAuth sign-in, for example). Continuing discards it, and Pi has to sign in again to restore it."),
+            detail: draft.id,
+            label: t("覆盖", "Replace"),
+            danger: true,
+          },
+            () => save("provider.save", { previousId, draft, overwriteCredential: true }, t("Provider 已保存", "Provider saved")).then(finish),
+            () => openDialog(dialogs.providerDialog(state.snapshot, draft, Boolean(context.provider)), context));
+          return;
+        }
+        dialog.close();
+        toast(t("Provider 已保存", "Provider saved"));
+        finish(); break;
       }
       case "model": {
         const draft = dialogs.modelDraft(form);
@@ -788,7 +826,10 @@ document.addEventListener("submit", (event) => {
       case "import": await submitImport(); break;
       case "ambiguities": {
         const candidateIndices = Array.from({ length: context.count }, (_, index) => Number(form.elements["candidate-" + index].value));
-        showImportResult(await api(context.action, { ...context.payload, candidateIndices })); break;
+        const retry = async () => showImportResult(await api(context.action, { ...context.payload, candidateIndices, overwriteCredential: true }));
+        const result = await api(context.action, { ...context.payload, candidateIndices });
+        if (await confirmCredentialOverwrite(result, retry)) break;
+        showImportResult(result); break;
       }
     }
   });

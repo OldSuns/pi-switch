@@ -205,16 +205,33 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
             value_width,
             theme,
         ),
-        detail_field_lines(
-            app.language.pick("API key", "API 密钥"),
-            if provider.api_key.is_empty() {
-                app.language.pick("auth.json / CLI", "auth.json / 命令行")
+        {
+            let source_hint = if provider.api_key.is_empty() {
+                None
             } else {
-                &key
-            },
-            value_width,
-            theme,
-        ),
+                let in_models = provider
+                    .raw
+                    .get("apiKey")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| !value.is_empty());
+                Some(if in_models {
+                    " · models.json"
+                } else {
+                    " · auth.json"
+                })
+            };
+            detail_field_lines_with_hint(
+                app.language.pick("API key", "API 密钥"),
+                if provider.api_key.is_empty() {
+                    app.language.pick("auth.json / CLI", "auth.json / CLI")
+                } else {
+                    &key
+                },
+                source_hint,
+                value_width,
+                theme,
+            )
+        },
         detail_field_lines(
             app.language.pick("Auth", "认证"),
             if provider.auth_header {
@@ -383,6 +400,39 @@ fn detail_field_lines(
     value_width: usize,
     theme: Theme,
 ) -> Vec<Line<'static>> {
+    detail_field_lines_styled(label, value, None, value_width, theme)
+}
+
+fn detail_field_lines_with_hint(
+    label: &str,
+    value: &str,
+    hint: Option<&'static str>,
+    value_width: usize,
+    theme: Theme,
+) -> Vec<Line<'static>> {
+    let mut lines = detail_field_lines_styled(
+        label,
+        value,
+        hint.map(UnicodeWidthStr::width),
+        value_width,
+        theme,
+    );
+    if let (Some(hint), Some(last)) = (hint, lines.last_mut()) {
+        last.spans.push(Span::styled(hint, theme.dim_text()));
+    }
+    lines
+}
+
+fn detail_field_lines_styled(
+    label: &str,
+    value: &str,
+    reserve_last_line: Option<usize>,
+    value_width: usize,
+    theme: Theme,
+) -> Vec<Line<'static>> {
+    let value_width = value_width
+        .saturating_sub(reserve_last_line.unwrap_or(0))
+        .max(1);
     let label = pad_width(label, DETAIL_LABEL_WIDTH);
     let indent = " ".repeat(DETAIL_LABEL_WIDTH);
     wrap_width(value, value_width)

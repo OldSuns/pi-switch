@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use serde_json::{json, Value};
 
 use crate::documents::{
-    self, CatalogFetch, ImportOptions, ModelCatalog, OpenCodeImportPlan, ProviderView, Result,
-    Snapshot,
+    self, AppError, CatalogFetch, ImportOptions, ModelCatalog, OpenCodeImportPlan, ProviderView,
+    Result, Snapshot,
 };
 
 use super::{input::Input, invalid, output, WebCore};
@@ -28,11 +28,25 @@ pub(super) struct PreparedOpenCode {
     plan: OpenCodeImportPlan,
 }
 
+/// Borrow the key from Pi auth.json when the provider itself carries none, so
+/// model fetching still works with auth.json-based key storage.
+fn with_auth_key(paths: &crate::documents::Paths, provider: &ProviderView) -> Result<ProviderView> {
+    if !provider.api_key.is_empty() {
+        return Ok(provider.clone());
+    }
+    let mut provider = provider.clone();
+    if let Some(key) = documents::credential_key(paths, &provider.id)? {
+        provider.api_key = key;
+    }
+    Ok(provider)
+}
+
 impl WebCore {
     pub(super) fn fetch_models(&mut self, provider_id: &str) -> Result<Value> {
         let snapshot = documents::load_snapshot(&self.paths)?;
         let provider = provider(&snapshot, provider_id)?;
-        let ids = documents::fetch_model_ids(provider)?;
+        let provider = with_auth_key(&self.paths, provider)?;
+        let ids = documents::fetch_model_ids(&provider)?;
         let response = json!({
             "providerId": provider_id,
             "total": ids.len(),
@@ -60,6 +74,7 @@ impl WebCore {
         let selection_id = request.optional_integer("selectionId")?;
         let snapshot = documents::load_snapshot(&self.paths)?;
         let provider = provider(&snapshot, provider_id)?;
+        let provider = with_auth_key(&self.paths, provider)?;
         let cached = self
             .fetched_models
             .get(provider_id)
@@ -192,13 +207,27 @@ impl WebCore {
     pub(super) fn import_opencode(&mut self, request: &Input<'_>) -> Result<Value> {
         let plan_id = request.integer("planId")?;
         let indices = request.indices("candidateIndices")?;
+        let overwrite = request
+            .optional_boolean("overwriteCredential")?
+            .unwrap_or(false);
         let prepared = self
             .opencode_plan
             .as_ref()
             .filter(|prepared| prepared.id == plan_id)
             .ok_or_else(|| invalid("OpenCode import plan has expired; prepare the import again"))?;
-        let summary =
-            documents::apply_opencode_import(&self.paths, prepared.plan.clone(), &indices)?;
+        let plan = prepared.plan.clone();
+        let applied = if overwrite {
+            documents::apply_opencode_import_overwriting_credentials(&self.paths, plan, &indices)
+        } else {
+            documents::apply_opencode_import(&self.paths, plan, &indices)
+        };
+        let summary = match applied {
+            Ok(summary) => summary,
+            Err(AppError::CredentialOverwriteRequired(_)) => {
+                return Ok(json!({ "requiresCredentialOverwrite": true }));
+            }
+            Err(error) => return Err(error),
+        };
         self.opencode_plan = None;
         self.fetched_models.clear();
         Ok(json!({

@@ -1095,3 +1095,56 @@ fn opencode_import_uses_a_matching_plan_and_shared_mapping_rules() {
     assert_eq!(provider["models"][0]["name"], "Chat model");
     assert_eq!(provider["inPi"], true);
 }
+
+#[test]
+fn provider_save_asks_before_replacing_a_pi_credential() {
+    let mut fixture = Fixture::new();
+    let auth = fixture.core.paths.pi_auth.clone();
+    fs::write(
+        &auth,
+        r#"{"pi-login":{"type":"oauth","access":"a","refresh":"r","expires":9}}"#,
+    )
+    .unwrap();
+    let draft = provider_draft("pi-login", true);
+
+    let response = fixture.call(json!({ "action": "provider.save", "draft": draft.clone() }));
+    assert_eq!(response["requiresCredentialOverwrite"], json!(true));
+    assert_eq!(read_json(&auth)["pi-login"]["type"], json!("oauth"));
+
+    let response = fixture
+        .call(json!({ "action": "provider.save", "draft": draft, "overwriteCredential": true }));
+    assert!(response.get("snapshot").is_some());
+}
+
+#[test]
+fn opencode_import_asks_before_replacing_a_pi_credential() {
+    let mut fixture = Fixture::new();
+    fixture.call(json!({ "action": "settings.metadata", "value": false }));
+    let auth = fixture.core.paths.pi_auth.clone();
+    fs::write(
+        &auth,
+        r#"{"gateway":{"type":"oauth","access":"a","refresh":"r","expires":9}}"#,
+    )
+    .unwrap();
+    write_json(
+        &fixture.core.paths.opencode,
+        &json!({"provider": {"gateway": {"npm": "@ai-sdk/openai-compatible",
+            "options": {"baseURL": "https://gateway.test/v1", "apiKey": "imported"}, "models": {}}}}),
+    );
+
+    let prepared =
+        fixture.call(json!({ "action": "opencode.prepare", "providerIds": ["gateway"] }));
+    let refused = fixture.call(json!({
+        "action": "opencode.import", "planId": prepared["planId"], "candidateIndices": [],
+    }));
+    assert_eq!(refused["requiresCredentialOverwrite"], json!(true));
+    assert_eq!(read_json(&auth)["gateway"]["type"], json!("oauth"));
+
+    // The plan stays usable, so the confirmed retry applies the import.
+    let imported = fixture.call(json!({
+        "action": "opencode.import", "planId": prepared["planId"], "candidateIndices": [],
+        "overwriteCredential": true,
+    }));
+    assert_eq!(imported["snapshot"]["providers"][0]["apiKey"], "imported");
+    assert_eq!(read_json(&auth)["gateway"]["key"], "imported");
+}

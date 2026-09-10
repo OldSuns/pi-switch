@@ -35,13 +35,13 @@ function numericFields(values) {
     + field("cacheWriteCost", t("缓存写入 · USD / 1M", "Cache write · USD / 1M"), values.cacheWriteCost, { type: "number", placeholder: "0" });
 }
 
-export function providerDialog(snapshot, provider) {
+export function providerDialog(snapshot, provider, editing = Boolean(provider)) {
   const value = provider ?? { id: "", baseUrl: "", api: "openai-completions", apiKey: "", authHeader: true, inPi: true, headers: null, compat: null };
   const headers = Object.fromEntries(Object.entries(value.headers ?? {}).filter(([key]) => key.toLowerCase() !== "user-agent"));
   const userAgent = Object.entries(value.headers ?? {}).find(([key]) => key.toLowerCase() === "user-agent")?.[1] ?? "";
   const compat = Object.fromEntries(Object.entries(value.compat ?? {}).filter(([key]) => key !== "sendSessionAffinityHeaders"));
   return frame({
-    title: provider ? t("编辑 Provider", "Edit provider") : t("新建 Provider", "New provider"),
+    title: editing ? t("编辑 Provider", "Edit provider") : t("新建 Provider", "New provider"),
     description: t("连接你的模型服务，将配置保存在本地。", "Connect a model service and keep its configuration locally."),
     form: "provider",
     body: `<div class="form-grid">
@@ -80,8 +80,9 @@ export function defaultsDialog(values) {
   return frame({ title: t("默认模型参数", "Default model parameters"), description: t("关闭 models.dev 元数据后，这些参数用于模型导入。", "Used for model imports when models.dev metadata is disabled."), form: "defaults", body: '<div class="form-grid">' + numericFields(values) + "</div>", footer: cancel() + submit(t("保存参数", "Save parameters")) });
 }
 
-export function confirmationDialog({ title, description, detail, label, danger = false }) {
-  return frame({ title, body: `<p class="confirm-description">${h(description)}</p>${detail ? '<div class="confirm-detail">' + h(detail) + "</div>" : ""}`, footer: `<button class="btn quiet" type="button" data-action="close-dialog" autofocus>${t("取消", "Cancel")}</button><button class="btn ${danger ? "danger" : "primary"}" type="button" data-action="confirm" data-submit>${h(label || t("确认", "Confirm"))}</button>` });
+export function confirmationDialog({ title, description, detail, label, danger = false, checkbox = null }) {
+  const option = checkbox ? `<p class="confirm-description"><label class="checkbox-label"><input type="checkbox" data-confirm-option ${checkbox.checked ? "checked" : ""}>${h(checkbox.label)}</label></p>` : "";
+  return frame({ title, body: `<p class="confirm-description">${h(description)}</p>${detail ? '<div class="confirm-detail">' + h(detail) + "</div>" : ""}${option}`, footer: `<button class="btn quiet" type="button" data-action="close-dialog" autofocus>${t("取消", "Cancel")}</button><button class="btn ${danger ? "danger" : "primary"}" type="button" data-action="confirm" data-submit>${h(label || t("确认", "Confirm"))}</button>` });
 }
 
 export function loadingDialog(title, description) {

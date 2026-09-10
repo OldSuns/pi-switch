@@ -1,3 +1,4 @@
+mod auth;
 mod diagnostics;
 mod network;
 mod opencode;
@@ -24,17 +25,21 @@ use storage::{
     root_object_mut, string_field, write_document, write_initial_document, WriteLock,
 };
 
+pub use auth::{credential_ids, credential_key, has_credential};
 pub use diagnostics::doctor;
 pub use network::check_npm_update;
 pub(crate) use network::check_npm_update_strict;
 pub use network::fetch_model_ids;
 pub use network::resolve_metadata;
 pub use network::{dismiss_update, install_update, read_dismissed_update};
-pub use opencode::{apply_opencode_import, list_opencode_providers, prepare_opencode_import};
+pub use opencode::{
+    apply_opencode_import, apply_opencode_import_overwriting_credentials, list_opencode_providers,
+    prepare_opencode_import,
+};
 pub use ordering::{reorder_profiles, set_profile_sort, ProfileList, ProfileOrdering, ProfileSort};
 pub use providers::{
     duplicate_model, duplicate_provider, import_models, remove_model, remove_provider, save_model,
-    save_provider, set_default, set_provider_in_pi,
+    save_provider, save_provider_overwriting_credential, set_default, set_provider_in_pi,
 };
 pub use session_tree::{load_preview, PreviewMessage, PreviewTreePosition, SessionPreview};
 pub use sessions::{
@@ -44,7 +49,10 @@ pub use sessions::{
 pub(crate) use sessions::{delete_session_in, list_sessions_in, sessions_root};
 #[cfg(test)]
 use settings::check_updates_field;
-pub use settings::{set_check_updates, set_fetch_model_metadata, set_language, set_model_defaults};
+pub use settings::{
+    set_check_updates, set_fetch_model_metadata, set_key_storage, set_language, set_model_defaults,
+    KeyStorage,
+};
 pub use snapshot::load_snapshot;
 pub use storage::{list_backups, restore_backup};
 
@@ -77,9 +85,11 @@ pub enum AppError {
     },
     #[error("invalid configuration: {0}")]
     Invalid(String),
+    #[error("auth.json already has a credential for '{0}'")]
+    CredentialOverwriteRequired(String),
     #[error("another pi-switch process is writing configuration ({0})")]
     Busy(PathBuf),
-    #[error("provider update completed, but settings update failed: {0}")]
+    #[error("{0}")]
     Partial(String),
     #[error("{0}")]
     Http(String),
@@ -90,6 +100,7 @@ pub struct Paths {
     pub providers: PathBuf,
     pub pi_models: PathBuf,
     pub pi_settings: PathBuf,
+    pub pi_auth: PathBuf,
     pub app_settings: PathBuf,
     pub opencode: PathBuf,
     pub backups: PathBuf,
@@ -115,6 +126,7 @@ impl Paths {
             providers: home.join(".pi-switch/providers.json"),
             pi_models: agent_dir.join("models.json"),
             pi_settings: agent_dir.join("settings.json"),
+            pi_auth: agent_dir.join("auth.json"),
             app_settings: home.join(".pi-switch/settings.json"),
             opencode: home.join(".config/opencode/opencode.json"),
             backups: home.join(".pi-switch/backups"),
@@ -147,6 +159,7 @@ pub struct Snapshot {
     pub default_model: Option<String>,
     pub language: String,
     pub fetch_model_metadata: bool,
+    pub key_storage: KeyStorage,
     pub check_updates: bool,
     pub model_defaults: ModelDefaults,
     pub warning: Option<String>,
@@ -640,6 +653,9 @@ pub struct OpenCodeImportPlan {
     options: ImportOptions,
     catalog: Option<ModelCatalog>,
     pub ambiguous: Vec<CatalogAmbiguity>,
+    /// Provider IDs whose `auth.json` entry this import would replace or retire,
+    /// so applying it needs the user's confirmation first.
+    pub credential_conflicts: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -663,7 +679,10 @@ use network::{
     resolve_metadata_with_timeout_for_test, resolve_secret, round_price, Ratios,
 };
 #[cfg(test)]
-use opencode::{import_opencode_with_catalog, prepare_opencode_with_catalog};
+use opencode::{
+    import_opencode_overwriting_credentials, import_opencode_with_catalog,
+    prepare_opencode_with_catalog,
+};
 #[cfg(test)]
 use storage::now_millis;
 

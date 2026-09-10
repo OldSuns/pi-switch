@@ -62,6 +62,56 @@ pub fn set_fetch_model_metadata(paths: &Paths, enabled: bool) -> Result<()> {
     })
 }
 
+/// Where a provider's API key is stored when saving a provider.
+/// Defaults to `auth.json` so `models.json` stays free of secrets.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KeyStorage {
+    AuthJson,
+    ModelsJson,
+}
+
+impl KeyStorage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AuthJson => "auth.json",
+            Self::ModelsJson => "models.json",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "auth.json" => Some(Self::AuthJson),
+            "models.json" => Some(Self::ModelsJson),
+            _ => None,
+        }
+    }
+}
+
+pub(super) fn key_storage_field(settings: &Value) -> Result<KeyStorage> {
+    match settings.get("keyStorage") {
+        None => Ok(KeyStorage::AuthJson),
+        Some(Value::String(value)) => KeyStorage::parse(value).ok_or_else(|| {
+            AppError::Invalid(
+                "pi-switch settings keyStorage must be 'auth.json' or 'models.json'".into(),
+            )
+        }),
+        Some(_) => Err(AppError::Invalid(
+            "pi-switch settings keyStorage must be 'auth.json' or 'models.json'".into(),
+        )),
+    }
+}
+
+pub fn set_key_storage(paths: &Paths, storage: KeyStorage) -> Result<()> {
+    update_app_settings(paths, |settings| {
+        settings.insert("keyStorage".into(), Value::String(storage.as_str().into()));
+    })
+}
+
+/// Current choice (reads the app settings document directly, no migration).
+pub(super) fn key_storage_setting(paths: &Paths) -> Result<KeyStorage> {
+    key_storage_field(&read_document(&paths.app_settings, json!({}))?)
+}
+
 pub(super) fn check_updates_field(settings: &Value) -> Result<bool> {
     match settings.get("checkForUpdates") {
         None => Ok(true),
@@ -134,6 +184,7 @@ pub(super) fn validate_app_settings(settings: &Value) -> Result<()> {
     }
     language_field(settings)?;
     fetch_model_metadata_field(settings)?;
+    key_storage_field(settings)?;
     check_updates_field(settings)?;
     model_defaults_field(settings)?;
     Ok(())

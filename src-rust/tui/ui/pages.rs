@@ -230,6 +230,11 @@ pub(super) fn render_settings(frame: &mut Frame<'_>, app: &App, area: Rect, them
         .map(|action| {
             let label = action.label(app.language);
             if !action.is_toggle() {
+                let label = if action == SettingsAction::KeyStorage {
+                    format!("{label}: {}", app.snapshot.key_storage.as_str())
+                } else {
+                    label
+                };
                 return ListItem::new(Line::from(Span::styled(label, theme.value())));
             }
             let enabled = match action {

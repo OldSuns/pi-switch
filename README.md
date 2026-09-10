@@ -147,7 +147,8 @@ Session 根目录优先级：非空 `PI_CODING_AGENT_SESSION_DIR` → `<Pi agent
 - 已同步 provider 的编辑与 model 变更会同步两份文件；不同步项只更新本地库。
 - 在线导入 model **不会**隐式同步到 Pi。
 - 启动或手动重载时，以 `models.json` 中同 ID provider 为准回灌本地库；外部从 Pi 删除的 provider 仍作为不同步项保留。
-- 从 Pi 移除当前默认 provider 会先确认并清除默认模型；`d` 永久删除本地副本，必要时同时从 Pi 删除。
+- 从 Pi 移除当前默认 provider 会先确认并清除默认模型；`d` 永久删除本地副本，必要时同时从 Pi 删除；若该 provider 在 `auth.json` 有 `api_key` 凭据，删除时会询问是否一并删除（OAuth 等凭据不会被删除）。
+- API 密钥保存位置可在 Settings 里切换：默认写入 Pi 的 `auth.json`（provider 的 ID 映射到 `{"type":"api_key","key":...}`，`models.json` 与 `providers.json` 不保存密钥）；可切换回旧的 `models.json` 行为。provider 重命名时凭据随之迁移（重命名并输入新密钥时源 OAuth 凭据保留原位），目标 ID 已有凭据时先询问。切到 `models.json` 后保存密钥会移除同名 ID 上的 auth.json 条目（否则它会继续优先于 models.json）；该条目含 `env` 等配置时先询问。回到 `auth.json` 后保存会清掉 provider 文档里遗留的同名明文密钥。
 
 ## 模型导入与价格
 
@@ -193,6 +194,7 @@ Pi `settings.json` 中由 pi-switch 管理的字段：
 |------|------|
 | `language` | `en` \| `zh-CN` |
 | `fetchModelMetadata` | 是否拉 models.dev（默认 `true`） |
+| `keyStorage` | API 密钥保存位置：`auth.json`（默认）或 `models.json` |
 | `checkForUpdates` | 是否启动时检查 npm 新版本（默认 `true`） |
 | `modelDefaults` | 关闭实时元数据时的导入缺省（context / maxTokens / cost） |
 
@@ -203,6 +205,7 @@ Pi `settings.json` 中由 pi-switch 管理的字段：
 - 写前备份 `providers.json`、Pi `models.json` / `settings.json` 和 pi-switch `settings.json` 到 `~/.pi-switch/backups/`（version 3）；最多保留最近 10 份。现有 version 2 备份仍可恢复并自动拆分设置，version 1 备份不支持恢复。
 - 写入使用 `write.lock` 互斥；异常残留锁时 `doctor` 会提示。
 - `providers.json` 损坏时归档为 `corrupt-providers-*.json`，再从当前 Pi 配置重建，启动时显示归档路径。
+- `auth.json` 不参与备份；写入前以 `<auth.json>.lock` 目录与 Pi 的 proper-lockfile 互斥，并额外持有 `<auth.json>.lock.guard` 这个 OS 级锁（进程退出时内核自动释放），因此崩溃遗留的锁目录会在 30 秒后被安全接管，不会永久阻塞写入。新文件权限 `0600`，只修改目标 provider 的条目（OAuth 等其他凭据原样保留）。要替换目标 ID 上不属于该 provider 的凭据（重命名落到已有凭据的 ID、或给已有 OAuth 登录的 ID 写 API 密钥）时会先询问，未确认不写入。
 - 原子写入，只 patch 目标字段，保留未知 JSON；格式错误时停止写入并显示错误。
 - 支持 Pi 的 `$ENV` / `${ENV}` 插值与 `$$` / `$!` 转义；`!command` 原样保存，在线拉取**不会**执行它。
 - Session 删除只作用于选中的 JSONL，并校验路径必须位于 session 根目录内；优先调用系统 `trash`，失败后再永久删除。

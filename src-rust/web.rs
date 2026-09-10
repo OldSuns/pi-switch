@@ -74,8 +74,25 @@ impl WebCore {
             "provider.save" => {
                 let previous_id = request.optional_string("previousId")?;
                 let draft = input::provider_draft(&request.object("draft")?)?;
-                documents::save_provider(&self.paths, previous_id.as_deref(), &draft)?;
-                self.snapshot_result()
+                let overwrite = request
+                    .optional_boolean("overwriteCredential")?
+                    .unwrap_or(false);
+                let saved = if overwrite {
+                    documents::save_provider_overwriting_credential(
+                        &self.paths,
+                        previous_id.as_deref(),
+                        &draft,
+                    )
+                } else {
+                    documents::save_provider(&self.paths, previous_id.as_deref(), &draft)
+                };
+                match saved {
+                    Ok(()) => self.snapshot_result(),
+                    Err(AppError::CredentialOverwriteRequired(_)) => {
+                        Ok(json!({ "requiresCredentialOverwrite": true }))
+                    }
+                    Err(error) => Err(error),
+                }
             }
             "provider.duplicate" => {
                 let id = documents::duplicate_provider(&self.paths, request.string("providerId")?)?;
@@ -83,7 +100,8 @@ impl WebCore {
             }
             "provider.remove" => {
                 let id = request.string("providerId")?;
-                documents::remove_provider(&self.paths, id)?;
+                let remove_auth = request.optional_boolean("removeAuth")?.unwrap_or(false);
+                documents::remove_provider(&self.paths, id, remove_auth)?;
                 self.fetched_models.remove(id);
                 self.snapshot_result()
             }
@@ -142,6 +160,14 @@ impl WebCore {
             }
             "settings.updates" => {
                 documents::set_check_updates(&self.paths, request.boolean("value")?)?;
+                self.snapshot_result()
+            }
+            "settings.key-storage" => {
+                let value = request.string("value")?;
+                let storage = documents::KeyStorage::parse(value).ok_or_else(|| {
+                    invalid("settings.key-storage must be auth.json or models.json")
+                })?;
+                documents::set_key_storage(&self.paths, storage)?;
                 self.snapshot_result()
             }
             "settings.defaults" => {
@@ -209,19 +235,22 @@ fn action_fields(action: &str) -> Result<&'static [&'static str]> {
     let fields: &[&str] = match action {
         "snapshot" | "doctor" | "backups.list" | "sessions.list" | "opencode.list"
         | "updates.check" | "updates.install" => &[],
-        "provider.save" => &["previousId", "draft"],
+        "provider.save" => &["previousId", "draft", "overwriteCredential"],
         "providers.sort" => &["value"],
         "models.sort" => &["providerId", "value"],
         "providers.reorder" => &["ids"],
         "models.reorder" => &["providerId", "ids"],
-        "provider.duplicate" | "provider.remove" | "models.fetch" => &["providerId"],
+        "provider.duplicate" | "models.fetch" => &["providerId"],
+        "provider.remove" => &["providerId", "removeAuth"],
         "provider.sync" => &["providerId", "inPi"],
         "model.save" => &["providerId", "previousId", "draft"],
         "model.duplicate" => &["providerId", "sourceModelId", "draft"],
         "model.remove" | "model.default" => &["providerId", "modelId"],
-        "settings.language" | "settings.metadata" | "settings.updates" | "settings.defaults" => {
-            &["value"]
-        }
+        "settings.language"
+        | "settings.metadata"
+        | "settings.updates"
+        | "settings.key-storage"
+        | "settings.defaults" => &["value"],
         "backups.restore" => &["name"],
         "sessions.preview" => &["id", "userOnly"],
         "sessions.delete" => &["id"],
@@ -233,7 +262,7 @@ fn action_fields(action: &str) -> Result<&'static [&'static str]> {
             "candidateIndices",
         ],
         "opencode.prepare" => &["providerIds"],
-        "opencode.import" => &["planId", "candidateIndices"],
+        "opencode.import" => &["planId", "candidateIndices", "overwriteCredential"],
         _ => return Err(invalid(format!("unknown Web action '{action}'"))),
     };
     Ok(fields)

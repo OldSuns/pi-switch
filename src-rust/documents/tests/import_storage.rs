@@ -51,7 +51,8 @@ fn opencode_import_maps_and_merges_providers_and_models() {
     assert_eq!(imported["future"], 1);
     assert_eq!(custom["futureProvider"], true);
     assert_eq!(custom["baseUrl"], "https://custom.test/v1");
-    assert_eq!(custom["apiKey"], "${CUSTOM_KEY}");
+    assert!(custom.get("apiKey").is_none());
+    assert_eq!(read_json(&paths.pi_auth)["custom"]["key"], "${CUSTOM_KEY}");
     assert_eq!(custom["headers"]["x-team-key"], "${TEAM_KEY}");
     assert_eq!(custom["models"][0]["futureModel"], true);
     assert_eq!(custom["models"][0]["name"], "Existing model");
@@ -522,7 +523,7 @@ fn pi_projection_edits_leave_private_settings_unchanged() {
     assert!(read_json(&paths.pi_settings)
         .get("defaultProvider")
         .is_none());
-    remove_provider(&paths, "new").unwrap();
+    remove_provider(&paths, "new", false).unwrap();
     assert_eq!(fs::read(&paths.app_settings).unwrap(), app_settings);
 }
 

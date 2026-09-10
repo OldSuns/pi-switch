@@ -88,7 +88,7 @@ function providerInfo(provider) {
       </div>
     </div><div class="provider-meta">
       <div><div class="meta-label">BASE URL</div><div class="meta-value">${icon("globe")}${h(provider.baseUrl || "—")}</div></div>
-      <div><div class="meta-label">API KEY</div><div class="meta-value">${icon("key")}${h(apiKey)}</div></div>
+      <div><div class="meta-label">API KEY</div><div class="meta-value">${icon("key")}${h(apiKey)}${provider.apiKeySource ? `<span class="meta-hint"> · ${h(provider.apiKeySource)}</span>` : ""}</div></div>
     </div></div>
   </section>`;
 }
