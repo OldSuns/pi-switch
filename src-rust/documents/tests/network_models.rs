@@ -759,3 +759,30 @@ fn thinking_level_map_rejects_non_object_shape() {
     let error = load_snapshot(&paths).unwrap_err().to_string();
     assert!(error.contains("thinkingLevelMap must be an object"), "{error}");
 }
+
+#[test]
+fn credentialed_model_fetch_does_not_follow_redirects() {
+    use std::io::Write;
+    use std::net::TcpListener;
+
+    // A redirect target must never receive the provider credential.
+    let target = TcpListener::bind("127.0.0.1:0").unwrap();
+    target.set_nonblocking(true).unwrap();
+    let target_address = target.local_addr().unwrap();
+    let gateway = TcpListener::bind("127.0.0.1:0").unwrap();
+    let gateway_address = gateway.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let (mut stream, _) = gateway.accept().unwrap();
+        let mut request = [0_u8; 2048];
+        let _ = std::io::Read::read(&mut stream, &mut request);
+        write!(stream, "HTTP/1.1 302 Found\r\nLocation: http://{target_address}/v1/models\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    });
+
+    let error = fetch_model_ids(&provider_view(&gateway_address, "secret", true))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("302"), "{error}");
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(target.accept().is_err(), "the redirect target was hit");
+}

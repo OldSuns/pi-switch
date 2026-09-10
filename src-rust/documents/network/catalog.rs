@@ -41,6 +41,8 @@ fn resolve_metadata_with_timeout(
     timeout: Duration,
 ) -> Result<CatalogFetch> {
     let client = http_client()?;
+    // Pricing requests carry the provider key, so they must not follow redirects.
+    let pricing_client = credential_client()?;
     let deadline = Instant::now() + timeout;
     let (sender, receiver) = mpsc::channel();
 
@@ -57,7 +59,7 @@ fn resolve_metadata_with_timeout(
 
     let pricing_provider = provider.clone();
     thread::spawn(move || {
-        let ratios = fetch_ratio_config_until(&client, &pricing_provider, deadline);
+        let ratios = fetch_ratio_config_until(&pricing_client, &pricing_provider, deadline);
         let _ = sender.send(TimedMetadataResult {
             completed_at: Instant::now(),
             result: MetadataResult::Ratios(ratios),
@@ -153,7 +155,7 @@ fn apply_metadata_result(
 /// Validates the provider and requests its `/models` endpoint, returning the
 /// parsed model ID list. Shared by the one-shot and two-phase import paths.
 fn fetch_provider_ids(provider: &ProviderView) -> Result<Vec<String>> {
-    let client = http_client()?;
+    let client = credential_client()?;
     fetch_provider_ids_with(&client, provider)
 }
 
@@ -169,6 +171,9 @@ pub(super) fn fetch_provider_ids_with(
     }
     let key = resolve_secret(&provider.api_key)?;
     let mut url = catalog_url(provider)?;
+    if key.is_some() {
+        require_secure_transport(&url)?;
+    }
     if provider.api == "google-generative-ai" {
         if let Some(key) = key.as_deref() {
             url.query_pairs_mut().append_pair("key", key);
@@ -194,7 +199,7 @@ pub(super) fn fetch_provider_ids_with(
 
     let response = request
         .send()
-        .map_err(|error| AppError::Http(error.to_string()))?;
+        .map_err(|error| AppError::Http(error.without_url().to_string()))?;
     let status = response.status();
     if !status.is_success() {
         return Err(AppError::Http(format!("HTTP {status}")));
@@ -264,6 +269,41 @@ pub(super) fn http_client() -> Result<Client> {
         .map_err(|error| AppError::Http(error.to_string()))
 }
 
+/// Client for requests that carry a provider credential: it must not follow
+/// redirects, which would hand the key to whatever host the response names.
+fn credential_client() -> Result<Client> {
+    Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent(concat!("pi-switch/", env!("CARGO_PKG_VERSION")))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| AppError::Http(error.to_string()))
+}
+
+/// A provider credential may only be sent over HTTPS, or to the machine itself
+/// or its local network — a self-hosted gateway is normally plain HTTP on a
+/// LAN, but a key must never travel in clear text beyond it.
+fn require_secure_transport(url: &Url) -> Result<()> {
+    let host = url.host_str().unwrap_or_default();
+    if url.scheme() == "https" || is_local_host(host) {
+        return Ok(());
+    }
+    Err(AppError::Invalid(format!(
+        "refusing to send a provider credential to {url}: use https or a local address"
+    )))
+}
+
+fn is_local_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.trim_start_matches('[').trim_end_matches(']').parse() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        Ok(std::net::IpAddr::V6(ip)) => ip.is_loopback(),
+        Err(_) => false,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // NewAPI gateway pricing — best-effort price source. NewAPI gateways expose
 // two endpoints at the gateway root (baseUrl with any trailing /v1 stripped):
@@ -305,6 +345,9 @@ fn get_gateway_json_until(
         let url = Url::parse(&format!("{root}{path}"))
             .map_err(|error| AppError::Http(format!("invalid gateway url: {error}")))?;
         let key = resolve_secret(&provider.api_key)?;
+        if key.is_some() {
+            require_secure_transport(&url)?;
+        }
         let headers = provider_headers(provider)?;
         let mut request = client.get(url);
         if let Some(deadline) = deadline {
@@ -328,7 +371,7 @@ fn get_gateway_json_until(
         }
         let response = request
             .send()
-            .map_err(|error| AppError::Http(error.to_string()))?;
+            .map_err(|error| AppError::Http(error.without_url().to_string()))?;
         if !response.status().is_success() {
             return Ok(None);
         }
@@ -374,4 +417,37 @@ fn fetch_ratio_config_before(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+
+    fn url(value: &str) -> Url {
+        Url::parse(value).unwrap()
+    }
+
+    #[test]
+    fn credentials_need_https_or_a_local_address() {
+        for allowed in [
+            "https://api.example.test/v1",
+            "http://localhost:8080/v1",
+            "http://127.0.0.1:8080/v1",
+            "http://[::1]:8080/v1",
+            "http://192.168.1.10:8080/v1",
+            "http://10.0.0.5/v1",
+        ] {
+            assert!(require_secure_transport(&url(allowed)).is_ok(), "{allowed}");
+        }
+        for rejected in [
+            "http://api.example.test/v1",
+            "http://8.8.8.8/v1",
+            "ftp://api.example.test/v1",
+        ] {
+            assert!(
+                require_secure_transport(&url(rejected)).is_err(),
+                "{rejected}"
+            );
+        }
+    }
 }
