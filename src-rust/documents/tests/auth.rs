@@ -12,16 +12,17 @@ fn auth_draft(id: &str, key: &str) -> ProviderDraft {
 }
 
 #[test]
-fn key_defaults_to_auth_json_and_stays_out_of_provider_documents() {
+fn key_defaults_to_auth_json_and_keeps_a_local_copy() {
     let (_root, paths) = fixture();
     save_provider(&paths, None, &auth_draft("p", "sk-plain")).unwrap();
 
     assert!(read_json(&paths.pi_models)["providers"]["p"]
         .get("apiKey")
         .is_none());
-    assert!(read_json(&paths.providers)["providers"]["p"]
-        .get("apiKey")
-        .is_none());
+    assert_eq!(
+        read_json(&paths.providers)["providers"]["p"]["apiKey"],
+        "sk-plain"
+    );
     assert_eq!(
         read_json(&paths.pi_auth)["p"],
         json!({"type": "api_key", "key": "sk-plain"})
@@ -61,6 +62,10 @@ fn renaming_provider_moves_the_auth_credential() {
     assert_eq!(
         auth["renamed"],
         json!({"type": "api_key", "key": "sk-one"})
+    );
+    assert_eq!(
+        read_json(&paths.providers)["providers"]["renamed"]["apiKey"],
+        "sk-one"
     );
     assert!(read_json(&paths.pi_models)["providers"]["renamed"]
         .get("apiKey")
@@ -111,7 +116,7 @@ fn models_json_storage_keeps_the_legacy_behavior() {
     // moved to auth.json untouched.
     set_key_storage(&paths, KeyStorage::AuthJson).unwrap();
     save_provider(&paths, Some("p"), &auth_draft("p", "$MY_ENV_KEY")).unwrap();
-    // auth.json received the key; the provider JSON stays clean.
+    // auth.json received the Pi projection; models.json stays clean.
     assert!(read_json(&paths.pi_models)["providers"]["p"]
         .get("apiKey")
         .is_none());
@@ -163,15 +168,13 @@ fn opencode_import_routes_keys_by_storage_setting() {
         }),
     );
 
-    // Default auth.json mode: key goes to auth.json, not the provider JSON.
+    // Default auth.json mode: key goes to auth.json and the local provider copy.
     import_opencode_with_catalog(&paths, &ModelCatalog::default()).unwrap();
     assert!(read_json(&paths.pi_models)["providers"]["gw"]
         .get("apiKey")
         .is_none());
     assert_eq!(read_json(&paths.pi_auth)["gw"]["key"], "${GW_KEY}");
-    assert!(read_json(&paths.providers)["providers"]["gw"]
-        .get("apiKey")
-        .is_none());
+    assert_eq!(read_json(&paths.providers)["providers"]["gw"]["apiKey"], "${GW_KEY}");
 
     // models.json mode keeps the key inline; auth.json is not touched.
     set_key_storage(&paths, KeyStorage::ModelsJson).unwrap();
@@ -289,16 +292,14 @@ fn opencode_import_keeps_keys_and_provider_documents_in_step() {
     import_opencode_overwriting_credentials(&paths, &ModelCatalog::default()).unwrap();
     assert!(read_json(&paths.pi_auth).get("gw").is_none());
 
-    // auth.json mode takes the key out of both provider documents.
+    // auth.json mode keeps the key in pi-switch's local copy and auth.json.
     set_key_storage(&paths, KeyStorage::AuthJson).unwrap();
     import_opencode_with_catalog(&paths, &ModelCatalog::default()).unwrap();
     assert_eq!(read_json(&paths.pi_auth)["gw"]["key"], "inline");
     assert!(read_json(&paths.pi_models)["providers"]["gw"]
         .get("apiKey")
         .is_none());
-    assert!(read_json(&paths.providers)["providers"]["gw"]
-        .get("apiKey")
-        .is_none());
+    assert_eq!(read_json(&paths.providers)["providers"]["gw"]["apiKey"], "inline");
 }
 
 #[test]

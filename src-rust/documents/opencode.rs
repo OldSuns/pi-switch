@@ -5,6 +5,7 @@ use serde_json::{json, Map, Value};
 use super::{
     auth,
     network::fetch_catalog,
+    providers::provider_for_pi,
     schema::{minimal_model, provider_view, validate_draft, validate_model_id},
     settings,
     snapshot::{lock_provider_documents, write_provider_changes},
@@ -342,7 +343,7 @@ fn import_source(
     let local = providers_object(&library)?;
     let enabled = providers_object_mut(&mut models)?;
     for id in provider_ids {
-        enabled.insert(id.clone(), local[id].clone());
+        enabled.insert(id.clone(), provider_for_pi(&local[id], key_storage)?);
     }
     let documents_changed = library != before_library || models != before_models;
     // Keys go to auth.json first (a failed auth write must not leave keys behind
@@ -362,8 +363,8 @@ fn import_source(
                 credentials.insert(id.clone(), next);
             }
             for id in &inline_keys {
-                // The key now lives in the provider JSON and Pi resolves
-                // auth.json first, so a surviving entry would keep shadowing it.
+                // The key also stays in the local library; this entry is the
+                // Pi projection used only by models.json mode.
                 let Some(entry) = credentials.get(id) else {
                     continue;
                 };
@@ -389,8 +390,8 @@ fn import_source(
     Ok(summary)
 }
 
-/// Routes an imported `apiKey`: either inline into the provider JSON
-/// (`models.json` mode) or collected for auth.json (`auth.json` mode).
+/// Routes an imported `apiKey`: stores a local copy in the provider library,
+/// then projects it to either `models.json` or `auth.json` for Pi.
 struct KeyRoute<'a> {
     storage: KeyStorage,
     collected: &'a mut Vec<(String, String)>,
@@ -401,9 +402,7 @@ impl KeyRoute<'_> {
     fn place(&mut self, id: &str, key: String, target: &mut Map<String, Value>) {
         match self.storage {
             KeyStorage::AuthJson => {
-                // The key lives in auth.json only: a stale inline copy would come
-                // back as soon as that credential is removed.
-                target.remove("apiKey");
+                target.insert("apiKey".into(), Value::String(key.clone()));
                 self.collected.push((id.to_owned(), key));
             }
             KeyStorage::ModelsJson => {

@@ -16,7 +16,7 @@ pub(super) fn snapshot(snapshot: &Snapshot, paths: &Paths, sessions_root: &Path)
     json!({
         "version": env!("CARGO_PKG_VERSION"),
         "apiTypes": crate::documents::API_TYPES,
-        "providers": snapshot.providers.iter().map(|view| provider(view, auth_ids.contains(&view.id))).collect::<Vec<_>>(),
+        "providers": snapshot.providers.iter().map(|view| provider(view, auth_ids.contains(&view.id), snapshot.key_storage)).collect::<Vec<_>>(),
         "ordering": snapshot.ordering.to_json(),
         "defaultProvider": snapshot.default_provider,
         "defaultModel": snapshot.default_model,
@@ -38,20 +38,36 @@ pub(super) fn snapshot(snapshot: &Snapshot, paths: &Paths, sessions_root: &Path)
     })
 }
 
-fn provider(provider: &ProviderView, has_auth: bool) -> Value {
+fn provider(
+    provider: &ProviderView,
+    has_auth: bool,
+    key_storage: crate::documents::KeyStorage,
+) -> Value {
+    let key_source = if provider.api_key.is_empty() {
+        None
+    } else if provider.in_pi && has_auth {
+        Some("auth.json")
+    } else if provider.in_pi
+        && provider
+            .raw
+            .get("apiKey")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+    {
+        Some(match key_storage {
+            crate::documents::KeyStorage::AuthJson => "pi-switch",
+            crate::documents::KeyStorage::ModelsJson => "models.json",
+        })
+    } else {
+        None
+    };
     json!({
         "id": provider.id,
         "inPi": provider.in_pi,
         "baseUrl": provider.base_url,
         "api": (!provider.api.is_empty()).then_some(&provider.api),
         "apiKey": provider.api_key,
-        "apiKeySource": if provider.raw.get("apiKey").and_then(|value| value.as_str()).is_some_and(|value| !value.is_empty()) {
-            Some("models.json")
-        } else if has_auth && !provider.api_key.is_empty() {
-            Some("auth.json")
-        } else {
-            None
-        },
+        "apiKeySource": key_source,
         "hasAuth": has_auth,
         "authHeader": provider.auth_header,
         "headers": provider.raw.get("headers"),

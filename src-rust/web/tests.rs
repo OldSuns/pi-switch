@@ -213,7 +213,9 @@ fn provider_and_model_edits_preserve_unknown_fields_and_sync_the_same_value() {
     let pi_models = read_json(&fixture.core.paths.pi_models);
     let library = read_json(&fixture.core.paths.providers);
     let provider = &pi_models["providers"]["local"];
-    assert_eq!(*provider, library["providers"]["local"]);
+    let mut expected = library["providers"]["local"].clone();
+    expected.as_object_mut().unwrap().remove("apiKey");
+    assert_eq!(*provider, expected);
     assert_eq!(pi_models["futureRoot"], true);
     assert_eq!(provider["futureProvider"]["keep"], 7);
     assert_eq!(provider["compat"]["futureCompat"], "keep");
@@ -223,9 +225,11 @@ fn provider_and_model_edits_preserve_unknown_fields_and_sync_the_same_value() {
 
     let duplicate = fixture.call(json!({ "action": "provider.duplicate", "providerId": "local" }));
     assert_eq!(duplicate["providerId"], "local-copy");
+    let mut expected = provider.clone();
+    expected.as_object_mut().unwrap().remove("apiKey");
     assert_eq!(
         read_json(&fixture.core.paths.pi_models)["providers"]["local-copy"],
-        *provider
+        expected
     );
 }
 
@@ -284,7 +288,9 @@ fn model_duplication_preserves_extensions_source_default_and_sync_state() {
         }
         let pi_models = read_json(&fixture.core.paths.pi_models);
         if in_pi {
-            assert_eq!(pi_models["providers"]["local"], *provider);
+            let mut expected = provider.clone();
+            expected.as_object_mut().unwrap().remove("apiKey");
+            assert_eq!(pi_models["providers"]["local"], expected);
             assert_eq!(result["snapshot"]["defaultModel"], "chat");
         } else {
             assert!(pi_models["providers"].get("local").is_none());

@@ -28,20 +28,8 @@ fn save(
     overwrite_credential: bool,
 ) -> Result<()> {
     validate_draft(draft)?;
-    let mut draft = draft.clone();
-    // In auth.json mode a given key moves to auth.json; provider JSON (both the
-    // local library and models.json) never stores apiKey.
+    let draft = draft.clone();
     let key_storage = settings::key_storage_setting(paths)?;
-    let auth_key = match key_storage {
-        KeyStorage::AuthJson if !draft.api_key.is_empty() => {
-            Some(std::mem::take(&mut draft.api_key))
-        }
-        _ => None,
-    };
-    // A key that stays in the provider JSON must not leave an auth.json entry
-    // behind: Pi prefers auth.json and would keep using the stale one.
-    let key_in_provider_json =
-        matches!(key_storage, KeyStorage::ModelsJson) && !draft.api_key.is_empty();
     let renamed_from = previous_id.filter(|old| *old != draft.id);
     let draft = &draft;
     let (lock, mut library, mut models) = lock_provider_documents(paths)?;
@@ -60,15 +48,18 @@ fn save(
     let mut provider = previous_id
         .and_then(|id| local.get(id).cloned())
         .unwrap_or_else(|| json!({}));
+    let existing_key = provider.get("apiKey").cloned();
     patch_provider(&mut provider, draft)?;
-    if auth_key.is_some() {
-        // In auth.json mode the key lives in auth.json only: a leftover inline
-        // `apiKey` would come back as soon as that credential is removed.
-        if let Some(object) = provider.as_object_mut() {
-            object.remove("apiKey");
+    if matches!(key_storage, KeyStorage::AuthJson) && draft.api_key.is_empty() {
+        if let Some(key) = existing_key {
+            provider
+                .as_object_mut()
+                .ok_or_else(|| AppError::Invalid("provider data must be an object".into()))?
+                .insert("apiKey".into(), key);
         }
     }
     provider_view(&draft.id, &provider)?;
+    let provider_for_pi = provider_for_pi(&provider, key_storage)?;
     if let Some(old) = previous_id.filter(|old| *old != draft.id) {
         local.remove(old);
     }
@@ -83,7 +74,7 @@ fn save(
         enabled.remove(old);
     }
     if draft.in_pi {
-        enabled.insert(draft.id.clone(), provider);
+        enabled.insert(draft.id.clone(), provider_for_pi);
     } else if let Some(old) = previous_id {
         enabled.remove(old);
     }
@@ -101,39 +92,29 @@ fn save(
             settings_changed = true;
         }
     }
-    // Credentials move once every provider-side validation passed: a rejected
-    // edit must never rename or overwrite an auth.json entry. This keeps the
-    // provider-then-auth lock order used by the other writers.
-    let credentials_changed =
-        if auth_key.is_some() || renamed_from.is_some() || key_in_provider_json {
+    // `providers.json` is pi-switch's local copy; auth.json is only the Pi
+    // projection for enabled providers. Keep the local key even when a
+    // provider is not currently synced.
+    let local_key = provider
+        .get("apiKey")
+        .and_then(Value::as_str)
+        .filter(|key| !key.is_empty())
+        .map(str::to_owned);
+    let credentials_changed = match key_storage {
+        KeyStorage::AuthJson => {
             let target = draft.id.clone();
             let source = renamed_from.map(str::to_owned);
-            auth::edit(paths, |credentials| {
-                if key_in_provider_json {
-                    // The key now lives in the provider JSON and Pi resolves
-                    // auth.json first, so every entry left behind would keep
-                    // shadowing it — including the one the rename leaves under the
-                    // old id. A plain `api_key` is ours to retire; anything else
-                    // (provider config, a Pi login) asks first.
-                    for id in std::iter::once(&target).chain(source.as_ref()) {
-                        let Some(entry) = credentials.get(id) else {
-                            continue;
-                        };
-                        if !(auth::is_plain_api_key(entry) || overwrite_credential) {
-                            return Err(AppError::CredentialOverwriteRequired(id.clone()));
+            if draft.in_pi || was_in_pi || source.is_some() {
+                auth::edit(paths, |credentials| {
+                    if !draft.in_pi {
+                        for id in std::iter::once(&target).chain(source.as_ref()) {
+                            if credentials.get(id).is_some_and(auth::is_api_key) {
+                                credentials.remove(id);
+                            }
                         }
-                        credentials.remove(id);
+                        return Ok(());
                     }
-                    return Ok(());
-                }
-                let own =
-                    source.is_none() && credentials.get(&target).is_some_and(auth::is_api_key);
-                match &auth_key {
-                    // The typed key is this provider's new key; the entry of a
-                    // renamed provider is the base, so its provider-scoped `env`
-                    // values move too. A different entry under the target id is
-                    // someone else's and asks first.
-                    Some(key) => {
+                    if let Some(key) = local_key.as_deref() {
                         let base = source
                             .as_ref()
                             .and_then(|old| credentials.get(old))
@@ -143,44 +124,44 @@ fn save(
                         let replaces = credentials
                             .get(&target)
                             .is_some_and(|current| current != &next);
+                        let own = source.as_deref().is_none_or(|source| source == target)
+                            && credentials.get(&target).is_some_and(auth::is_api_key);
                         if replaces && !own && !overwrite_credential {
                             return Err(AppError::CredentialOverwriteRequired(target.clone()));
                         }
                         if let Some(old) = source.as_deref() {
-                            // The renamed provider is gone from the old id, so its
-                            // own key must not linger; a Pi login stays untouched.
                             if credentials.get(old).is_some_and(auth::is_api_key) {
                                 credentials.remove(old);
                             }
                         }
                         credentials.insert(target.clone(), next);
                     }
-                    // Renaming without a typed key moves the entry as it is.
-                    None => {
-                        let Some(moved) = source
-                            .as_ref()
-                            .and_then(|old| credentials.get(old))
-                            .cloned()
-                        else {
-                            return Ok(());
-                        };
-                        let replaces = credentials
-                            .get(&target)
-                            .is_some_and(|current| *current != moved);
-                        if replaces && !overwrite_credential {
-                            return Err(AppError::CredentialOverwriteRequired(target.clone()));
-                        }
-                        if let Some(old) = source.as_deref() {
-                            credentials.remove(old);
-                        }
-                        credentials.insert(target.clone(), moved);
+                    Ok(())
+                })?
+            } else {
+                false
+            }
+        }
+        KeyStorage::ModelsJson if local_key.is_some() => {
+            let target = draft.id.clone();
+            let source = renamed_from.map(str::to_owned);
+            auth::edit(paths, |credentials| {
+                // Pi resolves auth.json first, so stale entries would shadow
+                // the key in models.json. Plain API-key entries are ours to retire.
+                for id in std::iter::once(&target).chain(source.as_ref()) {
+                    let Some(entry) = credentials.get(id) else {
+                        continue;
+                    };
+                    if !(auth::is_plain_api_key(entry) || overwrite_credential) {
+                        return Err(AppError::CredentialOverwriteRequired(id.clone()));
                     }
+                    credentials.remove(id);
                 }
                 Ok(())
             })?
-        } else {
-            false
-        };
+        }
+        _ => false,
+    };
     write_provider_changes(
         paths,
         &lock,
@@ -199,15 +180,76 @@ fn save(
     })
 }
 
+pub(super) fn provider_for_pi(provider: &Value, key_storage: KeyStorage) -> Result<Value> {
+    let mut provider = provider.clone();
+    if matches!(key_storage, KeyStorage::AuthJson) {
+        provider
+            .as_object_mut()
+            .ok_or_else(|| AppError::Invalid("provider data must be an object".into()))?
+            .remove("apiKey");
+    }
+    Ok(provider)
+}
+
 pub fn set_provider_in_pi(paths: &Paths, id: &str, in_pi: bool) -> Result<()> {
-    let (lock, library, mut models) = lock_provider_documents(paths)?;
-    let provider = providers_object(&library)?
+    let key_storage = settings::key_storage_setting(paths)?;
+    let (lock, mut library, mut models) = lock_provider_documents(paths)?;
+    let local = providers_object_mut(&mut library)?;
+    let mut provider = local
         .get(id)
         .cloned()
         .ok_or_else(|| AppError::Invalid(format!("provider '{id}' no longer exists")))?;
+    let original_provider = provider.clone();
+    let mut local_key = provider
+        .get("apiKey")
+        .and_then(Value::as_str)
+        .filter(|key| !key.is_empty())
+        .map(str::to_owned);
+    let auth_credentials = if matches!(key_storage, KeyStorage::AuthJson) {
+        Some(auth::read_credentials(paths)?)
+    } else {
+        None
+    };
+    if local_key.is_none() {
+        local_key = auth_credentials
+            .as_ref()
+            .and_then(|credentials| credentials.get(id))
+            .filter(|entry| auth::is_api_key(entry))
+            .and_then(|entry| entry.get("key"))
+            .and_then(Value::as_str)
+            .filter(|key| !key.is_empty())
+            .map(str::to_owned);
+        if let Some(key) = local_key.as_deref() {
+            provider
+                .as_object_mut()
+                .ok_or_else(|| AppError::Invalid("provider data must be an object".into()))?
+                .insert("apiKey".into(), Value::String(key.into()));
+        }
+    }
+    if in_pi && matches!(key_storage, KeyStorage::AuthJson) {
+        if let Some(key) = local_key.as_deref() {
+            let next = auth::api_key_entry(
+                auth_credentials
+                    .as_ref()
+                    .and_then(|credentials| credentials.get(id)),
+                key,
+            );
+            if auth_credentials
+                .as_ref()
+                .and_then(|credentials| credentials.get(id))
+                .is_some_and(|current| current != &next && !auth::is_api_key(current))
+            {
+                return Err(AppError::CredentialOverwriteRequired(id.into()));
+            }
+        }
+    }
+    let provider_for_pi = provider_for_pi(&provider, key_storage)?;
+    if provider != original_provider {
+        providers_object_mut(&mut library)?.insert(id.into(), provider);
+    }
     let enabled = providers_object_mut(&mut models)?;
     if in_pi {
-        enabled.insert(id.into(), provider);
+        enabled.insert(id.into(), provider_for_pi);
     } else {
         enabled.remove(id);
     }
@@ -219,7 +261,26 @@ pub fn set_provider_in_pi(paths: &Paths, id: &str, in_pi: bool) -> Result<()> {
         Some(&models),
         settings_changed.then_some(&settings),
         &library,
-    )
+    )?;
+    if matches!(key_storage, KeyStorage::AuthJson) {
+        auth::edit(paths, |credentials| {
+            if in_pi {
+                if let Some(key) = local_key.as_deref() {
+                    let next = auth::api_key_entry(credentials.get(id), key);
+                    credentials.insert(id.into(), next);
+                }
+            } else if credentials.get(id).is_some_and(auth::is_api_key) {
+                credentials.remove(id);
+            }
+            Ok(())
+        })
+        .map_err(|error| {
+            AppError::Partial(format!(
+                "provider documents updated, but auth.json update failed: {error}"
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 pub fn remove_provider(paths: &Paths, id: &str, remove_auth: bool) -> Result<()> {
@@ -264,6 +325,7 @@ pub fn remove_provider(paths: &Paths, id: &str, remove_auth: bool) -> Result<()>
 }
 
 pub fn duplicate_provider(paths: &Paths, source_id: &str) -> Result<String> {
+    let key_storage = settings::key_storage_setting(paths)?;
     let (lock, mut library, mut models) = lock_provider_documents(paths)?;
     let local = providers_object_mut(&mut library)?;
     let provider = local
@@ -275,7 +337,7 @@ pub fn duplicate_provider(paths: &Paths, source_id: &str) -> Result<String> {
     local.insert(copy_id.clone(), provider.clone());
     let enabled = providers_object_mut(&mut models)?;
     if enabled.contains_key(source_id) {
-        enabled.insert(copy_id.clone(), provider);
+        enabled.insert(copy_id.clone(), provider_for_pi(&provider, key_storage)?);
     }
     write_provider_changes(paths, &lock, Some(&models), None, &library)?;
     Ok(copy_id)
@@ -290,6 +352,7 @@ pub fn import_models(
     for model in catalog_models {
         validate_model_id(&model.id)?;
     }
+    let key_storage = settings::key_storage_setting(paths)?;
     let (lock, mut library, mut pi_models) = lock_provider_documents(paths)?;
     let models = provider_models_mut(&mut library, provider_id)?;
     let mut summary = ModelImportSummary {
@@ -322,7 +385,7 @@ pub fn import_models(
         }
     }
     if summary.added + summary.updated > 0 {
-        sync_library_provider_to_pi(&library, &mut pi_models, provider_id)?;
+        sync_library_provider_to_pi(&library, &mut pi_models, provider_id, key_storage)?;
         write_provider_changes(paths, &lock, Some(&pi_models), None, &library)?;
     }
     Ok(summary)
@@ -332,6 +395,7 @@ fn sync_library_provider_to_pi(
     library: &Value,
     models: &mut Value,
     provider_id: &str,
+    key_storage: KeyStorage,
 ) -> Result<()> {
     let enabled = providers_object_mut(models)?;
     if enabled.contains_key(provider_id) {
@@ -341,7 +405,7 @@ fn sync_library_provider_to_pi(
             .ok_or_else(|| {
                 AppError::Invalid(format!("provider '{provider_id}' no longer exists"))
             })?;
-        enabled.insert(provider_id.into(), provider);
+        enabled.insert(provider_id.into(), provider_for_pi(&provider, key_storage)?);
     }
     Ok(())
 }
@@ -378,6 +442,7 @@ fn write_model(
     draft: &ModelDraft,
 ) -> Result<()> {
     validate_model_draft(draft)?;
+    let key_storage = settings::key_storage_setting(paths)?;
     let (lock, mut library, mut pi_models) = lock_provider_documents(paths)?;
     let models = provider_models_mut(&mut library, provider_id)?;
     let (source_id, previous_id) = match source {
@@ -425,7 +490,7 @@ fn write_model(
     if let Some(old) = previous_id.filter(|old| *old != draft.id) {
         ordering::rename_model(&mut library, provider_id, old, &draft.id);
     }
-    sync_library_provider_to_pi(&library, &mut pi_models, provider_id)?;
+    sync_library_provider_to_pi(&library, &mut pi_models, provider_id, key_storage)?;
     let mut settings = read_document(&paths.pi_settings, json!({}))?;
     let settings_changed = if let Some(old) = previous_id.filter(|old| *old != draft.id) {
         if string_field(&settings, "defaultProvider")?.as_deref() == Some(provider_id)
@@ -450,6 +515,7 @@ fn write_model(
 }
 
 pub fn remove_model(paths: &Paths, provider_id: &str, model_id: &str) -> Result<()> {
+    let key_storage = settings::key_storage_setting(paths)?;
     let (lock, mut library, mut pi_models) = lock_provider_documents(paths)?;
     let models = provider_models_mut(&mut library, provider_id)?;
     let index = models
@@ -461,7 +527,7 @@ pub fn remove_model(paths: &Paths, provider_id: &str, model_id: &str) -> Result<
             ))
         })?;
     models.remove(index);
-    sync_library_provider_to_pi(&library, &mut pi_models, provider_id)?;
+    sync_library_provider_to_pi(&library, &mut pi_models, provider_id, key_storage)?;
     let mut settings = read_document(&paths.pi_settings, json!({}))?;
     let selected = string_field(&settings, "defaultProvider")?.as_deref() == Some(provider_id)
         && string_field(&settings, "defaultModel")?.as_deref() == Some(model_id);

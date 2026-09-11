@@ -59,7 +59,7 @@ function providerList(state) {
       </select></label>
       ${sortControl("providers", ordering)}
     </div>
-    <div class="provider-list" data-order-list data-order-scope="providers" data-order-provider="" aria-label="${t("选择 Provider", "Select provider")}">
+    <div class="provider-list" data-session-scroll="providers" data-order-list data-order-scope="providers" data-order-provider="" aria-label="${t("选择 Provider", "Select provider")}">
       ${providers.length ? providers.map((provider) => `<div class="provider-row" data-order-item data-order-scope="providers" data-order-id="${h(provider.id)}" data-order-provider="">${providerSyncButton(provider)}<button class="provider-option" data-action="select-provider" data-provider="${h(provider.id)}" aria-current="${provider.id === state.providerId}">
         <span class="item-title">${h(provider.id)}</span>
         ${provider.id === state.snapshot.defaultProvider ? icon("star") : ""}<span class="provider-count">${provider.models.length}</span>

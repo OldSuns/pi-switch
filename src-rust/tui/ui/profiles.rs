@@ -208,17 +208,14 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: Rect, theme: Theme) {
         {
             let source_hint = if provider.api_key.is_empty() {
                 None
+            } else if app.snapshot.key_storage == crate::documents::KeyStorage::AuthJson
+                && provider.in_pi
+            {
+                Some(" · auth.json")
+            } else if app.snapshot.key_storage == crate::documents::KeyStorage::AuthJson {
+                Some(" · pi-switch")
             } else {
-                let in_models = provider
-                    .raw
-                    .get("apiKey")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|value| !value.is_empty());
-                Some(if in_models {
-                    " · models.json"
-                } else {
-                    " · auth.json"
-                })
+                Some(" · models.json")
             };
             detail_field_lines_with_hint(
                 app.language.pick("API key", "API 密钥"),

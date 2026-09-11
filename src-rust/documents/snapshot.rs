@@ -25,8 +25,10 @@ pub fn load_snapshot(paths: &Paths) -> Result<Snapshot> {
     // snapshot; entries just stay as they are.
     let auth_keys = auth::credential_keys(paths).unwrap_or_default();
     for view in &mut views {
-        if let Some(key) = auth_keys.get(&view.id) {
-            view.api_key = key.clone();
+        if view.in_pi {
+            if let Some(key) = auth_keys.get(&view.id) {
+                view.api_key = key.clone();
+            }
         }
     }
 
@@ -102,11 +104,7 @@ fn load_provider_documents(paths: &Paths) -> Result<(Value, Value, Option<String
     let local_providers = providers_object_mut(&mut library)?;
     let mut changed = false;
     for (id, provider) in pi_providers {
-        if local_providers.get(id) != Some(provider) {
-            provider_view(id, provider)?;
-            local_providers.insert(id.clone(), provider.clone());
-            changed = true;
-        }
+        changed |= merge_pi_provider(local_providers, id, provider)?;
     }
     if changed {
         let lock = WriteLock::acquire(paths)?;
@@ -117,9 +115,7 @@ fn load_provider_documents(paths: &Paths) -> Result<(Value, Value, Option<String
         ordering::sync(&mut library, None)?;
         let local = providers_object_mut(&mut library)?;
         for (id, provider) in providers_object(&models)? {
-            if local.get(id) != Some(provider) {
-                local.insert(id.clone(), provider.clone());
-            }
+            merge_pi_provider(local, id, provider)?;
         }
         ordering::sync(&mut library, None)?;
         write_document(paths, &lock, &paths.providers, &library)?;
@@ -133,6 +129,24 @@ fn local_library_from_models(models: &Value) -> Value {
         "version": 1,
         "providers": models.get("providers").cloned().unwrap_or_else(|| json!({}))
     })
+}
+
+fn merge_pi_provider(local: &mut Map<String, Value>, id: &str, incoming: &Value) -> Result<bool> {
+    let mut provider = incoming.clone();
+    if provider.get("apiKey").is_none() {
+        if let Some(key) = local.get(id).and_then(|value| value.get("apiKey")).cloned() {
+            provider
+                .as_object_mut()
+                .ok_or_else(|| AppError::Invalid("provider data must be an object".into()))?
+                .insert("apiKey".into(), key);
+        }
+    }
+    if local.get(id) == Some(&provider) {
+        return Ok(false);
+    }
+    provider_view(id, &provider)?;
+    local.insert(id.into(), provider);
+    Ok(true)
 }
 
 pub(super) fn validate_local_library(value: &Value) -> Result<()> {
@@ -186,9 +200,7 @@ pub(super) fn lock_provider_documents(paths: &Paths) -> Result<(WriteLock, Value
     ordering::sync(&mut library, None)?;
     let local = providers_object_mut(&mut library)?;
     for (id, provider) in providers_object(&models)? {
-        if local.get(id) != Some(provider) {
-            local.insert(id.clone(), provider.clone());
-        }
+        merge_pi_provider(local, id, provider)?;
     }
     ordering::sync(&mut library, None)?;
     Ok((lock, library, models))

@@ -455,14 +455,42 @@ fn local_provider_models_stay_out_of_pi_until_enabled() {
 
     let library = read_json(&paths.providers);
     let models = read_json(&paths.pi_models);
-    assert_eq!(library["providers"]["local"]["models"][0]["id"], "draft-model");
+    assert_eq!(library["providers"]["local"]["apiKey"], "$KEY");
+    assert_eq!(
+        library["providers"]["local"]["models"][0]["id"],
+        "draft-model"
+    );
     assert!(models["providers"].get("local").is_none());
     assert!(set_default(&paths, "local", "draft-model").is_err());
 
     fs::write(&paths.app_settings, r#"{"keep":"local"}"#).unwrap();
     let app_settings = fs::read(&paths.app_settings).unwrap();
     set_provider_in_pi(&paths, "local", true).unwrap();
+    save_provider(
+        &paths,
+        Some("local"),
+        &ProviderDraft {
+            id: "local".into(),
+            in_pi: false,
+            base_url: "https://example.test/v1".into(),
+            api: Some("openai-completions".into()),
+            api_key: String::new(),
+            auth_header: true,
+            headers: None,
+            compat: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(read_json(&paths.providers)["providers"]["local"]["apiKey"], "$KEY");
+    assert!(read_json(&paths.pi_auth).get("local").is_none());
+    set_provider_in_pi(&paths, "local", true).unwrap();
     set_default(&paths, "local", "draft-model").unwrap();
+    set_provider_in_pi(&paths, "local", false).unwrap();
+    let library = read_json(&paths.providers);
+    assert_eq!(library["providers"]["local"]["apiKey"], "$KEY");
+    assert!(read_json(&paths.pi_auth).get("local").is_none());
+    set_provider_in_pi(&paths, "local", true).unwrap();
+    assert_eq!(read_json(&paths.pi_auth)["local"]["key"], "$KEY");
     set_provider_in_pi(&paths, "local", false).unwrap();
     let models = read_json(&paths.pi_models);
     let settings = read_json(&paths.pi_settings);
