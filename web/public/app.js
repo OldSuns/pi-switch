@@ -264,7 +264,7 @@ async function loadSessions() {
     const result = await api("sessions.list");
     if (requestVersion !== sessionVersion) return;
     state.sessions = result.sessions;
-    if (state.sessionSelected.size) state.sessionSelected = new Set(state.sessionSelected.filter((id) => result.sessions.some((session) => session.id === id)));
+    if (state.sessionSelected.size) state.sessionSelected = new Set([...state.sessionSelected].filter((id) => result.sessions.some((session) => session.id === id)));
     if (state.sessionId && !state.sessions.some((session) => session.id === state.sessionId)) {
       resetPreview();
     }
