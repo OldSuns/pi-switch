@@ -757,6 +757,7 @@ case "key-storage": await execute(() => save("settings.key-storage", { value: ta
         } else {
           toast([t("已删除 " + succeeded.length + " 个会话，" + failures.length + " 个失败", "Deleted " + succeeded.length + ", failed: " + failures.length), failures.find(Boolean)].filter(Boolean).join("\n"), true);
         }
+        if (dialog.open) dialog.close();
       }); break;
     }
     case "reload-preview": await loadPreview(); break;
