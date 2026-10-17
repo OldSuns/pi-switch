@@ -451,6 +451,14 @@ tbody tr:last-child td { border-bottom: none; }
 .checkbox-label { display: flex; align-items: center; gap: 9px; min-height: 38px; color: var(--subtext); cursor: pointer; font-size: 12px; }
 .session-sidebar .checkbox-label { font-size: 11px; }
 .session-list { max-height: 630px; overflow: auto; padding: 5px 8px 10px; }
+.session-sidebar .panel-header > .inline-actions { gap: 4px; }
+.session-bulk { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+.session-bulk-count { grid-column: 1 / -1; margin: 0; font: 10px var(--mono); line-height: 1.5; color: var(--subtext); }
+.session-bulk .btn { width: 100%; min-width: 0; min-height: 30px; padding: 5px 6px; font-size: 10px; gap: 5px; }
+.session-bulk .btn .icon { width: 13px; height: 13px; }
+.session-option-row { display: flex; align-items: center; gap: 7px; margin-bottom: 3px; padding-left: 3px; }
+.session-option-row.selected { background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-border); }
+.session-option-row .session-option { flex: 1; min-width: 0; margin-bottom: 0; }
 .session-group { display: flex; align-items: center; gap: 7px; margin: 15px 6px 8px; font: 10px var(--mono); color: var(--muted); overflow: hidden; }
 .session-group .icon { width: 13px; height: 13px; }
 .session-group span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

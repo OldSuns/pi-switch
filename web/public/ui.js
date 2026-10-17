@@ -28,6 +28,7 @@ const paths = {
   chevronsDown: '<path d="m7 6 5 5 5-5m-10 7 5 5 5-5"/>',
   refresh: '<path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 6.1a8 8 0 0 1 13.2 3M4.7 14.9a8 8 0 0 0 13.2 3"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
+  checkSquare: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="m8 12 3 3 5-6"/>',
   checkCircle: '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',
   shield: '<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z"/><path d="m8 12 3 3 5-6"/>',
   star: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9Z"/>',
