@@ -33,6 +33,39 @@ function openBrowser(url) {
   child.unref();
 }
 
+export function createShutdownController({ close, exit = (code) => process.exit(code), report = (text) => console.log(text) } = {}) {
+  if (typeof close !== "function") throw new TypeError("createShutdownController requires a close function.");
+  let state = "running";
+  let forced = false;
+  return {
+    get state() { return state; },
+    handleSignal(signal) {
+      if (state === "closed") return;
+      if (state === "closing") {
+        if (signal !== "SIGINT") return;
+        forced = true;
+        state = "closed";
+        report("\n  Forcing exit…\n");
+        exit(130);
+        return;
+      }
+      state = "closing";
+      report("\n  Stopping pi-switch Web… Press Ctrl+C again to force exit.\n");
+      Promise.resolve().then(() => close(signal)).then(() => {
+        if (forced) return;
+        state = "closed";
+        report("  pi-switch Web stopped.");
+        exit(0);
+      }, (error) => {
+        if (forced) return;
+        state = "closed";
+        report("  Shutdown error: " + (error?.message ?? String(error)) + "\n  Exiting.");
+        exit(1);
+      });
+    },
+  };
+}
+
 export async function startWeb(options = {}) {
   const client = await createNativeClient();
   const server = createWebServer({ request: (payload) => client.request(payload) });
@@ -49,15 +82,24 @@ export async function startWeb(options = {}) {
   async function close() {
     if (closing) return;
     closing = true;
-    process.off("SIGINT", close);
-    process.off("SIGTERM", close);
     server.closeAllConnections();
     await Promise.all([
       new Promise((resolve) => server.close(resolve)),
       client.close(),
     ]);
   }
-  process.once("SIGINT", close);
-  process.once("SIGTERM", close);
-  return { server, url, close };
+  const controller = createShutdownController({ close });
+  const onSignal = (signal) => controller.handleSignal(signal);
+  const signals = process.platform === "win32"
+    ? ["SIGINT", "SIGTERM", "SIGBREAK", "SIGHUP"]
+    : ["SIGINT", "SIGTERM"];
+  for (const signal of signals) process.on(signal, onSignal);
+  return {
+    server,
+    url,
+    close: async () => {
+      for (const signal of signals) process.off(signal, onSignal);
+      await close();
+    },
+  };
 }

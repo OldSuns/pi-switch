@@ -1,41 +1,42 @@
-# Web 操作界面
+# Web UI
 
-对应 [issue #3](https://github.com/OldSuns/pi-switch/issues/3)：`pi-switch --web`。
+The local web interface of `pi-switch --web`, tracking [issue #3](https://github.com/OldSuns/pi-switch/issues/3).
 
-## 设计
+## Design
 
-沿用 TUI 的主页、配置、会话、设置导航，以及 provider → 模型的主从关系。provider 是否保存在本地、是否同步到 Pi、哪个模型是默认模型，分别展示。主页围绕可直接切换的默认模型、Provider 状态、可进入的最近会话和配置工具组织，不展示静态流程说明卡片。
+The web UI mirrors the TUI navigation — Home, Profiles, Sessions, Settings — and the provider → models master-detail layout. For each provider it shows whether it is stored locally, whether it is synced to Pi, and which of its models is the default. The home page is organized around immediately switchable default models, provider status, recent sessions you can reopen, and configuration tools; no static walkthrough cards.
 
-默认使用 Catppuccin Latte 亮色，「外观」也可切换为 Mocha 暗色；浏览器保存的主题偏好优先生效。Mauve 为主色，Base / Mantle / Surface 区分内容、导航和面板，绿色表示已同步，黄色表示默认或需注意，红色表示删除和错误。颜色统一定义在 `public/styles.css`，所有页面、表单、模态及 Markdown 都随主题切换。
+The default look is Catppuccin Latte (light); Appearance also offers Mocha (dark), with the browser-stored theme preference taking precedence. Mauve is the primary color; Base / Mantle / Surface separate content, navigation, and panels; green marks synced state, yellow marks defaults and things that need attention, red marks deletion and errors. All colors are defined once in `public/styles.css`; every page, form, modal, and Markdown block follows the active theme.
 
-下拉选择框共用圆角、主题底色、箭头和紫色交互状态。支持 `appearance: base-select` 的浏览器同时使用主题化的展开菜单、选中背景和勾选标记；其他浏览器保留原生菜单。选择框继续使用原生键盘操作、表单值与校验，展开菜单内的按键不会触发页面快捷键。
+Dropdown selects share the same radius, theme background, arrow, and mauve interaction state. Browsers that support `appearance: base-select` additionally get the themed open menu, checked background, and check mark; other browsers keep the native menu. Selects keep native keyboard operation, form values, and validation, and keystrokes inside an open menu never trigger page shortcuts.
 
-操作按钮有明确文字或可访问名称；表单保留错误和输入内容，只有实际保存成功才更新配置视图。默认 provider 取消同步、删除配置/会话、恢复备份和安装更新均有确认。原生 `dialog` 提供焦点约束及 Escape 关闭；导航、列表、搜索和表单可用键盘操作。
+Action buttons carry explicit text or accessible names; forms keep their errors and input values, and configuration views update only after an actual successful save. Unsyncing the default provider, deleting a profile or session, restoring a backup, and installing updates all require confirmation. Native `<dialog>` elements provide focus trapping and Escape dismissal; navigation, lists, search, and forms are fully keyboard-operable.
 
-复制模型时保留源模型的完整配置，再应用复制表单中的修改；扩展字段不会因 Web 表单未展示而丢失，源模型和默认模型不变。
+Copying a model keeps the source model's complete configuration and then applies the changes from the copy form; extension fields are never lost just because the web form does not display them, and the source and default models stay untouched.
 
-Provider 和模型列表分别支持名称升序／降序、添加时间升序／降序和自定义顺序。名称按显示名称（未设置时使用 ID）排序，忽略大小写并按数字大小比较。选择「自定义顺序」后，可拖动窄手柄，以元素之间的直线确定插入位置，也可使用 `Alt + ↑ / ↓` 调整；搜索或筛选时只交换可见项的位置，隐藏项保留原位置。切换自动排序不会丢失上次自定义顺序。
+Provider and model lists each support name ascending/descending, added-time ascending/descending, and custom ordering. Names sort by display name (falling back to the ID), case-insensitively, comparing embedded numbers numerically. In custom order mode you can drag the narrow handle — insertion is determined by the line between elements — or move items with `Alt + ↑ / ↓`; while searching or filtering only visible items swap positions and hidden items keep theirs. Switching back to an automatic sort never loses the last custom order.
 
-Provider 和模型的搜索图标位于各列表添加按钮左侧，会话搜索图标位于「重新扫描会话」左侧。点击或按 `/` 展开搜索框；再次点击或按 Escape 关闭并清空搜索。Provider 的同步状态筛选与排序在同一行。
+The provider and model search icons sit to the left of each list's add button; the session search icon sits to the left of "Rescan sessions". Click it or press `/` to expand the search box; click again or press Escape to close it and clear the query. The provider sync-status filter and sort control share one row.
 
-排序方式、自定义顺序及添加时间保存在本地 `providers.json` 顶层的 `ordering` 中，并随备份恢复；排序不改写 Pi 配置或默认模型。新建、复制和明确导入的新增项记录添加时间，编辑与重命名保留原时间。添加时间仅用于排序，不在 Provider 和模型列表中展示。历史本地配置、从 Pi 自动读取的项目及旧备份缺少可靠添加时间时，在两个时间排序方向中均排在末尾。
+The sort mode, custom order, and added times are stored in the top-level `ordering` key of the local `providers.json` and survive backup restores; sorting never rewrites Pi's configuration or the default model. Newly created, copied, and explicitly imported entries record an added time; edits and renames keep the original one. Added time is used only for sorting and is not displayed in the provider or model lists. Entries that lack a reliable added time — historic local profiles, items read from Pi, old backups — sort last in both added-time directions.
 
-会话选择与 URL 同步，支持深链接和浏览器前进／返回。重新扫描保留有效的当前消息、折叠状态和滚动位置；读取失败时显示错误并保留上次成功的内容。
+Session selection is synced with the URL and supports deep links plus browser back/forward. Rescanning keeps the valid current message, fold state, and scroll positions; a failed load shows an error while keeping the last successfully loaded content. The sidebar "multi-select" button enters a multi-select mode: check several sessions and delete them with a single confirmation. Deletion still prefers the system trash; when some deletions fail, the success and failure counts are reported separately.
 
-树状视图用缩进和细竖线分组，只在实际分叉处增加层级，同一分支内连续消息保持对齐。分支起点标明「分支 1/2 · 接续 #3」等来源信息，结合角色、序号和摘要展示消息关系；旁边独立显示选中消息内容，窄屏上下排列。折叠箭头位于各分支的起始消息旁，仅在该分支有后续消息时显示。折叠保留分支起点并显示隐藏数量，只收起这个分支的后续消息，同层级其他分支保留原有状态；全部折叠也保留各分支起点。点击箭头保留正在阅读的消息，只有该消息被折叠隐藏时才回到该分支的可见起点。全部折叠、全部展开和定位当前节点使用小图标，紧邻「仅用户」左侧；定位时只展开当前节点的祖先路径。用户、Pi、分支摘要、压缩摘要和自定义消息分别标识；当前节点用文字标注。
+The tree view groups with indentation and thin vertical guides, adding a level only where a branch actually forks, so consecutive messages on one branch stay aligned. Branch start points carry origin labels such as "Branch 1/2 · From #3", shown together with role, number, and summary; the selected message's content is displayed alongside, stacking vertically on narrow screens. Fold arrows sit next to each branch's first message and appear only when that branch has descendants. Folding keeps the branch start point and shows the hidden count, collapsing only that branch's descendants while sibling branches keep their state; "collapse all" also keeps every branch start. Clicking an arrow keeps the message you are reading, returning to the branch's nearest visible start only when that message becomes hidden. Collapse-all, expand-all, and locate-current are small icons next to "User only"; locating expands only the current node's ancestor path. User, Pi, branch-summary, compaction-summary, and custom messages are each labeled; the current node is called out in text.
 
-树状与阅读视图共用折叠和选择状态。方向键浏览可见消息；左键先折叠再到父级，右键先展开再进子级；Space 切换折叠，Home/End 到首条/末条，`v` 切换视图。复制和 Markdown 链接保留独立键盘行为。切换消息只更新选择和内容区域，不重建整棵树；消息内容与树导航分别滚动。
+The tree and reading views share fold and selection state. Arrow keys browse visible messages; Left folds first then moves to the parent, Right expands first then moves into a child; Space toggles folding, Home/End jump to first/last, `v` switches views. Copy and Markdown links keep their independent keyboard behavior. Switching messages updates only the selection and the content area, never rebuilding the tree; message content and tree navigation scroll independently.
 
-## 实现
+## Implementation
 
-- `public/`：HTML、CSS、原生 JavaScript 模块，无前端运行时依赖和独立打包步骤。
-- `server.js`：Node HTTP 传输，只公开打包的静态资源；API 接受同源 JSON POST，并验证 Host、Origin、请求大小和非有限数值。
-- `native-client.js` / `native-worker.js`：持久 Worker 实例，避免原生网络操作阻塞 HTTP 事件循环。原生失败明确返回，Worker 异常后拒绝后续请求。
-- `src-rust/web/`：输入/输出适配、服务器端导入计划、会话 Markdown 渲染。所有文档操作复用 `documents`，不实现第二套文件读写业务逻辑。
+- `public/`: HTML, CSS, and native JavaScript modules — no frontend runtime dependencies and no separate build step.
+- `server.js`: Node HTTP transport; serves only the bundled static assets. The API accepts same-origin JSON POSTs and validates Host, Origin, request size, and non-finite numbers.
+- `start.js`: CLI option parsing, signal handling, and browser launch. The first Ctrl+C (or Ctrl+Break / console close) begins a graceful shutdown of the HTTP server and the native worker; a second Ctrl+C while shutdown is still in progress forces an immediate exit.
+- `native-client.js` / `native-worker.js`: a persistent Worker instance so native network calls never block the HTTP event loop. Native failures are returned explicitly; after a Worker crash, subsequent requests are rejected.
+- `src-rust/web/`: input/output adaptation, server-side import planning, and session Markdown rendering. All document operations reuse `documents`; no second copy of file read/write logic exists here.
 
-每个 Worker 构造独立的原生 `WebSession`，使用与 TUI 相同的配置路径发现规则。
+Each Worker constructs its own native `WebSession`, using the same configuration path discovery rules as the TUI.
 
-## 验证
+## Verification
 
 ```bash
 cargo test --locked --lib
@@ -45,4 +46,4 @@ npm run build:native:debug
 npm run pack:check
 ```
 
-Rust 单元测试覆盖配置同步、默认模型、未知字段保留、输入边界、Session 文件操作及 Markdown 安全渲染。后端测试执行时应设置 60 秒硬超时；原生编译单独进行。
+Rust unit tests cover configuration syncing, default models, unknown-field preservation, input bounds, session file operations, and safe Markdown rendering. Run backend tests with a 60-second hard timeout; compile native code separately.

@@ -21,18 +21,33 @@ export function visibleSessions(state) {
     && [session.title, session.cwd, session.searchText].some((value) => value?.toLowerCase().includes(query)));
 }
 
+function sessionRow(state, session) {
+  const option = `<button class="session-option ${session.name ? "named" : ""}" data-action="select-session" data-session="${h(session.id)}" aria-current="${state.sessionId === session.id}">
+    <div class="item-title" title="${h(session.title)}">${h(session.title)}</div><div class="session-meta"><span>${icon("messages")}${session.messageCount}</span><span>${date(session.modifiedAt)}</span></div>
+  </button>`;
+  if (!state.sessionSelectMode) return option;
+  const checked = state.sessionSelected.has(session.id);
+  return `<div class="session-option-row${checked ? " selected" : ""}"><input type="checkbox" class="session-check" data-action="toggle-session-select" data-session="${h(session.id)}" aria-label="${h(t("选择会话：", "Select session: ") + session.title)}" ${checked ? "checked " : ""}>${option}</div>`;
+}
+
 function sessionList(state) {
   const sessions = visibleSessions(state);
   const groups = groupSessions(sessions);
   const search = listSearch({ scope: "session", query: state.sessionQuery, open: state.sessionSearchOpen, label: t("搜索会话", "Search sessions"), placeholder: t("搜索会话、工作目录…", "Search sessions, workspaces…") });
-  return `<section class="panel session-sidebar" aria-busy="${state.sessionsLoading}"><div class="panel-header"><h2>${t("本地会话", "Local sessions")}<span class="count">${sessions.length}</span></h2><div class="inline-actions">${search.button}${iconButton("refresh-sessions", "refresh", t("重新扫描会话", "Rescan sessions"))}</div></div>
+  const selectButton = iconButton("toggle-session-select-mode", state.sessionSelectMode ? "close" : "checkSquare", state.sessionSelectMode ? t("退出多选", "Exit multi-select") : t("多选会话", "Select multiple sessions"));
+  const selectedVisibleCount = sessions.filter((session) => state.sessionSelected.has(session.id)).length;
+  const selectedCount = state.sessionSelected.size;
+  const allVisibleSelected = sessions.length > 0 && selectedVisibleCount === sessions.length;
+  const bulk = state.sessionSelectMode ? `<div class="session-bulk"><span class="session-bulk-count">${t("已选 " + selectedCount + " 个（当前列表 " + selectedVisibleCount + "/" + sessions.length + "）", selectedCount + " selected (" + selectedVisibleCount + "/" + sessions.length + " visible)")}</span>
+    <button class="btn small" data-action="select-all-sessions" ${sessions.length ? "" : "disabled"}>${icon("check")}${allVisibleSelected ? t("取消全选", "Deselect all") : t("全选", "Select all")}</button>
+    <button class="btn small danger" data-action="delete-selected-sessions" ${selectedCount ? "" : "disabled"}>${icon("trash")}${t("删除所选", "Delete selected")}</button></div>` : "";
+  return `<section class="panel session-sidebar" aria-busy="${state.sessionsLoading}"><div class="panel-header"><h2>${t("本地会话", "Local sessions")}<span class="count">${sessions.length}</span></h2><div class="inline-actions">${selectButton}${search.button}${iconButton("refresh-sessions", "refresh", t("重新扫描会话", "Rescan sessions"))}</div></div>
     ${search.field}
     <div class="provider-filters"><label class="checkbox-label"><input type="checkbox" data-action="named-only" ${state.namedOnly ? "checked" : ""}>${t("仅显示已命名会话", "Only named sessions")}</label></div>
+    ${bulk}
     <div class="session-list" data-session-scroll="list">
       ${sessions.length ? Array.from(groups, ([cwd, entries]) => `<div class="session-group" title="${h(cwd)}">${icon("folder")}<span>${h(cwd || t("未知工作目录", "Unknown workspace"))}</span></div>
-        ${entries.map((session) => `<button class="session-option ${session.name ? "named" : ""}" data-action="select-session" data-session="${h(session.id)}" aria-current="${state.sessionId === session.id}">
-          <div class="item-title" title="${h(session.title)}">${h(session.title)}</div><div class="session-meta"><span>${icon("messages")}${session.messageCount}</span><span>${date(session.modifiedAt)}</span></div>
-        </button>`).join("")}`).join("") : emptyState(t("没有找到会话", "No sessions found"), state.sessionQuery || state.namedOnly ? t("调整搜索条件，再试一次。", "Try changing your filters.") : t("使用 Pi 开始对话后，会话会出现在这里。", "Your conversations will appear here after using Pi."), "messages")}
+        ${entries.map((session) => sessionRow(state, session)).join("")}`).join("") : emptyState(t("没有找到会话", "No sessions found"), state.sessionQuery || state.namedOnly ? t("调整搜索条件，再试一次。", "Try changing your filters.") : t("使用 Pi 开始对话后，会话会出现在这里。", "Your conversations will appear here after using Pi."), "messages")}
     </div></section>`;
 }
 

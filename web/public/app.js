@@ -3,7 +3,7 @@ import { shell, pages } from "./shell.js";
 import { overview } from "./overview.js";
 import { profiles, selectedProvider, visibleProviders, visibleModels } from "./profiles.js";
 import { orderSnapshot, reorderedVisibleIds } from "./profile-order.js";
-import { sessions, messageReader } from "./sessions.js";
+import { sessions, messageReader, visibleSessions } from "./sessions.js";
 import { canFoldBranch, expandedMessagePath, reconcilePreview, sessionTree, visibleTreeNodes } from "./session-tree.js";
 import { settings } from "./settings.js";
 import * as dialogs from "./dialogs.js";
@@ -12,7 +12,7 @@ import { setTheme } from "./appearance.js";
 const state = {
   snapshot: null, page: "overview", providerId: null, providerQuery: "", providerFilter: "all", modelQuery: "", modelId: null,
   providerSearchOpen: false, modelSearchOpen: false, sessionSearchOpen: false,
-  sessions: [], sessionsLoaded: false, sessionsLoading: false, sessionsError: null, sessionId: null, sessionQuery: "", namedOnly: false,
+  sessions: [], sessionsLoaded: false, sessionsLoading: false, sessionsError: null, sessionId: null, sessionQuery: "", namedOnly: false, sessionSelectMode: false, sessionSelected: new Set(),
   preview: null, previewLoading: false, previewError: null, previewMode: "tree", messageId: null, userOnly: false, folded: new Set(),
   checks: null, busy: false, connected: false, navOpen: false, lastSaved: null,
 };
@@ -123,6 +123,10 @@ function route() {
 }
 
 function navigate(page, key, value, { replace = false } = {}) {
+  if (page !== "sessions") {
+    state.sessionSelectMode = false;
+    state.sessionSelected.clear();
+  }
   const next = "#" + page + (key && value ? "?" + key + "=" + encodeURIComponent(value) : "");
   if (replace) { history.replaceState(null, "", next); route(); }
   else if (location.hash === next) route();
@@ -260,6 +264,7 @@ async function loadSessions() {
     const result = await api("sessions.list");
     if (requestVersion !== sessionVersion) return;
     state.sessions = result.sessions;
+    if (state.sessionSelected.size) state.sessionSelected = new Set([...state.sessionSelected].filter((id) => result.sessions.some((session) => session.id === id)));
     if (state.sessionId && !state.sessions.some((session) => session.id === state.sessionId)) {
       resetPreview();
     }
@@ -712,6 +717,49 @@ case "key-storage": await execute(() => save("settings.key-storage", { value: ta
     case "refresh-sessions": await loadSessions(); break;
     case "select-session": navigate("sessions", "session", target.dataset.session); break;
     case "clear-session": navigate("sessions"); break;
+    case "toggle-session-select-mode":
+      state.sessionSelectMode = !state.sessionSelectMode;
+      if (!state.sessionSelectMode) state.sessionSelected.clear();
+      render(); break;
+    case "toggle-session-select": toggleSessionSelection(target.dataset.session); break;
+    case "select-all-sessions": {
+      const visible = visibleSessions(state);
+      const allSelected = visible.length > 0 && visible.every((session) => state.sessionSelected.has(session.id));
+      for (const session of visible) {
+        if (allSelected) state.sessionSelected.delete(session.id);
+        else state.sessionSelected.add(session.id);
+      }
+      render(); break;
+    }
+    case "delete-selected-sessions": {
+      const selected = state.sessions.filter((session) => state.sessionSelected.has(session.id));
+      if (!selected.length) break;
+      const preview = selected.slice(0, 5).map((session) => session.title).join("\n");
+      const rest = selected.length - Math.min(selected.length, 5);
+      confirm({ title: t("删除选中的 " + selected.length + " 个会话？", "Delete the " + selected.length + " selected session" + (selected.length > 1 ? "s" : "") + "?"), description: t("将优先移到系统回收站；如果回收站不可用，则永久删除该会话文件。", "The session is moved to the system trash when available; otherwise its file is permanently deleted."), detail: preview + (rest > 0 ? "\n" + t("…另有 " + rest + " 个会话", "…and " + rest + " more") : ""), label: t("删除选中会话", "Delete selected"), danger: true }, async () => {
+        const ids = selected.map((session) => session.id);
+        const results = await Promise.allSettled(ids.map((id) => api("sessions.delete", { id })));
+        const succeeded = results.filter((result) => result.status === "fulfilled");
+        const failures = results.filter((result) => result.status === "rejected").map((result) => result.reason?.message ?? "");
+        state.sessionSelectMode = false;
+        state.sessionSelected.clear();
+        if (state.sessionId && succeeded.some((result) => result.value.id === state.sessionId)) navigate("sessions", null, null, { replace: true });
+        await loadSessions();
+        if (!failures.length) {
+          const trash = succeeded.filter((result) => result.value.method === "trash").length;
+          const unlink = succeeded.length - trash;
+          const plural = succeeded.length > 1 ? "s" : "";
+          toast(trash === succeeded.length
+            ? t("已将 " + succeeded.length + " 个会话移到回收站", "Moved " + succeeded.length + " session" + plural + " to trash")
+            : unlink === succeeded.length
+              ? t("已永久删除 " + succeeded.length + " 个会话文件", "Permanently deleted " + succeeded.length + " session file" + plural)
+              : t("已删除 " + succeeded.length + " 个会话（" + trash + " 个移到回收站，" + unlink + " 个永久删除）", "Deleted " + succeeded.length + " sessions (" + trash + " to trash, " + unlink + " permanently)"));
+        } else {
+          toast([t("已删除 " + succeeded.length + " 个会话，" + failures.length + " 个失败", "Deleted " + succeeded.length + ", failed: " + failures.length), failures.find(Boolean)].filter(Boolean).join("\n"), true);
+        }
+        if (dialog.open) dialog.close();
+      }); break;
+    }
     case "reload-preview": await loadPreview(); break;
     case "named-only": state.namedOnly = target.checked; render(); break;
     case "user-only": state.userOnly = target.checked; await loadPreview(); break;
@@ -853,6 +901,13 @@ function moveList(direction) {
   return true;
 }
 
+function toggleSessionSelection(id) {
+  if (!id || !state.sessions.some((session) => session.id === id)) return;
+  if (state.sessionSelected.has(id)) state.sessionSelected.delete(id);
+  else state.sessionSelected.add(id);
+  render();
+}
+
 function treeDirection(direction) {
   const current = state.preview && sessionTree(state.preview).nodes.get(state.messageId);
   if (!current) return;
@@ -901,6 +956,15 @@ document.addEventListener("keydown", (event) => {
   }
   if (event.ctrlKey || event.metaKey || event.altKey || state.busy) return;
   const key = event.key;
+  if (key === " " && state.page === "sessions" && state.sessionSelectMode) {
+    const sessionId = event.target.closest(".session-option")?.dataset.session
+      ?? (event.target.closest(".session-preview") ? state.sessionId : null);
+    if (sessionId) {
+      event.preventDefault();
+      toggleSessionSelection(sessionId);
+      return;
+    }
+  }
   if (["1", "2", "3", "4"].includes(key)) { event.preventDefault(); navigate(Object.keys(pages)[Number(key) - 1]); return; }
   if (key === "?") { event.preventDefault(); dispatch("help"); return; }
   if (key === "/") {
@@ -927,6 +991,11 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (key === "Escape") {
+    if (state.page === "sessions" && state.sessionSelectMode) {
+      state.sessionSelectMode = false;
+      state.sessionSelected.clear();
+      render(); return;
+    }
     state.navOpen = false; render(); document.querySelector(state.page === "profiles" ? '.provider-option[aria-current="true"]' : '.session-option[aria-current="true"]')?.focus(); return;
   }
   if (key === "r") { event.preventDefault(); dispatch(state.page === "sessions" ? "refresh-sessions" : "reload"); return; }
@@ -947,7 +1016,6 @@ document.addEventListener("keydown", (event) => {
     if (key === "n") { event.preventDefault(); state.namedOnly = !state.namedOnly; render(); }
     if (key === "u") { event.preventDefault(); state.userOnly = !state.userOnly; void loadPreview(); }
     if (key === "d" || key === "Delete") { event.preventDefault(); dispatch("delete-session", event.target.closest(".session-option")); }
-    if (key === " " && event.target.matches(".message-node")) { event.preventDefault(); dispatch("toggle-branch"); }
     if (key === "Enter" && event.target.matches(".message-node")) { event.preventDefault(); dispatch("select-message", event.target); }
     return;
   }
